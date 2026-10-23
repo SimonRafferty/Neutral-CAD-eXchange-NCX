@@ -1,0 +1,623 @@
+# NCX single-file neutral CAD format — specification (draft 0.1)
+
+Status: draft, 2026-10-21. Normative words: MUST, SHOULD, MAY. The limits in §1-2 were measured on SolidWorks
+2018/2025/2026 and OpenCASCADE readers.
+
+An NCX file is an ordinary STEP file. Any CAD application opens it as plain B-rep geometry with its
+assembly structure. A companion add-in also finds an embedded **payload** (the neutral modelling
+history, §4) and rebuilds the full parametric model from it.
+
+## 1. Container
+
+1. The file MUST be an ISO 10303-21 exchange structure whose `FILE_SCHEMA` is AP214
+   (`AUTOMOTIVE_DESIGN`).
+   - Writers MUST NOT declare AP242 for assemblies, because SolidWorks 2018 never returns from
+     importing an AP242 assembly.
+   - Readers MUST accept AP203, AP214 and AP242.
+2. The B-rep and product structure SHOULD be produced by the source CAD system's own STEP exporter.
+   The payload is then added by text insertion (§2.4); no other byte of the export changes.
+3. Every STEP string literal the writer produces MUST be at most **8,000 characters**, because
+   OpenCASCADE (and so FreeCAD) rejects a whole file containing any string longer than 16,380.
+
+## 2. Payload placement
+
+### 2.1 Entities
+
+The payload is one property of the **root** PRODUCT_DEFINITION, which is the one never used as
+the related (component) side of a NEXT_ASSEMBLY_USAGE_OCCURRENCE:
+
+```
+#c  = REPRESENTATION_CONTEXT('','');
+#g  = GENERAL_PROPERTY('NCX','NCX','');
+#p  = PROPERTY_DEFINITION('NCX','',#<root PRODUCT_DEFINITION>);
+#a  = GENERAL_PROPERTY_ASSOCIATION('','',#g,#p);
+#h  = DESCRIPTIVE_REPRESENTATION_ITEM('NCX','<header>');
+#k0 = DESCRIPTIVE_REPRESENTATION_ITEM('NCX.0000','<chunk 0>');
+...
+#r  = REPRESENTATION('NCX',(#h,#k0,#k1,...),#c);
+#d  = PROPERTY_DEFINITION_REPRESENTATION(#p,#r);
+```
+
+- Chunk items are named `NCX.` followed by a decimal index, zero-padded to at least 4 digits and
+  counting from 0.
+- Readers MUST order chunks by that index, not by file position or item order.
+- Readers MUST ignore line breaks inside string literals (Part 21), so a payload re-wrapped by
+  another writer still reads.
+
+Why this shape:
+- SolidWorks maps a PROPERTY_DEFINITION to one custom property named after it, holding the
+  *first* item's value. A user without the add-in therefore sees one property, `NCX`, holding the
+  header: in 2025/2026 always, and in 2018 with 3D Interconnect on.
+- `GENERAL_PROPERTY` lets OpenCASCADE's metadata reader see the property.
+- The bulk chunks cost readers that ignore them nothing.
+
+### 2.2 Header
+
+The header is one line of at most **1,000 characters** (SolidWorks 2018 silently drops longer
+property values). It starts with the container marker `NCX/1`, followed by `;key=value` pairs:
+
+| key | meaning |
+|---|---|
+| `schema` | payload schema version `MAJOR.MINOR` |
+| `enc` | `deflate-b64` (the only encoding defined) |
+| `chunks` | number of chunk items |
+| `b64len` | total base64 length |
+| `jsonlen` | length of the payload JSON in bytes |
+| `sha256` | lower-case hex SHA-256 of the payload JSON bytes |
+| `fp` | 16-hex fingerprint hash (§6), or `none` |
+| `core` | ncx_core version that wrote it |
+| `gen` | free text naming the exporter |
+| `notice` | the name of the notice body (§2.6), if the file has one |
+
+Readers MUST ignore unknown keys. Values never contain `;`, `'` or `\` (writers replace them).
+
+### 2.3 Encoding
+
+```
+payload JSON (UTF-8) --raw DEFLATE, RFC 1951--> --base64, RFC 4648 standard alphabet, padded, no line breaks-->
+split into consecutive chunks of <= 8000 characters
+```
+
+### 2.4 Writing
+
+1. Remove any existing NCX payload first: the PROPERTY_DEFINITION named `NCX` and every entity
+   that belongs only to it. A file never carries two.
+2. Insert the new records immediately before the DATA section's `ENDSEC;`, with entity ids above
+   the file's current maximum.
+3. Keep the file's line-ending style.
+
+### 2.5 Reading
+
+Readers report exactly one status:
+
+| status | condition |
+|---|---|
+| `OK` | payload found and intact |
+| `NO_PAYLOAD` | no `PROPERTY_DEFINITION` named `NCX` whose definition is a PRODUCT_DEFINITION |
+| `HEADER_UNREADABLE` | no item named `NCX`, or its value does not start with `NCX/1`, or required keys missing |
+| `CHUNK_MISSING` | fewer chunk items than `chunks` (the missing indices are reported) |
+| `DIGEST_MISMATCH` | lengths or SHA-256 of the reassembled payload don't match |
+| `SCHEMA_TOO_NEW` | schema MAJOR greater than the reader's; the JSON MAY still be returned for display |
+
+- If several NCX properties exist, the one on the root product wins and a warning is reported.
+- `NO_PAYLOAD`, a failed check or a stale fingerprint (§6) all mean the same to the user: **import
+  the plain geometry and say why.**
+
+NCX is a transport format. A file that a CAD program has re-saved, or that a user has modified, is
+plain STEP from then on: nothing in the format tries to survive that. The stale check (§6) makes it
+import as plain geometry.
+
+### 2.6 Notice body
+
+A reader without an NCX add-in sees only geometry. To tell that reader what the file is, the writer
+adds a **notice body**: a plain solid plate beside the model whose name is a short message. The message
+points at the NCX project, not at any one vendor's add-in. The user can delete the body and keep the
+plain geometry.
+
+- **Shape:** a plate in front of the model (below its lowest y, from its lowest x and z), half the
+  model's width long. The message is raised on its top face in a 5×7 pixel font, word-wrapped so the
+  text block is about five times wider than tall, and the plate is sized to fit it.
+  - **One solid:** plate and letters are a single closed polyhedral `MANIFOLD_SOLID_BREP`, with planar
+    faces and straight edges only. Diagonal-only pixel contacts are bridged, so the boundary is
+    2-manifold.
+  - **Why the lettering:** some importers replace body names (SolidWorks 2018 with 3D Interconnect
+    on), so the words must also be in the geometry.
+- **Part files:** the notice is another solid in the root part's B-rep representation, so it never
+  merges with the model.
+- **Assembly files:** the notice is a new part component of the root assembly at the origin; its
+  geometry is already in the assembly frame. It is named with the message, with path characters
+  replaced by `_`. Its records go first in the DATA section, so importers that list components in file
+  order show it at the top of the tree.
+- **Naming:** the body's name is the message. The header's `notice` key repeats it in header form
+  (`;` `'` `\` and non-printing characters as `_`), so a reader can identify the body without relying on
+  the wording.
+- **Matching names:** compare in header form, with path characters `/\:*?"<>|` also as `_` (as an
+  assembly's component name has them) and spaces dropped. SolidWorks 2018 loses the space after a
+  quoted `'` when it reads a STEP name.
+- **Not part of the model:** the notice is never in the payload, so it is not in any fingerprint (§6).
+  An NCX importer deletes it from anything it imports as geometry (the reference used for the stale
+  check, face matching, plain-geometry fallback). Some importers shorten long names, so a body whose
+  name is the start of the header's name, at least 7 characters long, also counts.
+- **Rewriting:** writing a payload again replaces an earlier notice together with all its records,
+  never doubling it. The earlier notice is the body or component named by the earlier header's `notice`
+  (or, for files written before that existed, one whose name starts with `READ ME`).
+- **Default text:** `READ ME - NCX file: Search 'Neutral CAD eXchange' on Github to import.` It points at
+  the project, not at any vendor's add-in.
+- **Importing an assembly:** an NCX importer leaves the notice component out (it is not in the payload)
+  and deletes it from the plain-geometry reference.
+
+`ncx_payload_write` adds the notice by default. Its options take `"notice": false` (none) or
+`"notice": "<text>"` (the message).
+
+## 3. Conformance
+
+`conformance/vectors/vectors.json` lists STEP files with their expected read status and, for
+`OK`, the exact payload bytes.
+- The fixtures are real SolidWorks 2018/2026 AP214 exports (part and assembly) and an
+  OpenCASCADE AP242 export.
+- A conforming reader MUST return the expected status for every vector.
+- The C++ core (`ncx_core`) and the independent Python reader (`python/ncx/specread.py`) both
+  pass.
+
+## 4. Payload model (schema 0.1)
+
+The JSON Schema is `schema/ncx-0.1.schema.json`. A worked example in the user's modelling style is
+`schema/examples/frame.ncx.json`, embedded in `frame.step`.
+
+**Units:** lengths in **mm** and angles in **degrees**, always. Hosts convert at their edge
+(SolidWorks: metres and radians; Fusion: centimetres and radians).
+
+**Top level:**
+- `format: "ncx"`, `schema`, `generator`, `units`;
+- `root` (a document id);
+- `documents`;
+- `fingerprint`.
+
+**Documents:** one per source file.
+- `kind` is `part` or `assembly`.
+- Each document has `name` and `sourceFile`, `configurations` / `activeConfiguration`,
+  `parameters`, `equations`, an optional `designTable`, ordered `features`, `bodies`
+  (with per-body fingerprints) and `properties`.
+- Assemblies add `components` (document, configuration, row-major 4×4 `transform` in mm, `fixed`)
+  and `mates`.
+- Every document reachable from `root` MUST be in the same payload. The layout part, its derived
+  parts and the assembly travel together: one file.
+
+**Features:** `{id, type, name, native{app,type}, suppressed{config: bool}, status, note?, reason?, def}`.
+- `status` is `mapped`, `approximate` (with `note`) or `opaque` (with `reason`).
+- An unmappable feature is kept as `opaque`, so the history and the report stay complete.
+- Type-specific definitions in schema 0.1: `sketch`, `insertPart`, `extrude`/`cut`, `fillet`/`chamfer`.
+  The other known types are `plane axis point coordinateSystem revolve revolveCut hole
+  linearPattern circularPattern sketchPattern mirror shell draft sweep loft combine split
+  deleteBody moveBody thicken sheetMetal baseFlange edgeFlange flatPattern weldment structuralMember
+  sweepCut loftCut importedBody mirrorBody weldmentTrim endCap loftedBend extrudedSurface
+  revolvedSurface rib hem breakCorner sketchedBend jog closedCorner miterFlange mirrorPart cosmeticThread gusset
+  dome planarSurface knit wrap unfold fold sketch3d`.
+  Their `def` is free-form in 0.1 and gets fixed per type as Stage 3 maps them (see "Feature
+  definitions" below for the ones whose meaning is not obvious from their names).
+- Sheet metal: `sheetMetal` carries the part's sheet-metal defaults (thickness, bend radius,
+  K-factor, relief); `baseFlange` and `edgeFlange` are the flanges; `flatPattern` is a marker for
+  the flat pattern a base flange creates.
+
+**Feature definitions** (all lengths mm, angles deg, directions in the model frame):
+- `rib`: `profile` (an open sketch), `twoSided`, `thickness`, `reverseThickness` (the side of a
+  one-sided rib), `flipMaterial` (which way from the sketch it fills), `extrusion` (0 parallel to the
+  sketch plane, 1 normal to it), optional `draft {angle, outward, fromWall}`.
+- `moveBody`: `bodies`, `copy`, `copies`, and either `translate [dx, dy, dz]` or `rotate {origin,
+  angles [about x, y, z]}`. With more than one angle the order is not defined: the feature is
+  `approximate` and checked by geometry.
+- `hem`: `edges`, `hemType` (open, closed, teardrop, rolled), `position`, `reverse`, `length`, `gap`,
+  `angle`, `radius`, `miterGap`.
+- `breakCorner`: `entities` (corner edges or vertices), `breakType` (chamfer, fillet), `distance`.
+- `sketchedBend`: `line` (the bend-line sketch), `fixedFace` (a face descriptor), `angle`,
+  `reverse`, `position`, `useDefaultRadius`, `radius`.
+- `miterFlange`: `profile` (a sketch on a plane normal to the first edge, at its end), `edges` (the
+  chain it runs along), `useDefaultRadius`, `bendRadius`, `position`, `trimSideBends`, `gap`,
+  `startOffset`, `endOffset`, and relief (`useDefaultRelief`, `reliefType`, `useReliefRatio`,
+  `reliefRatio`, `reliefWidth`, `reliefDepth`).
+- `edgeFlange` along several edges in one feature adds `edges` and `profiles` (one profile sketch per
+  edge, in the same order) to the single `edge` and `profile` (the first of each).
+- `closedCorner`: `faces` (the flange end faces to extend), `cornerType` (butt, overlap, underlap),
+  `gap`, `overlapRatio`, `openBendRegion`.
+- `jog`: `line`, `fixedFace`, `angle`, `offset`, `reverse`, `dimensionPosition`, `bendPosition`,
+  `fixProjectedLength`, `radius`. A jog is discontinuous at 90°: importers should round the angle
+  before use (a radian round trip gives 90.0000000000002).
+
+- `cosmeticThread`: `edge` (the circular edge it starts from), `diameter` (the minor diameter of an
+  external thread, major of an internal one), `depth`, `endCondition`, `callout` (e.g. `M10x1.5`),
+  `standard`, `size`. It changes no geometry; it is annotation an importer can show or drop.
+- `gusset` (weldments): `faces` (the two supporting faces, which meet at an edge), `profileType`
+  (triangular, polygonal), `d1`..`d4`, `angle`, `useAngle`, `thicknessType` (both sides, one side,
+  the other), `thickness`, `location` (end or mid point), `offset`, `offsetDistance`.
+- `variable` fillets (`filletType: "variable"`): `edges`, `vertexRadii` (`{vertex, radius}`), `radius`
+  (the default, may be 0).
+- `sketch3d`: a 3D sketch, defined as for `sketch` with these differences:
+  - It has `space: "3d"` and no `plane` or `frame`.
+  - Every coordinate is `[x, y, z]` in the model frame (mm), and dimension text positions are too.
+  - An arc adds `normal` (its plane), and `ccw` is about that normal.
+  - Its relations add `alongX`, `alongY` and `alongZ` (a line along a model axis).
+
+  Weldment members and sweeps refer to its entities as `sketchEntity`, as for 2D sketches.
+- `dome`: `faces`, `height`, `reverse`, `elliptical`.
+- `split`: `tools` (planes, surfaces or sketches) and `consume`. Every body the tools cut out is kept.
+- `planarSurface`: `profile`, a closed sketch.
+- `knit`: `surfaces` (bodies or faces), `formSolid`, `mergeEntities`, `gapControl`, `tolerance`, `maxGap`.
+- `wrap`: `sketch`, `face`, `wrapType` (`emboss`, `deboss`, `scribe`), `thickness`, `reverse`.
+- `unfold` / `fold` (sheet metal): `fixedFace`, and `bends` as `{feature, sub, name}`. `feature` is the
+  feature the bend belongs to, and `sub` is the bend's index among that feature's sub-features.
+- `mirrorPart`: the document is the mirror image of another part: `source` (a document id), `plane` (one
+  of the source's origin planes, `{kind: "originPlane", plane}`), `transfer` (as for `insertPart`). It is
+  the first feature of its document; an importer creates the document by mirroring the source.
+
+**Assembly features** (`features` of an assembly document):
+- `componentPattern`: `def.kind` is `linear` (`direction {ref, count, spacing, reverse}`,
+  optional `direction2`) or `circular` (`axis`, `count`, `angle` between neighbours, `reverse`).
+  `seeds` are component ids, `skipped` lists skipped instance indices. A direction or axis is an
+  assembly reference (as for mates: `{component, path?, ref}` or the assembly's own `{ref}`).
+- The components a pattern makes are listed like any other, with `pattern: <feature id>`. An
+  importer that rebuilds the pattern does not add them itself; it matches what the pattern makes to
+  them by transform. Which way an edge or axis runs can differ between systems, so a pattern whose
+  instances land elsewhere is rebuilt with the other direction(s). An importer that cannot pattern
+  components places them as listed.
+- `mirrorComponents`: `def.plane` (an assembly reference), `instances` (`{seed, orientation}`: copies of
+  the same part, mirrored again at import and matched by transform; they carry `pattern: <feature id>`
+  like pattern instances) and `oppositeHand` (seed component ids whose copies are mirrored parts: those
+  copies are plain components of their own `mirrorPart` documents, placed as listed, and the feature is
+  `approximate`).
+- `plane`: a reference plane of the assembly, as for parts (`references` with `constraint`, `value`,
+  `flip`, and the resulting `origin` and `normal`), but each reference is an assembly reference. Mates,
+  patterns and other planes refer to it as `{ref: {kind: "feature", id}}` (no `component`).
+- `sketch` and `cut` (assembly level): written as in parts. Their plane and profile references are the
+  assembly's own (`originPlane`, or `{kind: "feature", id}` for its planes and sketches). A cut's
+  `def.components` lists the components it changes, and `autoSelect` says whether the source let it
+  cut everything it passes through.
+  - The file's B-rep holds a part as the assembly shows it, so parts an assembly cut changes skip the
+    part-level face check, with the reason given. The assembly's own fingerprint checks the cut.
+  - An importer that cannot cut exactly those components reports the cut. It must not make a cut that
+    changes other components.
+- Any other assembly-level feature is kept as `opaque` with a `reason`.
+
+**Feature results** (`result`, optional on any part feature): the feature's effect as geometry, for an
+importer that cannot rebuild it. This applies when the exporter could not map the feature, when the
+importer's CAD system has no such feature (a hem, a jog or a gusset in a system without them), or when its
+replay fails. Instead of giving up on the whole part, the importer swaps in these bodies and carries on
+with the rest of the history.
+- `replaces`: the fingerprints (§6) of the bodies, just before the feature, that it changed or removed.
+- `bodies`: `{name, sheet, fingerprint}` of the bodies just after it that it changed or made, in the
+  order of `data`.
+- `data`: the text of an ISO 10303-21 file (AP214, mm) holding exactly those bodies. It is empty if the
+  feature only removed bodies.
+- `format: "step"`.
+- **Importing:**
+  1. For each `replaces` fingerprint, find the nearest body in the part as rebuilt so far (volume,
+     area, centroid). If none is close, earlier steps differ: the result can't be used.
+  2. Delete those bodies.
+  3. Import `data` with the system's own STEP reader and add its bodies.
+  4. Give the new bodies their `name`s, matched by fingerprint.
+
+  Later features then resolve their references (§5) on the new bodies as usual.
+- **What the importer gets:** the geometry exactly as it was, but fixed: it does not follow
+  parameter changes made before the feature.
+  - The importer reports the feature as `approximate`, giving the reason it was not rebuilt.
+  - The part is verified at exchange tolerance, because the bodies went through STEP.
+  - Parameter-flex probes that move such a part are skipped, with a reason.
+- **What exporters attach it to:** always to an `opaque` feature that changes geometry, and by
+  default to the feature types few systems share. The SolidWorks exporter uses: the sheet-metal
+  extras (`hem`, `jog`, `miterFlange`, `closedCorner`, `breakCorner`, `sketchedBend`, `loftedBend`,
+  `edgeFlange`), `gusset`, `endCap`, `weldmentTrim`, `rib`, variable fillets, dome, wrap and
+  `mirrorPart`.
+  - An importer that can rebuild the feature ignores `result`, but keeps it as the fallback if the
+    rebuild fails.
+  - Features that change no body (sketches, reference geometry, cosmetic threads) never carry one.
+- **Something simpler, where a counterpart is missing.** Every importer has a STEP reader, so a carried
+  result works in any CAD system. An importer still prefers a near-equivalent feature where one
+  exists. It reports the substitution as `approximate` with a reason, and checks it by fingerprint
+  like any rebuild; if the fingerprint does not match, it falls back to the result. Suggested
+  equivalents:
+  - a `hem` as an edge flange plus a second flange;
+  - a `gusset` as a sketched extrude on the plane through its two faces' normals;
+  - a weldment `endCap` as an extruded plate on the member end face;
+  - a dome as a revolve or loft;
+  - a mechanical mate with no counterpart as the components placed where the file lists them
+    (they arrive in position).
+
+**Sketch:**
+- `plane` (a reference) plus an explicit `frame` (origin, x, z in model mm).
+- Where the plane cannot be referenced, `plane` is `{kind: "frame"}` (the frame alone places the
+  sketch) or `{kind: "generated", by: <feature name>}`: a plane the named feature creates (an edge
+  flange's profile plane), and that feature replays the sketch.
+- `entities` carry **solved** 2-D coordinates, which act as seeds so under-constrained sketches
+  solve to the same configuration.
+- `constraints` use a closed list of types; others keep their native name with `supported: false`.
+- `dimensions` keep the native full name (`D1@SK_Outline`), so spreadsheet-driven dimension
+  writes keep working, and a `param` link where a parameter drives them.
+- Sketch names are kept verbatim.
+
+**Equations:** `{target, expression}` in a small neutral grammar (`+ - * / ^ ( )`,
+`sin cos tan sqrt abs min max if`, names). Anything else is kept in `native` with
+`status: approximate`.
+
+**Inserted / derived parts:** `insertPart` with `source` (a document id), `sourceConfiguration`,
+`transfer` (what carries across), `transform`, and `items` (source item → derived name, e.g.
+`SK_Outline-Frame-Layout`).
+
+**Custom properties** (`customProperties`, parts and assemblies): what a BOM is built from.
+- Each property is `{name, type (text|number|yesno|date), value, resolved, configuration?, native?}`.
+- `value` is what the user typed. A linked value keeps its expression, e.g.
+  `"SW-Mass@@Default@P1.SLDPRT"`, whose file name means "this document".
+- `resolved` is what it evaluated to, for importers that cannot evaluate the expression.
+- Without `configuration`, a property is file-wide.
+
+**Cut lists** (`cutLists`, weldment parts): `[{name, bodies, properties}]`.
+- `bodies` are body references (§5).
+- `properties` are as for custom properties; linked values name their own item
+  (`"LENGTH@@@<item name>@<file>"`).
+- An importer whose system groups members itself matches each group to an entry by its bodies. It gives the group
+  the entry's name, so the links resolve, and sets the properties. A system without cut lists keeps them as
+  per-body properties, or reports them.
+
+**Materials** (`materials`, parts): `[{configuration, name, database}]`. An importer looks the name up in
+its own material library. If it is missing, the part is still rebuilt, and the report says which
+material was not found.
+
+**Appearances** (`appearances`, parts and assemblies): what the user sees. Each is `{target, kind,
+color, optical?, file?, mapping?}`.
+- `target` is one of:
+  - `{kind: "document"}`
+  - a body reference (§5)
+  - a feature reference
+  - a face descriptor (§5, resolved in the finished model)
+  - in an assembly, `{kind: "component", id}`
+- `kind: "color"` is a plain colour: `color` is RGB 0–1, and `optical` holds ambient, diffuse,
+  specular, shininess, transparency and emission.
+- `kind: "appearance"` is a library appearance, usually textured:
+  - `file` is its path inside the appearance library (`metal/aluminum/brushed aluminum.p2m`). An
+    importer finds it in its own library by that path, else by file name.
+  - `mapping` is type, width/height/x/y in mm, rotation in rad, and fixed aspect.
+  - If the importer has no such appearance, it is **skipped**, with a note, never a failure.
+  - The appearance's tint comes from the importer's library copy (SolidWorks 2018 ignores a set
+    colour on a textured appearance).
+- **Not carried:**
+  - a material's own appearance (it follows the material);
+  - appearances in display states other than the active one;
+  - appearances on nested assembly components.
+
+**Structural rules** (beyond the JSON Schema; checked by `ncx_model_validate`):
+- ids are unique (documents globally; features, components and sketch entities within their
+  scope);
+- every reference resolves (`root`, `insertPart.source` must be a part, `component.document`,
+  sketch entity ids in constraints and dimensions);
+- there are no cycles in the document dependency graph;
+- `opaque` features need a `reason`;
+- units are mm and deg.
+
+**Versioning:** `MAJOR.MINOR`. A reader refuses a newer MAJOR (`SCHEMA_TOO_NEW`), accepts a newer
+MINOR, and ignores unknown fields and feature types, reporting them as warnings.
+
+## 5. References
+
+**Rule 1, by id:** anything replay creates itself is referenced by id. That covers origin planes,
+the origin, features, sketch entities and transferred items, for example
+`{kind:"sketchEntity", by:"id", feature, id}`. Ids are stable because replay records the native
+handle it creates for each id.
+
+**Rule 2, by geometry:** B-rep topology (faces, edges, vertices picked by fillets, chamfers,
+shells, drafts, face-based sketches and mates) is referenced by a **descriptor**. It is recorded
+in the state the referencing feature saw, which means rolled back to that feature:
+
+```
+{kind: "face"|"edge", by: "geom", geom: {
+   type,                 plane cylinder cone sphere torus bspline ... | line circle ellipse bspline ...
+   params,               analytic parameters: normal+point, axis+origin+radius, apex+axis+semiAngle, ...
+   samples: [[x,y,z]],   5 interior points (9 for freeform faces); edges: at 0.1 0.3 0.5 0.7 0.9 of the range
+   area | length,
+   bbox: [xmin,ymin,zmin,xmax,ymax,zmax],
+   clearance, weak?,     the samples' distance from the entity boundary; weak if < 0.01 mm
+   seam?, degenerate?    never referenceable; exporters MUST NOT emit references to them
+}}
+```
+
+**Sample choice for faces:** take interior points from the face's triangulation, keep the most
+interior one, then spread the others out. UV-grid sampling is not robust: it fails on thin rims
+and odd parametrisations (measured).
+
+**Resolution protocol** (`ncx_reference_match`):
+
+1. **The host measures.** For each candidate entity of the target (same kind, prefiltered to
+   those whose bounding box meets the reference's `bbox` enlarged by 1 mm), the host provides:
+   - its type and analytic parameters;
+   - its area or length;
+   - its distance to every reference sample;
+   - optionally, its own sample points and its neighbour ids (faces sharing an edge, edges
+     sharing a vertex).
+2. **The core decides.** It applies, in order:
+   1. *Type compatibility:* analytic types must match exactly; freeform matches any type.
+   2. *Backward check:* a candidate's own points must lie on the reference's analytic geometry
+      **and** inside its `bbox`.
+   3. *Single exact cover:* one candidate covers every sample.
+   4. *Split:* the backward-checked pieces of one type, or else the union of the minimal sample
+      covers of one type and parameter set.
+   5. *Completion:* add connected, backward-checked pieces until the reference size is reached.
+   6. *Size check.*
+   7. *Retry:* only if nothing resolved, retry once at 10× tolerance and say so.
+3. **Results:**
+
+| result | meaning | host action |
+|---|---|---|
+| `resolved` | the ids are the target entity (or all pieces of it); `size_ratio` within 1 % (or larger, if the target merged it) | build the feature |
+| `partial` | the pieces found are correct but short of the reference size | report; never build on part of an entity |
+| `ambiguous` | more than one answer fits (alternatives listed) | report and fall back |
+| `unresolved` | nothing fits (nearest miss given) | report and fall back |
+
+Default tolerance: 0.001 mm, with the automatic retry at 0.01 mm.
+
+**Vertices** are `{kind: "vertex", by: "geom", geom: {type: "point", params: {point}, samples,
+bbox}}`. A point needs no scoring, so the host resolves it: the one vertex within the tolerance
+(0.001 mm, then once at 0.01 mm); several coincident vertices are `ambiguous`.
+
+**Bodies** (multibody features such as `combine`) are referenced as
+`{kind: "body", by: "geom", geom: {volume, centroid, bbox}}`, measured in the state the feature
+saw. A body resolves when exactly one solid body has a volume within 1e-5 relative and a centroid
+within 0.01 mm.
+
+**Mates** reference `{component, path?, ref}`:
+- `component` is a component id of the assembly; `path` lists nested component ids below it,
+  each in its parent's document (`Sub-1/Pin-1` → `component: "c:Sub-1", path: ["c:Pin-1"]`).
+- `ref` is a face/edge descriptor in the component's own frame, an `originPlane`, or a
+  `feature` reference `{kind: "feature", document, id}` into the component's document.
+- Mated datum planes are identified geometrically against the component's plane features; origin
+  planes win a tie.
+- Without `component`, the reference is the assembly's own `originPlane` or `origin`. Layout-style
+  assemblies mate every component's base planes to the assembly's planes this way.
+- Mechanical mates:
+  - `gear`: two refs, `params {ratio: [a, b], reverse}`.
+  - `screw`: two refs, `params {pitch (mm per turn), reverse}`.
+  - `width`: refs tagged `role: "width"` (the two outer faces) and `role: "tab"` (the two inner
+    ones), `params {constraint (centred, free, distance, percent), distance, percent, flip}`.
+  - `symmetric`: refs tagged `role: "entity"` (two) and `role: "plane"` (the symmetry plane),
+    `params {alignment}`.
+  - `slot`: two refs (the slot face, the entity riding in it), `params {constraint (free, centred,
+    distance, percent), distance, percent, flip}`.
+  - `hinge`: refs tagged `role: "concentric"` and `role: "coincident"`, optional angle limits
+    `params {angle, min, max}`. Where a system has no hinge, it is built as its functional
+    equivalent, a concentric plus a coincident mate, and reported `approximate`.
+  - `rackPinion`: the rack's edge (or face) and the pinion's cylindrical face, `params {pitchDiameter,
+    travelPerTurn (= π × pitchDiameter), byTravel (which of the two the user set), reverse}`.
+  - `cam`: the cam's faces (a tangent chain) and the follower's face or point.
+- A mate whose parameters the source could not fully read is `approximate` with a `note` (e.g.
+  SolidWorks 2018 cannot read a screw's pitch or a gear's direction).
+- **Mates with no counterpart.** Every component arrives where the file places it (`transform`), so
+  an importer that cannot make a mate loses only that mate's motion, never a position.
+  - A mate that only couples motion (`gear`, `screw`, `rackPinion`, `cam`, linear coupler, path) is
+    then reported `approximate`: "components placed, not coupled".
+  - A positioning mate is replaced by its functional equivalent where one exists (a `hinge` as
+    concentric plus coincident), else reported the same way.
+  - Mate types the exporter does not map (linear coupler, path, universal joint in the SolidWorks
+    exporter) are `opaque`; their components still arrive in place.
+
+## 6. Fingerprint
+
+**Per body:** `volume, area, centroid[3], moments[3]` (principal, sorted), `bbox[6]`, and
+`faces` / `edges` (informational), all in mm.
+
+**File fingerprint:** `{bodies: [...]}`.
+
+**Header `fp`:** the first 16 hex digits of SHA-256 over the sorted lines
+`V=%.5e;A=%.5e;C=%.2f,%.2f,%.2f\n`, one per body (centroid rounded to 0.01 mm, never `-0.00`).
+
+**Comparison:** `ncx_fingerprint_compare_ex` pairs the bodies (by volume, then centroid) and
+applies one of two tolerance profiles:
+
+| quantity | `native` (default) | `exchange` |
+|---|---|---|
+| volume | 1e-5 relative | 2e-4 relative |
+| area | 1e-5 relative | 2e-4 relative |
+| centroid | 0.001 mm | 0.01 mm |
+| moments | 1e-4 of the largest | 5e-4 of the largest |
+| bbox | 0.5 mm (warning only) | 0.5 mm (warning only) |
+
+- `native` is for a model compared with its rebuild in the same kernel (replay verification).
+- `exchange` is for B-rep that went through STEP or another kernel. Freeform faces (lofts,
+  sweeps) re-imported by SolidWorks 2018/2026 measured up to 3.4e-5 relative in volume, which
+  fails `native`. A real edit, such as 0.1 mm on a 100 mm part (~1e-3), still fails `exchange`.
+- Individual tolerances can be overridden in the options.
+
+**Stale check at import:** the host fingerprints the B-rep it imported from the same file and
+compares it with the payload's fingerprint, using `exchange`.
+
+Face and edge counts may differ between kernels; they are reported as `count_only`, which is not
+a failure. A `mismatch` means the payload describes different geometry: fall back to plain
+geometry.
+
+### 6.1 Verification at import
+
+An importer verifies each part it rebuilt, and reports every check:
+
+| check | compares | result |
+|---|---|---|
+| mass | per-body fingerprint of the rebuild vs the payload (`native`) | `match` / `count_only` / `mismatch` |
+| structure (6.2) | the rebuilt tree vs the payload's features | `match` / `mismatch` |
+| flex (6.4) | each probe applied to the rebuild vs the probe's fingerprint (`native`) | `match` / `mismatch` / `failed` |
+| faces (6.3) | the rebuild vs the file's own B-rep, face by face | `match` / `topology` / `mismatch` |
+
+A mass `mismatch` replaces the part by its reference B-rep (the other checks are then not run).
+The others are reported, not acted on.
+
+### 6.2 Structure
+
+Every payload feature that is not opaque must exist in the rebuild under its name, and, when the
+importer is the same application as the exporter, with the same native type.
+
+Each sketch carries `constrained` (`full` / `under` / `over` / `invalid` / `unknown`, as the source
+reported it). A sketch exported `full` must be fully defined in the rebuild. Its shape would be right
+either way (seeded coordinates), so this is what shows a lost relation or dimension, or a reference
+dimension where a driving one was. It costs nothing and touches nothing in the source. An `under`
+sketch is reported to the user as a note: it arrives with exactly the source's shape, but when edited
+each CAD system's solver decides what moves.
+
+### 6.3 Face by face
+
+`ncx_face_compare` takes every face of the reference B-rep, described as for a reference (§5) and
+measured by the host against the rebuild's faces, plus the area of every rebuilt face. Each
+reference face is resolved as by `ncx_reference_match`; then:
+- `unmatched`: reference faces with no rebuilt geometry; `extra`: rebuilt faces no reference face
+  claimed;
+- `split` / `merged`: one reference face covered by several rebuilt faces, or the reverse;
+- `area`: groups of connected reference and rebuilt faces whose total areas differ by more than
+  1e-3 relative (and 0.01 mm²).
+
+`match` = one for one with equal areas; `topology` = the same surfaces and areas cut into faces
+differently (not a failure); anything unmatched, extra or of different area = `mismatch`.
+
+### 6.4 Parameter flex
+
+A document may carry `flex`: probes measured in the source. Each changes one parameter of that
+document to `value` in `configuration`:
+- a driving sketch dimension (`kind` `length` / `angle`, `parameter` = `<dimension>@<sketch>`,
+  value in mm / deg), or
+- a global variable whose value is a plain number (`kind` `variable`).
+
+The exporter then rebuilds every part of the model in dependency order, records `fingerprints`
+(document id → fingerprint) for every part the change moved, and puts the value back. A layout's
+dimension is thereby tested through the derived parts that use it.
+
+The importer applies the same change to its rebuild of the whole model, compares every part
+(`native`): those listed must match their fingerprint, and all others must not move. It then
+restores the value. This shows that the parameters still drive the model as in the source, which
+mass properties alone cannot: an under-constrained or wrongly related sketch, a lost equation link,
+or a derived part cut off from its layout all rebuild to the same shape but flex differently.
+
+Probes are written automatically, but only where structure cannot prove behaviour:
+- a document whose geometry is driven by equations (global variables), and
+- a document other parts are derived from (a layout).
+
+Such a document gets up to 2 probes, global variables first; plain parts get none, and their export
+never touches the model. (`FlexProbes`: -1 automatic, the default; 0 none; N probes on every part.)
+Only dimensions of fully defined sketches are probed: how an under-defined sketch moves is up to each
+CAD system's solver, not a translation fault. Parameters are chosen that are not equation-driven,
+spread over the document, and changed by 5% (at least 0.5 mm or 1°), shrinking if growing breaks the
+rebuild. Changes with no geometric effect are skipped. Every
+part is checked to return exactly to its fingerprint afterwards, and feature names SolidWorks resets
+on a rebuild (weldment members) are restored.
+
+SolidWorks notes: an equation-driven dimension reports itself as *driven*; it must be exported and
+replayed as a driving dimension (a reference dimension cannot be driven by an equation). An equation
+edit is refused (silently, status -1) unless its document is the active one.
+
+## 7. The core (`ncx_core`)
+
+A C++17 library with a C ABI (`core/include/ncx_core.h`), statically linked CRT, and no
+CAD-kernel dependency:
+
+| function | job |
+|---|---|
+| `ncx_payload_write` / `ncx_payload_read` | the container (§2) |
+| `ncx_model_validate` | structural rules (§4) |
+| `ncx_fingerprint_compare` / `ncx_fingerprint_hash` | §6 |
+| `ncx_reference_match` | §5 |
+| `ncx_face_compare` | §6.3 |
+
+Bindings:
+- C#: `core/bindings/csharp/NcxCore.cs` (P/Invoke, .NET Framework 4.8 x64);
+- Python: `python/ncx/core.py` (ctypes);
+- a C++ host links directly.

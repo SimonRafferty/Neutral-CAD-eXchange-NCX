@@ -1,0 +1,162 @@
+[
+ {
+  "name": "no_payload__occ_part_ap242",
+  "file": "no_payload__occ_part_ap242.step",
+  "expect": "NO_PAYLOAD",
+  "note": "real export, untouched"
+ },
+ {
+  "name": "ok_small__occ_part_ap242",
+  "file": "ok_small__occ_part_ap242.step",
+  "expect": "OK",
+  "note": "",
+  "model": "ok_small__occ_part_ap242.model.json"
+ },
+ {
+  "name": "ok_multichunk__occ_part_ap242",
+  "file": "ok_multichunk__occ_part_ap242.step",
+  "expect": "OK",
+  "note": "many 1000-char chunks",
+  "model": "ok_multichunk__occ_part_ap242.model.json"
+ },
+ {
+  "name": "no_payload__sw2018_asm_ap214",
+  "file": "no_payload__sw2018_asm_ap214.step",
+  "expect": "NO_PAYLOAD",
+  "note": "real export, untouched"
+ },
+ {
+  "name": "ok_small__sw2018_asm_ap214",
+  "file": "ok_small__sw2018_asm_ap214.step",
+  "expect": "OK",
+  "note": "",
+  "model": "ok_small__sw2018_asm_ap214.model.json"
+ },
+ {
+  "name": "ok_multichunk__sw2018_asm_ap214",
+  "file": "ok_multichunk__sw2018_asm_ap214.step",
+  "expect": "OK",
+  "note": "many 1000-char chunks",
+  "model": "ok_multichunk__sw2018_asm_ap214.model.json"
+ },
+ {
+  "name": "no_payload__sw2018_part_ap214",
+  "file": "no_payload__sw2018_part_ap214.step",
+  "expect": "NO_PAYLOAD",
+  "note": "real export, untouched"
+ },
+ {
+  "name": "ok_small__sw2018_part_ap214",
+  "file": "ok_small__sw2018_part_ap214.step",
+  "expect": "OK",
+  "note": "",
+  "model": "ok_small__sw2018_part_ap214.model.json"
+ },
+ {
+  "name": "ok_multichunk__sw2018_part_ap214",
+  "file": "ok_multichunk__sw2018_part_ap214.step",
+  "expect": "OK",
+  "note": "many 1000-char chunks",
+  "model": "ok_multichunk__sw2018_part_ap214.model.json"
+ },
+ {
+  "name": "no_payload__sw2026_asm_ap214",
+  "file": "no_payload__sw2026_asm_ap214.step",
+  "expect": "NO_PAYLOAD",
+  "note": "real export, untouched"
+ },
+ {
+  "name": "ok_small__sw2026_asm_ap214",
+  "file": "ok_small__sw2026_asm_ap214.step",
+  "expect": "OK",
+  "note": "",
+  "model": "ok_small__sw2026_asm_ap214.model.json"
+ },
+ {
+  "name": "ok_multichunk__sw2026_asm_ap214",
+  "file": "ok_multichunk__sw2026_asm_ap214.step",
+  "expect": "OK",
+  "note": "many 1000-char chunks",
+  "model": "ok_multichunk__sw2026_asm_ap214.model.json"
+ },
+ {
+  "name": "no_payload__sw2026_part_ap214",
+  "file": "no_payload__sw2026_part_ap214.step",
+  "expect": "NO_PAYLOAD",
+  "note": "real export, untouched"
+ },
+ {
+  "name": "ok_small__sw2026_part_ap214",
+  "file": "ok_small__sw2026_part_ap214.step",
+  "expect": "OK",
+  "note": "",
+  "model": "ok_small__sw2026_part_ap214.model.json"
+ },
+ {
+  "name": "ok_multichunk__sw2026_part_ap214",
+  "file": "ok_multichunk__sw2026_part_ap214.step",
+  "expect": "OK",
+  "note": "many 1000-char chunks",
+  "model": "ok_multichunk__sw2026_part_ap214.model.json"
+ },
+ {
+  "name": "ok_items_reordered",
+  "file": "ok_items_reordered.step",
+  "expect": "OK",
+  "note": "chunk records 0..2 swapped in the file",
+  "model": "ok_items_reordered.model.json"
+ },
+ {
+  "name": "ok_wrapped_string",
+  "file": "ok_wrapped_string.step",
+  "expect": "OK",
+  "note": "NCX.0001 split over lines",
+  "model": "ok_wrapped_string.model.json"
+ },
+ {
+  "name": "ok_comments",
+  "file": "ok_comments.step",
+  "expect": "OK",
+  "note": "",
+  "model": "ok_comments.model.json"
+ },
+ {
+  "name": "ok_lf_only",
+  "file": "ok_lf_only.step",
+  "expect": "OK",
+  "note": "",
+  "model": "ok_lf_only.model.json"
+ },
+ {
+  "name": "ok_root_preferred",
+  "file": "ok_root_preferred.step",
+  "expect": "OK",
+  "note": "a decoy payload on a component product is ignored",
+  "model": "ok_root_preferred.model.json"
+ },
+ {
+  "name": "chunk_missing",
+  "file": "chunk_missing.step",
+  "expect": "CHUNK_MISSING",
+  "note": ""
+ },
+ {
+  "name": "digest_mismatch",
+  "file": "digest_mismatch.step",
+  "expect": "DIGEST_MISMATCH",
+  "note": "one base64 character changed"
+ },
+ {
+  "name": "header_wrong_marker",
+  "file": "header_wrong_marker.step",
+  "expect": "HEADER_UNREADABLE",
+  "note": ""
+ },
+ {
+  "name": "schema_too_new",
+  "file": "schema_too_new.step",
+  "expect": "SCHEMA_TOO_NEW",
+  "note": "readers must refuse a newer major schema",
+  "model": "schema_too_new.model.json"
+ }
+]

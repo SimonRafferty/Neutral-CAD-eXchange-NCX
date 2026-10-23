@@ -1,0 +1,361 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ncx.local/schema/ncx-0.1.schema.json",
+  "title": "NCX neutral CAD model, schema 0.1",
+  "description": "The command log embedded in an NCX STEP container (FORMAT-SPEC.md). Lengths in mm, angles in degrees. Unknown properties are allowed everywhere (forward compatibility); readers ignore what they do not understand and report it. Cross-reference rules (unique ids, existing targets, no dependency cycles) are checked by ncx_model_validate, not by this schema.",
+  "type": "object",
+  "required": ["format", "schema", "root", "documents"],
+  "properties": {
+    "format": {"const": "ncx"},
+    "schema": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+    "generator": {
+      "type": "object",
+      "properties": {
+        "app": {"type": "string"}, "version": {"type": "string"},
+        "api": {"type": ["integer", "string"]}, "exporter": {"type": "string"}
+      }
+    },
+    "units": {
+      "type": "object",
+      "properties": {"length": {"const": "mm"}, "angle": {"const": "deg"}, "mass": {"const": "kg"}}
+    },
+    "root": {"$ref": "#/$defs/id"},
+    "documents": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/document"}},
+    "fingerprint": {"$ref": "#/$defs/fingerprint"}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1},
+    "vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+    "vec2": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+    "status": {"enum": ["mapped", "approximate", "opaque"]},
+
+    "document": {
+      "type": "object",
+      "required": ["id", "kind", "name"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "kind": {"enum": ["part", "assembly"]},
+        "name": {"type": "string"},
+        "sourceFile": {"type": "string"},
+        "configurations": {"type": "array", "items": {"$ref": "#/$defs/configuration"}},
+        "activeConfiguration": {"$ref": "#/$defs/id"},
+        "parameters": {"type": "array", "items": {"$ref": "#/$defs/parameter"}},
+        "equations": {"type": "array", "items": {"$ref": "#/$defs/equation"}},
+        "designTable": {"type": ["object", "null"]},
+        "features": {"type": "array", "items": {"$ref": "#/$defs/feature"}},
+        "bodies": {"type": "array", "items": {"$ref": "#/$defs/body"}},
+        "components": {"type": "array", "items": {"$ref": "#/$defs/component"}},
+        "mates": {"type": "array", "items": {"$ref": "#/$defs/mate"}},
+        "properties": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},
+        "flex": {"type": "array", "items": {"$ref": "#/$defs/flexProbe"},
+                 "description": "parameter-flex probes measured in the source (FORMAT-SPEC 6.4)"},
+        "customProperties": {"type": "array", "items": {
+          "type": "object", "required": ["name", "value"],
+          "properties": {
+            "name": {"type": "string"}, "type": {"enum": ["text", "number", "yesno", "date"]},
+            "value": {"type": "string", "description": "as typed; a linked value keeps its expression"},
+            "resolved": {"type": "string"}, "configuration": {"type": "string"}, "native": {"type": "object"}}}},
+        "materials": {"type": "array", "items": {
+          "type": "object", "required": ["name"],
+          "properties": {"configuration": {"type": "string"}, "name": {"type": "string"}, "database": {"type": "string"}}}},
+        "appearances": {"type": "array", "items": {
+          "type": "object", "required": ["target", "kind"],
+          "properties": {
+            "target": {"type": "object", "description": "document | body | feature | face descriptor | component"},
+            "kind": {"enum": ["color", "appearance"]},
+            "color": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+            "optical": {"type": "object"},
+            "file": {"type": "string", "description": "path inside the appearance library"},
+            "mapping": {"type": "object"}}}}
+      }
+    },
+
+    "flexProbe": {
+      "type": "object",
+      "required": ["parameter", "value", "fingerprints"],
+      "properties": {
+        "parameter": {"type": "string", "description": "<dimension name>@<sketch name>, or a global variable's name"},
+        "kind": {"enum": ["length", "angle", "variable"]},
+        "original": {"type": "number"},
+        "value": {"type": "number", "description": "flexed value: mm, deg, or the variable's own value"},
+        "configuration": {"type": "string"},
+        "fingerprints": {"type": "object", "additionalProperties": {"$ref": "#/$defs/fingerprint"},
+                         "description": "document id -> fingerprint of every part the change moved"}
+      }
+    },
+
+    "configuration": {
+      "type": "object", "required": ["id", "name"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "name": {"type": "string"},
+        "values": {"type": "object", "additionalProperties": {"type": "number"}, "description": "parameter name -> value override"},
+        "properties": {"type": "object"}
+      }
+    },
+
+    "parameter": {
+      "type": "object", "required": ["name", "value"],
+      "properties": {
+        "name": {"type": "string"},
+        "value": {"type": "number"},
+        "unit": {"enum": ["mm", "deg", "none"]},
+        "driving": {"type": "boolean"}
+      }
+    },
+
+    "equation": {
+      "type": "object", "required": ["target", "expression"],
+      "properties": {
+        "target": {"type": "string", "description": "parameter or full dimension name, e.g. Height or D1@SK_Outline"},
+        "expression": {"type": "string", "description": "neutral grammar: + - * / ^ ( ), sin cos tan sqrt abs min max if, names of parameters/dimensions"},
+        "native": {"type": "string"},
+        "status": {"$ref": "#/$defs/status"}
+      }
+    },
+
+    "feature": {
+      "type": "object",
+      "required": ["id", "type", "name", "status"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "type": {"type": "string", "description": "neutral feature type; see the type list in FORMAT-SPEC.md"},
+        "name": {"type": "string"},
+        "native": {"type": "object", "properties": {"app": {"type": "string"}, "type": {"type": "string"}}},
+        "suppressed": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "configuration id -> suppressed"},
+        "status": {"$ref": "#/$defs/status"},
+        "note": {"type": "string"},
+        "reason": {"type": "string"},
+        "def": {"type": "object"},
+        "result": {"$ref": "#/$defs/featureResult"}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"const": "opaque"}}}, "then": {"required": ["reason"]}},
+        {"if": {"properties": {"type": {"const": "sketch"}}}, "then": {"properties": {"def": {"$ref": "#/$defs/sketch"}}}},
+        {"if": {"properties": {"type": {"const": "insertPart"}}}, "then": {"properties": {"def": {"$ref": "#/$defs/insertPart"}}}},
+        {"if": {"properties": {"type": {"enum": ["extrude", "cut"]}}}, "then": {"properties": {"def": {"$ref": "#/$defs/extrude"}}}},
+        {"if": {"properties": {"type": {"enum": ["fillet", "chamfer"]}}}, "then": {"properties": {"def": {"$ref": "#/$defs/edgeBlend"}}}}
+      ]
+    },
+
+    "featureResult": {
+      "description": "The bodies a feature changed, as they are just after it (FORMAT-SPEC 4, Feature results): an importer that cannot rebuild the feature removes the bodies matching `replaces` and adds the bodies in `data`.",
+      "type": "object",
+      "required": ["format", "replaces", "bodies", "data"],
+      "properties": {
+        "format": {"const": "step", "description": "data is the text of an ISO 10303-21 file (AP214), mm"},
+        "replaces": {"type": "array", "items": {"$ref": "#/$defs/bodyFingerprint"}, "description": "the bodies just before the feature that it changed or removed"},
+        "bodies": {"type": "array", "items": {
+          "type": "object", "required": ["fingerprint"],
+          "properties": {"name": {"type": "string"}, "sheet": {"type": "boolean"}, "fingerprint": {"$ref": "#/$defs/bodyFingerprint"}}
+        }, "description": "the bodies in data, in its order"},
+        "data": {"type": "string", "description": "empty when the feature only removed bodies"}
+      }
+    },
+
+    "reference": {
+      "description": "A reference: by id to something replay itself creates, or a geometric descriptor (B-rep topology).",
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["originPlane", "origin", "feature", "sketchEntity", "transferred", "component", "face", "edge", "vertex", "frame", "generated", "body"]},
+        "by": {"enum": ["id", "geom"]},
+        "id": {"$ref": "#/$defs/id"},
+        "plane": {"enum": ["front", "top", "right"]},
+        "feature": {"$ref": "#/$defs/id"},
+        "document": {"$ref": "#/$defs/id"},
+        "geom": {"$ref": "#/$defs/descriptor"}
+      },
+      "allOf": [
+        {"if": {"properties": {"by": {"const": "geom"}}, "required": ["by"]}, "then": {"required": ["geom"]}}
+      ]
+    },
+
+    "descriptor": {
+      "type": "object",
+      "required": ["type", "samples"],
+      "properties": {
+        "type": {"type": "string", "description": "plane cylinder cone sphere torus bspline ... | line circle ellipse bspline ..."},
+        "params": {"type": "object"},
+        "samples": {"type": "array", "items": {"$ref": "#/$defs/vec3"}, "minItems": 1},
+        "area": {"type": "number"}, "length": {"type": "number"},
+        "bbox": {"type": "array", "items": {"type": "number"}, "minItems": 6, "maxItems": 6},
+        "clearance": {"type": "number"},
+        "weak": {"type": "boolean"},
+        "adjacent": {"type": "array"}
+      }
+    },
+
+    "sketch": {
+      "type": "object",
+      "required": ["plane", "frame", "entities"],
+      "properties": {
+        "plane": {"$ref": "#/$defs/reference"},
+        "frame": {
+          "type": "object", "required": ["origin", "x", "z"],
+          "properties": {"origin": {"$ref": "#/$defs/vec3"}, "x": {"$ref": "#/$defs/vec3"}, "z": {"$ref": "#/$defs/vec3"}}
+        },
+        "entities": {"type": "array", "items": {"$ref": "#/$defs/sketchEntity"}},
+        "constraints": {"type": "array", "items": {"$ref": "#/$defs/constraint"}},
+        "dimensions": {"type": "array", "items": {"$ref": "#/$defs/dimension"}},
+        "constrained": {"enum": ["full", "under", "over", "invalid", "unknown"],
+                        "description": "definition state in the source; a full sketch must arrive full (FORMAT-SPEC 6.2)"}
+      }
+    },
+
+    "sketchEntity": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "type": {"enum": ["point", "line", "arc", "circle", "ellipse", "spline"]},
+        "construction": {"type": "boolean"},
+        "p": {"$ref": "#/$defs/vec2"}, "start": {"$ref": "#/$defs/vec2"}, "end": {"$ref": "#/$defs/vec2"},
+        "center": {"$ref": "#/$defs/vec2"}, "radius": {"type": "number"},
+        "startPoint": {"$ref": "#/$defs/id"}, "endPoint": {"$ref": "#/$defs/id"}, "centerPoint": {"$ref": "#/$defs/id"},
+        "ccw": {"type": "boolean"},
+        "points": {"type": "array", "items": {"$ref": "#/$defs/vec2"}},
+        "name": {"type": "string"}
+      }
+    },
+
+    "constraint": {
+      "type": "object",
+      "required": ["type", "entities"],
+      "properties": {
+        "type": {"type": "string", "description": "coincident horizontal vertical parallel perpendicular tangent equal concentric midpoint symmetric fix collinear pierce; others keep their native name with supported=false"},
+        "entities": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/id"}, {"$ref": "#/$defs/reference"}]}},
+        "supported": {"type": "boolean"},
+        "extra": {"type": "object"}
+      }
+    },
+
+    "dimension": {
+      "type": "object",
+      "required": ["id", "kind", "entities", "value"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "name": {"type": "string", "description": "native full name, kept so spreadsheet-driven writes still work, e.g. D1@SK_Outline"},
+        "kind": {"enum": ["distance", "horizontal", "vertical", "angle", "radius", "diameter"]},
+        "entities": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/id"}, {"$ref": "#/$defs/reference"}]}},
+        "value": {"type": "number"},
+        "driving": {"type": "boolean"},
+        "param": {"type": "string"},
+        "textPosition": {"$ref": "#/$defs/vec2"}
+      }
+    },
+
+    "insertPart": {
+      "type": "object",
+      "required": ["source"],
+      "properties": {
+        "source": {"$ref": "#/$defs/id"},
+        "sourceConfiguration": {"$ref": "#/$defs/id"},
+        "transfer": {"type": "array", "items": {"enum": ["solidBodies", "surfaceBodies", "planes", "axes", "sketches", "unabsorbedSketches", "coordinateSystems", "customProperties", "materials"]}},
+        "transform": {"type": "array", "items": {"type": "number"}, "minItems": 16, "maxItems": 16},
+        "items": {"type": "array", "items": {
+          "type": "object", "required": ["source", "name"],
+          "properties": {"source": {"$ref": "#/$defs/id"}, "name": {"type": "string"}, "id": {"$ref": "#/$defs/id"}}
+        }}
+      }
+    },
+
+    "extrude": {
+      "type": "object",
+      "required": ["profile", "end"],
+      "properties": {
+        "profile": {"$ref": "#/$defs/reference"},
+        "contours": {"type": "array", "items": {"$ref": "#/$defs/id"}},
+        "direction": {"$ref": "#/$defs/vec3"},
+        "reverse": {"type": "boolean"},
+        "end": {"$ref": "#/$defs/endCondition"},
+        "end2": {"$ref": "#/$defs/endCondition"},
+        "draft": {"type": "number"},
+        "thin": {"type": "object"},
+        "merge": {"type": "boolean"},
+        "scope": {"type": "array", "items": {"$ref": "#/$defs/reference"}}
+      }
+    },
+
+    "endCondition": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"enum": ["blind", "throughAll", "upToNext", "upToVertex", "upToSurface", "offsetFromSurface", "upToBody", "midPlane"]},
+        "depth": {"type": "number"},
+        "param": {"type": "string"},
+        "target": {"$ref": "#/$defs/reference"},
+        "offset": {"type": "number"}
+      }
+    },
+
+    "edgeBlend": {
+      "type": "object",
+      "properties": {
+        "radius": {"type": "number"},
+        "distance": {"type": "number"},
+        "angle": {"type": "number"},
+        "param": {"type": "string"},
+        "edges": {"type": "array", "items": {"$ref": "#/$defs/reference"}},
+        "faces": {"type": "array", "items": {"$ref": "#/$defs/reference"}},
+        "propagate": {"type": "boolean", "description": "tangent propagation in the source; the edge list is already the propagated set"}
+      }
+    },
+
+    "body": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {"id": {"$ref": "#/$defs/id"}, "name": {"type": "string"}, "fingerprint": {"$ref": "#/$defs/bodyFingerprint"}}
+    },
+
+    "component": {
+      "type": "object",
+      "required": ["id", "document", "transform"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "document": {"$ref": "#/$defs/id"},
+        "configuration": {"$ref": "#/$defs/id"},
+        "name": {"type": "string"},
+        "transform": {"type": "array", "items": {"type": "number"}, "minItems": 16, "maxItems": 16, "description": "row-major 4x4, mm"},
+        "fixed": {"type": "boolean"},
+        "suppressed": {"type": "object", "additionalProperties": {"type": "boolean"}}
+      }
+    },
+
+    "mate": {
+      "type": "object",
+      "required": ["id", "type", "refs"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "name": {"type": "string"},
+        "type": {"enum": ["coincident", "concentric", "parallel", "perpendicular", "tangent", "distance", "angle", "lock", "hinge", "slot", "gear", "screw", "rackPinion", "width", "symmetric", "other"]},
+        "refs": {"type": "array", "items": {
+          "type": "object", "required": ["ref"],
+          "properties": {"component": {"$ref": "#/$defs/id", "description": "absent: the assembly's own origin plane or origin"},
+                         "path": {"type": "array", "items": {"$ref": "#/$defs/id"}, "description": "nested component ids below `component`, each in its parent's document"},
+                         "ref": {"$ref": "#/$defs/reference"}}
+        }},
+        "params": {"type": "object"},
+        "alignment": {"enum": ["aligned", "antiAligned", "closest"]},
+        "status": {"$ref": "#/$defs/status"}
+      }
+    },
+
+    "bodyFingerprint": {
+      "type": "object",
+      "required": ["volume", "area", "centroid"],
+      "properties": {
+        "volume": {"type": "number"}, "area": {"type": "number"},
+        "centroid": {"$ref": "#/$defs/vec3"},
+        "moments": {"$ref": "#/$defs/vec3"},
+        "bbox": {"type": "array", "items": {"type": "number"}, "minItems": 6, "maxItems": 6},
+        "faces": {"type": "integer"}, "edges": {"type": "integer"}
+      }
+    },
+
+    "fingerprint": {
+      "type": "object",
+      "required": ["bodies"],
+      "properties": {"bodies": {"type": "array", "items": {"$ref": "#/$defs/bodyFingerprint"}}}
+    }
+  }
+}

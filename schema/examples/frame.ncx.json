@@ -1,0 +1,1071 @@
+{
+ "format": "ncx",
+ "schema": "0.1",
+ "generator": {
+  "app": "example",
+  "version": "stage2",
+  "exporter": "make_example.py"
+ },
+ "units": {
+  "length": "mm",
+  "angle": "deg",
+  "mass": "kg"
+ },
+ "root": "doc:asm",
+ "documents": [
+  {
+   "id": "doc:layout",
+   "kind": "part",
+   "name": "Frame-Layout",
+   "sourceFile": "Frame-Layout.SLDPRT",
+   "configurations": [
+    {
+     "id": "cfg:default",
+     "name": "Default"
+    }
+   ],
+   "activeConfiguration": "cfg:default",
+   "parameters": [
+    {
+     "name": "W",
+     "value": 200.0,
+     "unit": "mm"
+    },
+    {
+     "name": "H",
+     "value": 120.0,
+     "unit": "mm"
+    }
+   ],
+   "equations": [
+    {
+     "target": "H",
+     "expression": "W * 0.6",
+     "native": "\"H\" = \"W\" * 0.6",
+     "status": "mapped"
+    }
+   ],
+   "features": [
+    {
+     "id": "f:sk_outline",
+     "type": "sketch",
+     "name": "SK_Outline",
+     "status": "mapped",
+     "native": {
+      "app": "SOLIDWORKS",
+      "type": "ProfileFeature"
+     },
+     "def": {
+      "plane": {
+       "kind": "originPlane",
+       "by": "id",
+       "plane": "front"
+      },
+      "frame": {
+       "origin": [
+        0,
+        0,
+        0
+       ],
+       "x": [
+        1,
+        0,
+        0
+       ],
+       "z": [
+        0,
+        0,
+        1
+       ]
+      },
+      "entities": [
+       {
+        "id": "p1",
+        "type": "point",
+        "p": [
+         0,
+         0
+        ]
+       },
+       {
+        "id": "p2",
+        "type": "point",
+        "p": [
+         200.0,
+         0
+        ]
+       },
+       {
+        "id": "p3",
+        "type": "point",
+        "p": [
+         200.0,
+         120.0
+        ]
+       },
+       {
+        "id": "p4",
+        "type": "point",
+        "p": [
+         0,
+         120.0
+        ]
+       },
+       {
+        "id": "l1",
+        "type": "line",
+        "start": [
+         0,
+         0
+        ],
+        "end": [
+         200.0,
+         0
+        ],
+        "startPoint": "p1",
+        "endPoint": "p2"
+       },
+       {
+        "id": "l2",
+        "type": "line",
+        "start": [
+         200.0,
+         0
+        ],
+        "end": [
+         200.0,
+         120.0
+        ],
+        "startPoint": "p2",
+        "endPoint": "p3"
+       },
+       {
+        "id": "l3",
+        "type": "line",
+        "start": [
+         200.0,
+         120.0
+        ],
+        "end": [
+         0,
+         120.0
+        ],
+        "startPoint": "p3",
+        "endPoint": "p4"
+       },
+       {
+        "id": "l4",
+        "type": "line",
+        "start": [
+         0,
+         120.0
+        ],
+        "end": [
+         0,
+         0
+        ],
+        "startPoint": "p4",
+        "endPoint": "p1"
+       }
+      ],
+      "constraints": [
+       {
+        "type": "coincident",
+        "entities": [
+         "p1",
+         {
+          "kind": "origin",
+          "by": "id"
+         }
+        ]
+       },
+       {
+        "type": "horizontal",
+        "entities": [
+         "l1"
+        ]
+       },
+       {
+        "type": "horizontal",
+        "entities": [
+         "l3"
+        ]
+       },
+       {
+        "type": "vertical",
+        "entities": [
+         "l2"
+        ]
+       },
+       {
+        "type": "vertical",
+        "entities": [
+         "l4"
+        ]
+       }
+      ],
+      "dimensions": [
+       {
+        "id": "d1",
+        "name": "D1@SK_Outline",
+        "kind": "horizontal",
+        "entities": [
+         "l1"
+        ],
+        "value": 200.0,
+        "driving": true,
+        "param": "W"
+       },
+       {
+        "id": "d2",
+        "name": "D2@SK_Outline",
+        "kind": "vertical",
+        "entities": [
+         "l2"
+        ],
+        "value": 120.0,
+        "driving": true,
+        "param": "H"
+       }
+      ]
+     }
+    },
+    {
+     "id": "f:sk_hole",
+     "type": "sketch",
+     "name": "SK_HolePos",
+     "status": "mapped",
+     "native": {
+      "app": "SOLIDWORKS",
+      "type": "ProfileFeature"
+     },
+     "def": {
+      "plane": {
+       "kind": "originPlane",
+       "by": "id",
+       "plane": "front"
+      },
+      "frame": {
+       "origin": [
+        0,
+        0,
+        0
+       ],
+       "x": [
+        1,
+        0,
+        0
+       ],
+       "z": [
+        0,
+        0,
+        1
+       ]
+      },
+      "entities": [
+       {
+        "id": "c1",
+        "type": "circle",
+        "center": [
+         30.0,
+         30.0
+        ],
+        "radius": 6.0
+       }
+      ],
+      "dimensions": [
+       {
+        "id": "d1",
+        "name": "D1@SK_HolePos",
+        "kind": "horizontal",
+        "entities": [
+         "c1",
+         {
+          "kind": "origin",
+          "by": "id"
+         }
+        ],
+        "value": 30.0,
+        "driving": true
+       },
+       {
+        "id": "d2",
+        "name": "D2@SK_HolePos",
+        "kind": "vertical",
+        "entities": [
+         "c1",
+         {
+          "kind": "origin",
+          "by": "id"
+         }
+        ],
+        "value": 30.0,
+        "driving": true
+       },
+       {
+        "id": "d3",
+        "name": "D3@SK_HolePos",
+        "kind": "diameter",
+        "entities": [
+         "c1"
+        ],
+        "value": 12.0,
+        "driving": true
+       }
+      ]
+     }
+    }
+   ],
+   "bodies": []
+  },
+  {
+   "id": "doc:plate",
+   "kind": "part",
+   "name": "Plate",
+   "sourceFile": "Plate.SLDPRT",
+   "features": [
+    {
+     "id": "f:ins",
+     "type": "insertPart",
+     "name": "Frame-Layout",
+     "status": "mapped",
+     "native": {
+      "app": "SOLIDWORKS",
+      "type": "Stock"
+     },
+     "def": {
+      "source": "doc:layout",
+      "sourceConfiguration": "cfg:default",
+      "transfer": [
+       "sketches",
+       "planes"
+      ],
+      "transform": [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1,
+       0,
+       0,
+       0,
+       0,
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      "items": [
+       {
+        "source": "f:sk_outline",
+        "name": "SK_Outline-Frame-Layout",
+        "id": "f:ins.sk_outline"
+       },
+       {
+        "source": "f:sk_hole",
+        "name": "SK_HolePos-Frame-Layout",
+        "id": "f:ins.sk_hole"
+       }
+      ]
+     }
+    },
+    {
+     "id": "f:boss",
+     "type": "extrude",
+     "name": "Boss-Extrude1",
+     "status": "mapped",
+     "native": {
+      "app": "SOLIDWORKS",
+      "type": "Extrusion"
+     },
+     "def": {
+      "profile": {
+       "kind": "transferred",
+       "by": "id",
+       "document": "doc:layout",
+       "feature": "f:sk_outline"
+      },
+      "direction": [
+       0,
+       0,
+       1
+      ],
+      "end": {
+       "type": "blind",
+       "depth": 8.0,
+       "param": "D1@Boss-Extrude1"
+      }
+     }
+    },
+    {
+     "id": "f:hole",
+     "type": "cut",
+     "name": "Cut-Extrude1",
+     "status": "mapped",
+     "native": {
+      "app": "SOLIDWORKS",
+      "type": "ICE"
+     },
+     "def": {
+      "profile": {
+       "kind": "transferred",
+       "by": "id",
+       "document": "doc:layout",
+       "feature": "f:sk_hole"
+      },
+      "direction": [
+       0,
+       0,
+       1
+      ],
+      "end": {
+       "type": "throughAll"
+      }
+     }
+    },
+    {
+     "id": "f:fillet",
+     "type": "fillet",
+     "name": "Fillet1",
+     "status": "mapped",
+     "native": {
+      "app": "SOLIDWORKS",
+      "type": "Fillet"
+     },
+     "def": {
+      "radius": 10.0,
+      "param": "D1@Fillet1",
+      "edges": [
+       {
+        "kind": "edge",
+        "by": "geom",
+        "geom": {
+         "type": "line",
+         "params": {
+          "direction": [
+           0.0,
+           0.0,
+           1.0
+          ],
+          "point": [
+           0.0,
+           0.0,
+           0.0
+          ]
+         },
+         "length": 8.0,
+         "bbox": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          8.0
+         ],
+         "samples": [
+          [
+           0.0,
+           0.0,
+           0.8
+          ],
+          [
+           0.0,
+           0.0,
+           2.4
+          ],
+          [
+           0.0,
+           0.0,
+           4.0
+          ],
+          [
+           0.0,
+           0.0,
+           5.6
+          ],
+          [
+           0.0,
+           0.0,
+           7.2
+          ]
+         ]
+        }
+       },
+       {
+        "kind": "edge",
+        "by": "geom",
+        "geom": {
+         "type": "line",
+         "params": {
+          "direction": [
+           0.0,
+           0.0,
+           1.0
+          ],
+          "point": [
+           200.0,
+           0.0,
+           0.0
+          ]
+         },
+         "length": 8.0,
+         "bbox": [
+          200.0,
+          0.0,
+          0.0,
+          200.0,
+          0.0,
+          8.0
+         ],
+         "samples": [
+          [
+           200.0,
+           0.0,
+           0.8
+          ],
+          [
+           200.0,
+           0.0,
+           2.4
+          ],
+          [
+           200.0,
+           0.0,
+           4.0
+          ],
+          [
+           200.0,
+           0.0,
+           5.6
+          ],
+          [
+           200.0,
+           0.0,
+           7.2
+          ]
+         ]
+        }
+       },
+       {
+        "kind": "edge",
+        "by": "geom",
+        "geom": {
+         "type": "line",
+         "params": {
+          "direction": [
+           0.0,
+           0.0,
+           1.0
+          ],
+          "point": [
+           0.0,
+           120.0,
+           0.0
+          ]
+         },
+         "length": 8.0,
+         "bbox": [
+          0.0,
+          120.0,
+          0.0,
+          0.0,
+          120.0,
+          8.0
+         ],
+         "samples": [
+          [
+           0.0,
+           120.0,
+           0.8
+          ],
+          [
+           0.0,
+           120.0,
+           2.4
+          ],
+          [
+           0.0,
+           120.0,
+           4.0
+          ],
+          [
+           0.0,
+           120.0,
+           5.6
+          ],
+          [
+           0.0,
+           120.0,
+           7.2
+          ]
+         ]
+        }
+       },
+       {
+        "kind": "edge",
+        "by": "geom",
+        "geom": {
+         "type": "line",
+         "params": {
+          "direction": [
+           0.0,
+           0.0,
+           1.0
+          ],
+          "point": [
+           200.0,
+           120.0,
+           0.0
+          ]
+         },
+         "length": 8.0,
+         "bbox": [
+          200.0,
+          120.0,
+          0.0,
+          200.0,
+          120.0,
+          8.0
+         ],
+         "samples": [
+          [
+           200.0,
+           120.0,
+           0.8
+          ],
+          [
+           200.0,
+           120.0,
+           2.4
+          ],
+          [
+           200.0,
+           120.0,
+           4.0
+          ],
+          [
+           200.0,
+           120.0,
+           5.6
+          ],
+          [
+           200.0,
+           120.0,
+           7.2
+          ]
+         ]
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "bodies": [
+    {
+     "id": "body:1",
+     "name": "Fillet1",
+     "fingerprint": {
+      "volume": 190408.49543863797,
+      "area": 52886.37157897848,
+      "centroid": [
+       100.3326243808107,
+       60.14255330606171,
+       4.0
+      ],
+      "moments": [
+       228286143.1937715,
+       629995645.1373657,
+       856250764.3797917
+      ],
+      "bbox": [
+       -1.7763568394002505e-15,
+       -1.7763568394002505e-15,
+       0.0,
+       200.0,
+       120.0,
+       8.0
+      ],
+      "faces": 11,
+      "edges": 27
+     }
+    }
+   ]
+  },
+  {
+   "id": "doc:pin",
+   "kind": "part",
+   "name": "Pin",
+   "sourceFile": "Pin.SLDPRT",
+   "features": [
+    {
+     "id": "f:sk",
+     "type": "sketch",
+     "name": "SK_PinProfile",
+     "status": "mapped",
+     "def": {
+      "plane": {
+       "kind": "originPlane",
+       "by": "id",
+       "plane": "right"
+      },
+      "frame": {
+       "origin": [
+        0,
+        0,
+        0
+       ],
+       "x": [
+        0,
+        1,
+        0
+       ],
+       "z": [
+        1,
+        0,
+        0
+       ]
+      },
+      "entities": [
+       {
+        "id": "ax",
+        "type": "line",
+        "construction": true,
+        "start": [
+         0,
+         -20
+        ],
+        "end": [
+         0,
+         20
+        ]
+       },
+       {
+        "id": "pl",
+        "type": "spline",
+        "points": [
+         [
+          0,
+          -12.0
+         ],
+         [
+          9,
+          -12.0
+         ],
+         [
+          9,
+          -8.0
+         ],
+         [
+          5.9,
+          -8.0
+         ],
+         [
+          5.9,
+          10.0
+         ],
+         [
+          0,
+          10.0
+         ]
+        ],
+        "name": "profile polyline (6 lines in the source; abbreviated)"
+       }
+      ]
+     }
+    },
+    {
+     "id": "f:rev",
+     "type": "revolve",
+     "name": "Revolve1",
+     "status": "mapped",
+     "def": {
+      "profile": {
+       "kind": "feature",
+       "by": "id",
+       "id": "f:sk"
+      },
+      "axis": {
+       "kind": "sketchEntity",
+       "by": "id",
+       "feature": "f:sk",
+       "id": "ax"
+      },
+      "angle": 360
+     }
+    }
+   ],
+   "bodies": [
+    {
+     "id": "body:1",
+     "name": "Revolve1",
+     "fingerprint": {
+      "volume": 2986.335144649386,
+      "area": 1402.4069605624836,
+      "centroid": [
+       -7.393077642994002e-17,
+       1.8273127249012267e-15,
+       -2.749289907214543
+      ],
+      "moments": [
+       75485.00986905166,
+       173431.63255951222,
+       173431.63255951292
+      ],
+      "bbox": [
+       -9.0,
+       -9.0,
+       -12.0,
+       9.0,
+       9.0,
+       10.0
+      ],
+      "faces": 5,
+      "edges": 6
+     }
+    }
+   ]
+  },
+  {
+   "id": "doc:asm",
+   "kind": "assembly",
+   "name": "Frame",
+   "sourceFile": "Frame.SLDASM",
+   "components": [
+    {
+     "id": "c:plate",
+     "document": "doc:plate",
+     "name": "Plate-1",
+     "transform": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ],
+     "fixed": true
+    },
+    {
+     "id": "c:pin",
+     "document": "doc:pin",
+     "name": "Pin-1",
+     "transform": [
+      1,
+      0,
+      0,
+      30.0,
+      0,
+      1,
+      0,
+      30.0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ],
+     "fixed": false
+    }
+   ],
+   "mates": [
+    {
+     "id": "m:1",
+     "name": "Concentric1",
+     "type": "concentric",
+     "alignment": "aligned",
+     "status": "mapped",
+     "refs": [
+      {
+       "component": "c:plate",
+       "ref": {
+        "kind": "face",
+        "by": "geom",
+        "geom": {
+         "type": "cylinder",
+         "params": {
+          "axis": [
+           0.0,
+           0.0,
+           -1.0
+          ],
+          "origin": [
+           30.0,
+           30.0,
+           8.0
+          ],
+          "radius": 6.0
+         },
+         "area": 301.592895,
+         "bbox": [
+          24.0,
+          24.0,
+          0.0,
+          36.0,
+          36.0,
+          8.0
+         ],
+         "samples": [
+          [
+           32.467723,
+           35.469035,
+           2.666667
+          ],
+          [
+           27.532277,
+           24.530965,
+           2.666667
+          ],
+          [
+           35.638156,
+           27.947879,
+           2.666667
+          ],
+          [
+           25.217205,
+           33.622826,
+           2.666667
+          ],
+          [
+           35.528857,
+           32.330609,
+           5.333333
+          ]
+         ],
+         "clearance": 2.666667
+        }
+       }
+      },
+      {
+       "component": "c:pin",
+       "ref": {
+        "kind": "face",
+        "by": "geom",
+        "geom": {
+         "type": "cylinder",
+         "params": {
+          "axis": [
+           0.0,
+           0.0,
+           1.0
+          ],
+          "origin": [
+           0.0,
+           0.0,
+           -8.0
+          ],
+          "radius": 5.9
+         },
+         "area": 667.27428,
+         "bbox": [
+          -5.9,
+          -5.9,
+          -8.0,
+          5.9,
+          5.9,
+          10.0
+         ],
+         "samples": [
+          [
+           3.076468,
+           -5.034416,
+           -2.0
+          ],
+          [
+           -5.592771,
+           1.879071,
+           4.0
+          ],
+          [
+           -4.790434,
+           -3.444088,
+           -2.0
+          ],
+          [
+           -1.455869,
+           -5.717556,
+           4.0
+          ],
+          [
+           4.423709,
+           -3.903946,
+           4.0
+          ]
+         ],
+         "clearance": 6.0
+        }
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "fingerprint": {
+  "bodies": [
+   {
+    "volume": 190408.49543863797,
+    "area": 52886.37157897848,
+    "centroid": [
+     100.3326243808107,
+     60.14255330606171,
+     4.0
+    ],
+    "moments": [
+     228286143.1937715,
+     629995645.1373657,
+     856250764.3797917
+    ],
+    "bbox": [
+     -1.7763568394002505e-15,
+     -1.7763568394002505e-15,
+     0.0,
+     200.0,
+     120.0,
+     8.0
+    ],
+    "faces": 11,
+    "edges": 27
+   },
+   {
+    "volume": 2986.335144649386,
+    "area": 1402.4069605624836,
+    "centroid": [
+     30.0,
+     30.0,
+     -2.7492899072145423
+    ],
+    "moments": [
+     75485.0098690516,
+     173431.63255951213,
+     173431.63255951295
+    ],
+    "bbox": [
+     21.0,
+     21.0,
+     -12.0,
+     39.0,
+     39.0,
+     10.0
+    ],
+    "faces": 5,
+    "edges": 6
+   }
+  ]
+ }
+}
