@@ -10,9 +10,9 @@ and checks the result against the file's own geometry.
 
 What it is for:
 
-- **Back-saving:** open a SolidWorks 2026 model in SolidWorks 2018, as a real parametric model (SolidWorks itself
+- **Back-saving:** open a current SolidWorks model in an older SolidWorks version (tested back to 2018), as a real parametric model (SolidWorks itself
   cannot save to an older version).
-- **Moving between CAD systems:** SolidWorks to Fusion, Onshape, or any other system someone writes an add-in for.
+- **Moving between CAD systems:** SolidWorks to Fusion, Onshape, or any other system someone writes an add-in for - any CAD, any version to any other.
 - **One file, always:** the geometry and the intent travel together and can never get separated.
 
 If you have received an NCX file and your CAD system has no NCX add-in, you can still open it as plain geometry. The
@@ -84,6 +84,7 @@ AI coding agent can do most of that work:
 | `schema/` | JSON Schema of the payload |
 | `core/` | the shared core library (C++17, C ABI) and its bindings |
 | `conformance/` | conformance vectors for container readers |
+| `validator/` | checks any NCX file against the format, without a CAD system: use it on every export |
 | `sw/` | the SolidWorks add-in (C#, .NET Framework 4.8) and its development driver |
 | `docs/` | how to add a CAD system; what the SolidWorks add-in carries |
 | `python/` | the core's Python binding and an OpenCASCADE geometry host (a reference for writing host code) |
