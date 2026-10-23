@@ -68,6 +68,7 @@ property values). It starts with the container marker `NCX/1`, followed by `;key
 | `core` | ncx_core version that wrote it |
 | `gen` | free text naming the exporter |
 | `notice` | the name of the notice body (§2.6), if the file has one |
+| `noticebox` | the notice body's bounding box in the file's frame, mm: `xmin,ymin,zmin,xmax,ymax,zmax` |
 
 Readers MUST ignore unknown keys. Values never contain `;`, `'` or `\` (writers replace them).
 
@@ -131,6 +132,9 @@ plain geometry.
 - **Naming:** the body's name is the message. The header's `notice` key repeats it in header form
   (`;` `'` `\` and non-printing characters as `_`), so a reader can identify the body without relying on
   the wording.
+- **Readers that lose names:** some STEP readers drop solid names (Fusion names every body `Body1`, `Body2`...).
+  Such a reader finds the notice by `noticebox`: the solid whose bounding box matches it within 0.01 mm. In files
+  without `noticebox` (core 0.1.0), the notice is the solid that matches no payload body.
 - **Matching names:** compare in header form, with path characters `/\:*?"<>|` also as `_` (as an
   assembly's component name has them) and spaces dropped. SolidWorks 2018 loses the space after a
   quoted `'` when it reads a STEP name.
@@ -158,6 +162,8 @@ plain geometry.
 - A conforming reader MUST return the expected status for every vector.
 - The C++ core (`ncx_core`) and the independent Python reader (`python/ncx/specread.py`) both
   pass.
+- Writers: `validator/ncx_validate.py` checks a whole file against this specification (container, schema,
+  the model's consistency, and its geometry against the payload). A conforming writer's files pass it.
 
 ## 4. Payload model (schema 0.1)
 
@@ -165,7 +171,38 @@ The JSON Schema is `schema/ncx-0.1.schema.json`. A worked example in the user's 
 `schema/examples/frame.ncx.json`, embedded in `frame.step`.
 
 **Units:** lengths in **mm** and angles in **degrees**, always. Hosts convert at their edge
-(SolidWorks: metres and radians; Fusion: centimetres and radians).
+(SolidWorks: metres and radians; Fusion: centimetres and radians). Two exceptions, both outside feature
+definitions: geometric descriptors (§5) give a cone's `semiAngle` in **radians** (the matcher compares them
+directly), and spline knot values (`nurbs.knots`) have no unit. Global variables (`parameters`) are plain numbers;
+where one drives a length or an angle, its value is taken in mm or degrees.
+
+**Enumerated values** are words, listed in the table below. Files written by the SolidWorks add-in 0.4.0 and
+earlier carry SolidWorks enumeration numbers instead; importers should accept both (`sw/Ncx.Sw/Neutral.cs` maps
+each word to its number). Blocks named `native`, and a hole's `wizard` block, hold the source system's own data:
+other systems may use them where they understand them, and otherwise ignore them.
+
+| field (feature) | words |
+|---|---|
+| `references[].constraint` (plane) | `parallel` `perpendicular` `coincident` `distance` `angle` `tangent` `project` `midPlane` `parallelToScreen`; `options` may add `originOnCurve` `projectToNearest` `projectAlongSketchNormal` `referenceFlip`; `flip` is a separate flag |
+| `axisType` (axis) | `line` `twoPlanes` `twoPoints` `cylindricalFace` `pointAndPlane` |
+| `pointType` (point) | `alongCurve` `arcCenter` `faceCenter` `projection` `intersection` `sketchPoint`; `alongCurve` (its distance mode): `distance` `percentage` `evenlyDistributed` |
+| `holeType` (hole) | `simple` `counterbore` `countersink` `tapped` `pipeTap` `slot` `counterboreSlot` `countersinkSlot` `legacy` |
+| `end.type` (hole) | `blind` `throughAll` `throughNext` `upToVertex` `upToSurface` `offsetFromSurface` `midPlane` `upToBody` `throughAllBoth` `upToSelection` `upToNext` |
+| `endCondition` / `diameterType` (cosmeticThread) | `blind` `upToNext` `throughFeature` / `conicalOffset` `major` `minor` |
+| `hemType` / `position` (hem) | `open` `closed` `teardrop` `rolled` `double` / `inside` `outside` |
+| `breakType` (breakCorner) | `fillet` `chamfer` |
+| `cornerType` (closedCorner) | `butt` `overlap` `underlap` |
+| `cornerType` (weldmentTrim) | `none` `miter` `butt1` `butt2` `endTrim` |
+| `reliefType` (sheetMetal, edgeFlange, miterFlange) | `rectangular` `tear` `obround` `none` `tearBend` |
+| `bendAllowanceType` (sheetMetal) | `bendTable` `kFactor` `bendAllowance` `bendDeduction` `bendCalculationTable` `gaugeTable` |
+| `position` (edgeFlange, miterFlange, sketchedBend) | `materialInside` `materialOutside` `bendOutside` `bendCenterline` `bendSharp` `bendTangent` |
+| `positionOffset.type` (edgeFlange) | `blind` `upToVertex` `upToSurface` `offsetFromSurface` `midPlane` `upToEdgeAndMerge` |
+| `bendPosition` / `dimensionPosition` (jog) | `bendCenterline` `materialInside` `materialOutside` `bendOutside` / `insideOffset` `outsideOffset` `overall` |
+| `profileType` / `thicknessType` / `location` (gusset) | `polygon` `triangle` / `inner` `bothSides` `outer` / `start` `center` `end` |
+| `extrusion` / `ribType` (rib) | `parallelToSketch` `normalToSketch` / `linear` `natural` |
+| `cornerTreatment` / `connectedSegments` (structuralMember) | `none` `miter` `butt1` `butt2` / `simpleCut` `copedCut` |
+| `params.constraint` (width mate) | `centered` `free` `distance` `percent` |
+| `params.constraint` (slot mate) | `free` `centered` `distance` `percent` |
 
 **Top level:**
 - `format: "ncx"`, `schema`, `generator`, `units`;
@@ -199,7 +236,29 @@ The JSON Schema is `schema/ncx-0.1.schema.json`. A worked example in the user's 
   K-factor, relief); `baseFlange` and `edgeFlange` are the flanges; `flatPattern` is a marker for
   the flat pattern a base flange creates.
 
-**Feature definitions** (all lengths mm, angles deg, directions in the model frame):
+**Feature definitions** (all lengths mm, angles deg, directions in the model frame). A definition, or a field, not
+described here is as the SolidWorks exporter writes it: `sw/Ncx.Sw/Export*.cs` is the reference for it. An importer
+that meets a field it does not understand reports the feature `approximate` rather than guessing.
+- `plane`: `references` (up to three, each `{ref, constraint, options?, value, flip}`; `value` is mm, or degrees
+  for `angle`), and the resulting `origin` and `normal`, so a system can also build the plane directly.
+- `axis`: `axisType`, `references`, and the resulting `line` `{start, end}`.
+- `point`: `pointType`, `references`, `alongCurve` and `distance` (mm, or a fraction for `percentage`), and the
+  resulting `point`.
+- `hole`: `face` (the face it starts on), `points` (the hole centres, model frame), `holeType`, `end`
+  `{type, depth}`, `sizes` (mm and deg: `holeDiameter`, `holeDepth`, `counterBoreDiameter`, `counterBoreDepth`,
+  `counterSinkDiameter`, `counterSinkAngle`, `tapDrillDiameter`, `threadDepth`, `drillAngle`, and
+  `measuredDiameters`, the distinct diameters of the hole's cylindrical faces, ascending; a size the source's tables
+  supply and its API reports as 0 is filled from them), `positionSketch` (the sketch whose points place the holes,
+  with its relations and dimensions), and `wizard` (the source's own hole-table data).
+- `fillet`: `filletType` `constant` (`radius`, `edges`, `radii` (one per edge) when they differ, `propagate`),
+  `face` (`faces1`, `faces2`, `radius`), `fullRound` (`faces1` one side, `faces2` the centre, `faces3` the other
+  side) or `variable` (below).
+- `chamfer`: `chamferType` `equalDistance` (`distance`), `distanceDistance` (`distance`, `distance2`) or
+  `angleDistance` (`distance`, `angle`), each with `edges` and `flipped` (the edges whose two distances are
+  swapped); or `vertex` (`vertex`, `distances`, and `legs`: one `{direction, distance}` per edge at the vertex, the
+  direction a unit vector from the vertex along that edge).
+- `extrude` / `cut` with selected contours: `contours`, a list of contours, each the ids of the profile sketch's
+  segments around it. Without `contours` the whole sketch is the profile.
 - `rib`: `profile` (an open sketch), `twoSided`, `thickness`, `reverseThickness` (the side of a
   one-sided rib), `flipMaterial` (which way from the sketch it fills), `extrusion` (0 parallel to the
   sketch plane, 1 normal to it), optional `draft {angle, outward, fromWall}`.
@@ -226,6 +285,23 @@ The JSON Schema is `schema/ncx-0.1.schema.json`. A worked example in the user's 
 - `cosmeticThread`: `edge` (the circular edge it starts from), `diameter` (the minor diameter of an
   external thread, major of an internal one), `depth`, `endCondition`, `callout` (e.g. `M10x1.5`),
   `standard`, `size`. It changes no geometry; it is annotation an importer can show or drop.
+- `structuralMember` (weldments): `profile` (`{standard, type, size}`, e.g. `iso` / `square tube` / `20 x 20 x 2`:
+  an importer finds it in its own profile library, or builds the section), `connectedSegments` (`simpleCut` or
+  `copedCut`: how members of one group meet where their segments join), `allowProtrusion`, and `groups`. Each group has
+  `segments` (sketch-entity references, the member paths), `angle` (the profile's rotation about the path),
+  `gapWithinGroup` and `gapForOtherGroups` (weld gaps, mm), `mergeArcSegmentBodies`, `miterMergeCondition`, and
+  `cornerTreatment` for the corners where two of its segments meet:
+  - `none`: each member ends where its segment ends (the members overlap at the corner);
+  - `miter`: both members run to the outside of the corner and are cut on the plane bisecting it;
+  - `butt1`: the member whose segment *ends* at the corner runs to the outside of the corner; the member whose
+    segment *starts* there stops against it;
+  - `butt2`: the reverse of `butt1`.
+
+  Segment direction is the sketch entity's start to end. Treatments apply only between members of one group. Per-
+  corner overrides (a different treatment, trim or order at one corner) are not in schema 0.1: an exporter carries
+  such a member's `result` and reports it `approximate`. Files written by the SolidWorks add-in 0.4.0 and earlier
+  carry `cornerTreatment` and `connectedSegments` as SolidWorks enumeration numbers (1 miter, 2 butt1, 3 butt2;
+  1 simpleCut, 2 copedCut); importers should accept both.
 - `gusset` (weldments): `faces` (the two supporting faces, which meet at an edge), `profileType`
   (triangular, polygonal), `d1`..`d4`, `angle`, `useAngle`, `thicknessType` (both sides, one side,
   the other), `thickness`, `location` (end or mid point), `offset`, `offsetDistance`.
@@ -328,6 +404,9 @@ with the rest of the history.
   flange's profile plane), and that feature replays the sketch.
 - `entities` carry **solved** 2-D coordinates, which act as seeds so under-constrained sketches
   solve to the same configuration.
+- A `spline` carries its fit `points` (the editable intent) and `nurbs`, the exact curve: `degree`, `knots` (the
+  full knot vector), `controlPoints` (sketch coordinates, mm) and, for a rational spline, `weights`. A system whose
+  spline through the same fit points comes out differently builds the curve from `nurbs`.
 - `constraints` use a closed list of types; others keep their native name with `supported: false`.
 - `dimensions` keep the native full name (`D1@SK_Outline`), so spreadsheet-driven dimension
   writes keep working, and a `param` link where a parameter drives them.
@@ -336,10 +415,33 @@ with the rest of the history.
 **Equations:** `{target, expression}` in a small neutral grammar (`+ - * / ^ ( )`,
 `sin cos tan sqrt abs min max if`, names). Anything else is kept in `native` with
 `status: approximate`.
+- Names in expressions are in double quotes (`"W" * 0.5`): a parameter's name, or a dimension's full name.
+- `target` is the source's name for what the equation drives (`D1@SK_Base`, or `D1@Boss-Base` for a feature's own
+  dimension, numbered the source's way). `targetRef` says the same in neutral form: `{kind: "dimension", feature,
+  id}` for a sketch dimension, or `{kind: "featureField", feature, field}` for a field of a feature's definition
+  (`end.depth`). An exporter leaves `targetRef` out where it cannot tell which field it is.
+- Parameters (global variables) carry `value` and, as the user wrote it, `expression`.
 
 **Inserted / derived parts:** `insertPart` with `source` (a document id), `sourceConfiguration`,
 `transfer` (what carries across), `transform`, and `items` (source item → derived name, e.g.
-`SK_Outline-Frame-Layout`).
+`SK_Outline-Frame-Layout`). Features of the derived part refer to a transferred item as
+`{kind: "transferred", by: "id", document, feature | plane, name, stock}`: `document` and `feature` (or an origin
+`plane`) identify the source item, `name` is its name in the derived part, and `stock` names the `insertPart`
+feature. A system without derived parts can rebuild the source's sketches in the part, with their dimensions
+linked to the source's parameters: the source then still drives the part, and the flex probes (§6.4) prove it.
+
+**Directions and orientation** (as the SolidWorks exporter writes them; `frame` is the sketch's frame):
+- `extrude`: along the sketch normal (`frame.z`); `cut`: against it. `reverse` flips either. `end2` runs the
+  other way.
+- A one-direction thin wall lies to the right of an open profile's direction (start to end), looking down
+  `frame.z`; `reverse` puts it on the left.
+- `baseFlange` thickness: to the right of an open profile, as for a thin wall; against `frame.z` for a closed one.
+- `revolve`: an unreversed revolve turns clockwise about its axis's direction as recorded (start to end), that is
+  against the right-hand rule; `reverse` turns it the other way.
+- Patterns: along the direction reference's own direction (an edge descriptor's `params.direction`, an axis's
+  `line` from start to end); `reverse` flips it. `skipped` instance indices count from 0, the seed being 0.
+- Where a system's own convention differs, build by these rules and check by fingerprint; if that fails, try the
+  other sense, and report it if neither matches.
 
 **Custom properties** (`customProperties`, parts and assemblies): what a BOM is built from.
 - Each property is `{name, type (text|number|yesno|date), value, resolved, configuration?, native?}`.
@@ -498,9 +600,12 @@ within 0.01 mm.
 ## 6. Fingerprint
 
 **Per body:** `volume, area, centroid[3], moments[3]` (principal, sorted), `bbox[6]`, and
-`faces` / `edges` (informational), all in mm.
+`faces` / `edges` (informational), all in mm. `freeform: true` when any face is not a plane, cylinder, cone,
+sphere or torus (omitted otherwise).
 
-**File fingerprint:** `{bodies: [...]}`.
+**File fingerprint:** `{bodies: [...]}`. Fingerprints cover **solid** bodies only: surface (sheet) bodies are not
+fingerprinted (a surface-only part has `bodies: []` and cannot be stale-checked), and a surface-only part file has
+no notice body, because the notice goes into the part's solid B-rep representation.
 
 **Header `fp`:** the first 16 hex digits of SHA-256 over the sorted lines
 `V=%.5e;A=%.5e;C=%.2f,%.2f,%.2f\n`, one per body (centroid rounded to 0.01 mm, never `-0.00`).
@@ -515,12 +620,21 @@ applies one of two tolerance profiles:
 | centroid | 0.001 mm | 0.01 mm |
 | moments | 1e-4 of the largest | 5e-4 of the largest |
 | bbox | 0.5 mm (warning only) | 0.5 mm (warning only) |
+| freeform body: volume, area | as above | 6e-4 relative |
+| freeform body: centroid | as above | 0.05 mm |
+| freeform body: moments | as above | 3e-3 of the largest |
 
 - `native` is for a model compared with its rebuild in the same kernel (replay verification).
 - `exchange` is for B-rep that went through STEP or another kernel. Freeform faces (lofts,
   sweeps) re-imported by SolidWorks 2018/2026 measured up to 3.4e-5 relative in volume, which
   fails `native`. A real edit, such as 0.1 mm on a 100 mm part (~1e-3), still fails `exchange`.
-- Individual tolerances can be overridden in the options.
+- **Freeform bodies.** A spline surface written to STEP and read by another kernel measures differently: a
+  SolidWorks guide-curve sweep read by OpenCASCADE differed by 3.0e-4 in volume, 3.9e-4 in area, 0.033 mm in
+  centroid and 1.7e-3 in moments (SolidWorks re-reading its own STEP: 3.4e-5). Under `exchange`, a pair of bodies
+  where either is marked `freeform` (by the writer, or by the reader from its own measurement) gets the freeform
+  tolerances. A 0.1 mm edit on a 100 mm part (1e-3 in volume) still fails. `native` is never loosened.
+- Individual tolerances can be overridden in the options (`volume_rel`, `area_rel`, `centroid_abs`, `moment_rel`,
+  `bbox_abs`, and the `freeform_` variants, which are never tighter than the analytic ones).
 
 **Stale check at import:** the host fingerprints the B-rep it imported from the same file and
 compares it with the payload's fingerprint, using `exchange`.

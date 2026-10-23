@@ -78,7 +78,7 @@ namespace Ncx.Sw
             {
                 string why = SelectRef(refs[i].Obj("ref"), i > 0, i);   // first reference mark 0, then 1, 2
                 if (why != null) return "plane reference " + i + ": " + why;
-                c[i] = (int)refs[i].Num("constraint");
+                c[i] = Neutral.PlaneConstraintCode(refs[i]);
                 v[i] = (c[i] & 16) != 0 ? U.Rad(refs[i].Num("value")) : U.M(refs[i].Num("value"));
             }
             int n0 = FeatureCount();
@@ -206,20 +206,6 @@ namespace Ncx.Sw
             return Created(n0, feat, nf, "mirror");
         }
 
-        /// <summary>The wizard data reports a detailed hole type (swWzdHoleTypes_e, e.g. 14 = counterbore
-        /// through); HoleWizard5 wants its family (swWzdGeneralHoleTypes_e).</summary>
-        static int GeneralHoleType(int t)
-        {
-            if (t == 2 || t == 7 || (t >= 10 && t <= 21)) return 0;                                   // counterbore
-            if (t == 3 || t == 8 || t == 24 || t == 29 || t == 30 || (t >= 43 && t <= 45)) return 1;  // countersink
-            if ((t >= 37 && t <= 42)) return 3;                                                         // pipe tap
-            if ((t >= 31 && t <= 36) || (t >= 46 && t <= 56)) return 4;                                // tap
-            if (t >= 57 && t <= 68) return 6;                                                           // counterbore slot
-            if (t == 71 || (t >= 76 && t <= 79) || t == 90) return 7;                                  // countersink slot
-            if (t == 69 || t == 70 || (t >= 72 && t <= 75)) return 8;                                 // slot
-            return 2;                                                                                   // hole
-        }
-
         string ReplayHole(JObj nf, JObj def)
         {
             var w = def.Obj("wizard");
@@ -233,7 +219,7 @@ namespace Ncx.Sw
             var p0 = pts[0];
             if (!doc.Extension.SelectByID2("", "FACE", p0[0], p0[1], p0[2], false, 0, null, 0)) return "could not pick the hole face";
             int n0 = FeatureCount();
-            var feat = FM.HoleWizard5(GeneralHoleType((int)w.Num("holeType")), (int)w.Num("standard"), (int)w.Num("fastenerType"), w.Str("size"),
+            var feat = FM.HoleWizard5(Neutral.GeneralHoleType((int)w.Num("holeType")), (int)w.Num("standard"), (int)w.Num("fastenerType"), w.Str("size"),
                                       (short)w.Num("endCondition"), 0, U.M(w.Num("depth")), 0,
                                       -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, "", w.Bool("reverse"), true, true, false, false, false);
             string err = Created(n0, feat, nf, "hole");

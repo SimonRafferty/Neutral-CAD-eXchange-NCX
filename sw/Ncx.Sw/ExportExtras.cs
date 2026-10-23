@@ -28,7 +28,7 @@ namespace Ncx.Sw
                     if (r == null) { Opaque(nf, "trim boundary not recognised"); return; }
                     boundary.Add(r);
                 }
-                nf["def"] = new JObj { { "cornerType", d.CornerType }, { "trimmed", trimmed }, { "boundary", boundary } };
+                nf["def"] = new JObj { { "cornerType", Neutral.Word("trimCorner", d.CornerType) }, { "trimmed", trimmed }, { "boundary", boundary } };
                 // the extension and weld-gap options are not readable through the API: replayed as trim, no gap
                 Approx(nf, "trim options (allow extension, weld gap) not readable; replayed as trim only");
             }
@@ -118,8 +118,8 @@ namespace Ncx.Sw
                 def["thickness"] = U.Mm(d.Thickness);
                 def["reverseThickness"] = d.ReverseThicknessDir;   // the side of a one-sided rib
                 def["flipMaterial"] = d.FlipSide;                  // which way from the sketch the rib fills
-                def["extrusion"] = d.ExtrusionDirection;           // swRibExtrusionDirection_e (parallel / normal to the sketch)
-                def["ribType"] = d.Type;
+                def["extrusion"] = Neutral.Word("ribExtrusion", d.ExtrusionDirection);   // parallel / normal to the sketch
+                def["ribType"] = Neutral.Word("ribType", d.Type);
                 if (d.EnableDraft)
                     def["draft"] = new JObj { { "angle", U.Deg(d.DraftAngle) }, { "outward", d.DraftOutward }, { "fromWall", d.DraftFromWall } };
                 nf["def"] = def;
@@ -175,8 +175,8 @@ namespace Ncx.Sw
                 if (edge == null) { Opaque(nf, "thread edge not recognised (" + KindOf(e) + ")"); return; }
                 nf["def"] = new JObj
                 {
-                    { "edge", edge }, { "diameter", U.Mm(d.Diameter) }, { "diameterType", d.DiameterType },
-                    { "endCondition", d.EndCondition }, { "depth", U.Mm(d.BlindDepth) },
+                    { "edge", edge }, { "diameter", U.Mm(d.Diameter) }, { "diameterType", Neutral.Word("threadDiameter", d.DiameterType) },
+                    { "endCondition", Neutral.Word("threadEnd", d.EndCondition) }, { "depth", U.Mm(d.BlindDepth) },
                     { "callout", d.ThreadCallout }, { "standard", d.Standard }, { "standardType", d.StandardType },
                     { "size", d.Size }, { "applyThread", d.ApplyThread }
                 };
@@ -199,11 +199,11 @@ namespace Ncx.Sw
                 if (r1 == null || r2 == null) { Opaque(nf, "gusset supporting face not recognised"); return; }
                 nf["def"] = new JObj
                 {
-                    { "faces", new List<object> { r1, r2 } }, { "profileType", d.ProfileType },   // swGussetProfileType_e
+                    { "faces", new List<object> { r1, r2 } }, { "profileType", Neutral.Word("gussetProfile", d.ProfileType) },
                     { "d1", U.Mm(d.ProfileDistance1) }, { "d2", U.Mm(d.ProfileDistance2) }, { "d3", U.Mm(d.ProfileDistance3) },
                     { "d4", U.Mm(d.ProfileDistance4) }, { "angle", U.Deg(d.ProfileAngle) }, { "useAngle", d.UseAngle },
-                    { "thicknessType", d.ThicknessType }, { "thickness", U.Mm(d.Thickness) },
-                    { "location", d.ProfileLocation }, { "offset", d.OffsetUsed }, { "offsetDistance", U.Mm(d.ProfileOffsetDistance) },
+                    { "thicknessType", Neutral.Word("gussetThickness", d.ThicknessType) }, { "thickness", U.Mm(d.Thickness) },
+                    { "location", Neutral.Word("gussetLocation", d.ProfileLocation) }, { "offset", d.OffsetUsed }, { "offsetDistance", U.Mm(d.ProfileOffsetDistance) },
                     { "flipOffset", d.FlipOffsetDirection }, { "flipDistances", d.FlipProfileDistanceParameters }
                 };
             }

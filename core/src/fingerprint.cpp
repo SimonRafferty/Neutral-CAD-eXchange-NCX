@@ -47,6 +47,11 @@ FingerprintTolerances fingerprint_tolerances(const json& options) {
     t.centroid_abs = num(options, "centroid_abs", t.centroid_abs);
     t.moment_rel = num(options, "moment_rel", t.moment_rel);
     t.bbox_abs = num(options, "bbox_abs", t.bbox_abs);
+    // never tighter than the analytic tolerances, whatever the overrides
+    t.freeform_volume_rel = std::max(num(options, "freeform_volume_rel", t.freeform_volume_rel), t.volume_rel);
+    t.freeform_area_rel = std::max(num(options, "freeform_area_rel", t.freeform_area_rel), t.area_rel);
+    t.freeform_centroid_abs = std::max(num(options, "freeform_centroid_abs", t.freeform_centroid_abs), t.centroid_abs);
+    t.freeform_moment_rel = std::max(num(options, "freeform_moment_rel", t.freeform_moment_rel), t.moment_rel);
     return t;
 }
 
@@ -103,24 +108,30 @@ json fingerprint_compare(const json& expected, const json& actual, const Fingerp
         used[best] = true;
         rep["pairs"].push_back({i, best});
         const json& a = A[best];
+        auto is_freeform = [](const json& b) { return b.contains("freeform") && b["freeform"].is_boolean() && b["freeform"].get<bool>(); };
+        const bool ff = is_freeform(e) || is_freeform(a);
+        const double vol_rel = ff ? tol.freeform_volume_rel : tol.volume_rel;
+        const double area_rel = ff ? tol.freeform_area_rel : tol.area_rel;
+        const double cen_abs = ff ? tol.freeform_centroid_abs : tol.centroid_abs;
+        const double mom_rel = ff ? tol.freeform_moment_rel : tol.moment_rel;
 
         double va = num(a, "volume");
-        if (std::fabs(va - ve) > tol.volume_rel * std::max(std::fabs(ve), 1e-9)) diff("volume", i, ve, va, tol.volume_rel, true);
+        if (std::fabs(va - ve) > vol_rel * std::max(std::fabs(ve), 1e-9)) diff("volume", i, ve, va, vol_rel, true);
         double ae = num(e, "area"), aa = num(a, "area");
-        if (std::fabs(aa - ae) > tol.area_rel * std::max(std::fabs(ae), 1e-9)) diff("area", i, ae, aa, tol.area_rel, true);
+        if (std::fabs(aa - ae) > area_rel * std::max(std::fabs(ae), 1e-9)) diff("area", i, ae, aa, area_rel, true);
         auto ca = vec(a, "centroid");
         ca.resize(3, 0.0);
         for (int k = 0; k < 3; ++k)
-            if (std::fabs(ca[k] - ce[k]) > tol.centroid_abs)
-                diff(std::string("centroid.") + "xyz"[k], i, ce[k], ca[k], tol.centroid_abs, true);
+            if (std::fabs(ca[k] - ce[k]) > cen_abs)
+                diff(std::string("centroid.") + "xyz"[k], i, ce[k], ca[k], cen_abs, true);
         auto me = vec(e, "moments"), ma = vec(a, "moments");
         if (me.size() == 3 && ma.size() == 3) {
             std::sort(me.begin(), me.end());
             std::sort(ma.begin(), ma.end());
             double scale = std::max({std::fabs(me[0]), std::fabs(me[1]), std::fabs(me[2]), 1e-12});
             for (int k = 0; k < 3; ++k)
-                if (std::fabs(ma[k] - me[k]) > tol.moment_rel * scale)
-                    diff("moment." + std::to_string(k), i, me[k], ma[k], tol.moment_rel, true);
+                if (std::fabs(ma[k] - me[k]) > mom_rel * scale)
+                    diff("moment." + std::to_string(k), i, me[k], ma[k], mom_rel, true);
         }
         auto be = vec(e, "bbox"), ba = vec(a, "bbox");
         if (be.size() == 6 && ba.size() == 6)

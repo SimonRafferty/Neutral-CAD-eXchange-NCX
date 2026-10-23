@@ -88,7 +88,7 @@ namespace Ncx.Sw
                 if (face == null) { Opaque(nf, "wrap face not recognised"); return; }
                 int t = d.Type;   // swWrapSketchType_e: 1 emboss, 2 deboss, 3 scribe (as the creation call takes it)
                 nf["def"] = new JObj { { "sketch", sketch }, { "face", face }, { "wrapType", t == 2 ? "deboss" : t == 3 ? "scribe" : "emboss" },
-                                       { "nativeType", t }, { "thickness", U.Mm(d.Thickness) }, { "reverse", d.ReverseDirection } };
+                                       { "thickness", U.Mm(d.Thickness) }, { "reverse", d.ReverseDirection } };
                 if (d.PullDirection != null) Approx(nf, "the wrap's pull direction is not carried (normal to the sketch)");
             }
             finally { d.ReleaseSelectionAccess(); }

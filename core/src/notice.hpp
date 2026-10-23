@@ -4,6 +4,7 @@
 // of the payload's fingerprint, and the header names it (notice=...).
 #pragma once
 
+#include <array>
 #include <functional>
 #include <set>
 #include <string>
@@ -22,6 +23,7 @@ struct NoticeEdit {
     std::vector<std::string> prepend;  // new records that must come first (an assembly's notice component, so
                                        // importers that order components by file order list it at the top)
     std::string name;                  // the notice body's name, empty if none was added
+    std::array<double, 6> box{};       // its bounding box in the file's frame, mm (header noticebox=)
     std::string skipped;               // why none was added
 };
 

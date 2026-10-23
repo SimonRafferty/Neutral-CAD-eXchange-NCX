@@ -38,11 +38,11 @@ namespace Ncx.Sw
             nf["def"] = new JObj
             {
                 { "thickness", U.Mm(d.Thickness) }, { "bendRadius", U.Mm(d.BendRadius) },
-                { "bendAllowanceType", d.BendAllowanceType }, { "kFactor", d.KFactor },
+                { "bendAllowanceType", Neutral.Word("bendAllowance", d.BendAllowanceType) }, { "kFactor", d.KFactor },
                 { "bendAllowance", U.Mm(d.BendAllowance) },
-                { "autoRelief", d.UseAutoRelief }, { "reliefType", d.AutoReliefType }, { "reliefRatio", d.ReliefRatio }
+                { "autoRelief", d.UseAutoRelief }, { "reliefType", Neutral.Word("relief", d.AutoReliefType) }, { "reliefRatio", d.ReliefRatio }
             };
-            if (d.BendAllowanceType == 0 && !string.IsNullOrEmpty(d.BendTableFile))   // bend table
+            if (d.BendAllowanceType == 1 && !string.IsNullOrEmpty(d.BendTableFile))   // swBendAllowanceBendTable
                 Approx(nf, "bend table " + d.BendTableFile + " not carried (K-factor used)");
         }
 
@@ -95,8 +95,8 @@ namespace Ncx.Sw
                 if (edges == null) return;
                 nf["def"] = new JObj
                 {
-                    { "edges", edges }, { "hemType", d.Type },   // swHemTypes_e: open, closed, teardrop, rolled
-                    { "position", d.BendPosition }, { "reverse", d.ReverseDirection },
+                    { "edges", edges }, { "hemType", Neutral.Word("hemType", d.Type) },
+                    { "position", Neutral.Word("hemPosition", d.BendPosition) }, { "reverse", d.ReverseDirection },
                     { "length", U.Mm(d.Length) }, { "gap", U.Mm(d.GapDistance) }, { "angle", U.Deg(d.Angle) },
                     { "radius", U.Mm(d.Radius) }, { "miterGap", U.Mm(d.MiterGap) }
                 };
@@ -116,7 +116,7 @@ namespace Ncx.Sw
                 if (ents == null) return;
                 nf["def"] = new JObj
                 {
-                    { "entities", ents }, { "breakType", d.BreakType },   // swSheetMetalBreakCornerTypes_e: chamfer, fillet
+                    { "entities", ents }, { "breakType", Neutral.Word("breakType", d.BreakType) },
                     { "distance", U.Mm(d.Distance) }
                 };
                 if (d.CenteredOnBendLines || d.InternalCornersOnly) Approx(nf, "corner options (centred on bend lines, internal corners only) not carried");
@@ -144,7 +144,7 @@ namespace Ncx.Sw
                 nf["def"] = new JObj
                 {
                     { "line", line }, { "fixedFace", fixedFace },
-                    { "angle", U.Deg(d.BendAngle) }, { "reverse", d.ReverseDirection }, { "position", d.PositionType },
+                    { "angle", U.Deg(d.BendAngle) }, { "reverse", d.ReverseDirection }, { "position", Neutral.Word("flangePosition", d.PositionType) },
                     { "useDefaultRadius", d.UseDefaultBendRadius }, { "radius", U.Mm(d.BendRadius) }
                 };
                 if (!d.UseDefaultBendAllowance) Approx(nf, "bend allowance not carried (sheet-metal default used)");
@@ -170,8 +170,8 @@ namespace Ncx.Sw
                 {
                     { "line", line }, { "fixedFace", fixedFace }, { "angle", U.Deg(d.JogAngle) },
                     { "offset", U.Mm(d.OffsetDistance) }, { "reverse", d.ReverseDirection },
-                    { "dimensionPosition", d.DimensionPositionType },   // swJogDimPosition (outside, inside, overall)
-                    { "bendPosition", d.JogPositionType }, { "fixProjectedLength", d.FixProjectedLength },
+                    { "dimensionPosition", Neutral.Word("jogDimension", d.DimensionPositionType) },
+                    { "bendPosition", Neutral.Word("jogPosition", d.JogPositionType) }, { "fixProjectedLength", d.FixProjectedLength },
                     { "useDefaultRadius", d.UseDefaultBendRadius }, { "radius", U.Mm(d.BendRadius) }
                 };
                 if (d.ReverseOffset) Approx(nf, "reversed offset not carried");
@@ -198,9 +198,9 @@ namespace Ncx.Sw
                 {
                     { "profile", profile }, { "edges", edges },
                     { "useDefaultRadius", d.UseDefaultBendRadius }, { "bendRadius", U.Mm(d.BendRadius) },
-                    { "position", d.PositionType }, { "trimSideBends", d.UsePositionTrimSideBends },
+                    { "position", Neutral.Word("flangePosition", d.PositionType) }, { "trimSideBends", d.UsePositionTrimSideBends },
                     { "gap", U.Mm(d.GapDistance) }, { "startOffset", U.Mm(d.StartOffset) }, { "endOffset", U.Mm(d.EndOffset) },
-                    { "useDefaultRelief", d.UseDefaultBendRelief }, { "reliefType", d.ReliefType },
+                    { "useDefaultRelief", d.UseDefaultBendRelief }, { "reliefType", Neutral.Word("relief", d.ReliefType) },
                     { "useReliefRatio", d.UseReliefRatio }, { "reliefRatio", d.ReliefRatio },
                     { "reliefWidth", U.Mm(d.ReliefWidth) }, { "reliefDepth", U.Mm(d.ReliefDepth) }
                 };
@@ -221,7 +221,7 @@ namespace Ncx.Sw
                 if (faces == null) return;
                 nf["def"] = new JObj
                 {
-                    { "faces", faces }, { "cornerType", d.CornerType },   // swSheetMetalClosedCornerTypes_e: butt, overlap, underlap
+                    { "faces", faces }, { "cornerType", Neutral.Word("closedCorner", d.CornerType) },
                     { "gap", U.Mm(d.GapDistance) }, { "overlapRatio", d.OverlapUnderlapRatio }, { "openBendRegion", d.OpenBendRegion }
                 };
             }
@@ -265,15 +265,15 @@ namespace Ncx.Sw
                 {
                     { "edge", edgeRefs[0] }, { "profile", profiles[0] }, { "angle", U.Deg(d.BendAngle) },
                     { "useDefaultRadius", d.UseDefaultBendRadius }, { "bendRadius", U.Mm(d.BendRadius) },
-                    { "position", d.PositionType },   // swFlangePositionTypes_e
-                    { "useDefaultRelief", d.UseDefaultBendRelief }, { "reliefType", d.AutoReliefType },
+                    { "position", Neutral.Word("flangePosition", d.PositionType) },
+                    { "useDefaultRelief", d.UseDefaultBendRelief }, { "reliefType", Neutral.Word("relief", d.AutoReliefType) },
                     { "useReliefRatio", d.UseReliefRatio }, { "reliefRatio", d.ReliefRatio },
                     { "reliefWidth", U.Mm(d.ReliefWidth) }, { "reliefDepth", U.Mm(d.ReliefDepth) }
                 };
                 if (edges.Count > 1) { def["edges"] = edgeRefs.Cast<object>().ToList(); def["profiles"] = profiles; }
                 if (d.UsePositionOffset)   // swFlangeOffsetTypes_e; only a plain distance is carried
                 {
-                    def["positionOffset"] = new JObj { { "type", d.PositionOffsetType }, { "distance", U.Mm(d.PositionOffsetDistance) },
+                    def["positionOffset"] = new JObj { { "type", Neutral.Word("flangeOffset", d.PositionOffsetType) }, { "distance", U.Mm(d.PositionOffsetDistance) },
                                                        { "reverse", d.ReversePositionOffset } };
                     if (d.PositionOffsetType != 0 && d.PositionOffsetType != 1)
                         Approx(nf, "position offset up to a reference (type " + d.PositionOffsetType + ") carried as its distance");

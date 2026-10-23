@@ -36,7 +36,7 @@ namespace Ncx.Sw
             doc.ClearSelection2(true);
             int n0 = FeatureCount();
             // options 2: trim where the bodies pass the boundary (the extension and gap options are not carried)
-            var feat = FM.InsertWeldmentTrimFeature2((int)def.Num("cornerType", 4), 2, 0, trimmed.ToArray(), boundary.ToArray());
+            var feat = FM.InsertWeldmentTrimFeature2(Neutral.Code("trimCorner", def["cornerType"], 4), 2, 0, trimmed.ToArray(), boundary.ToArray());
             return Created(n0, feat, nf, "weldment trim");
         }
 
@@ -110,7 +110,7 @@ namespace Ncx.Sw
             int n0 = FeatureCount();
             FM.InsertRib(def.Bool("twoSided"), def.Bool("reverseThickness") != mirrored, U.M(def.Num("thickness")), 0,
                          def.Bool("flipMaterial") != mirrored, draft != null, draft?.Bool("outward") ?? false,
-                         U.Rad(draft?.Num("angle") ?? 0), def.Num("extrusion") == 1, draft?.Bool("fromWall") ?? false);
+                         U.Rad(draft?.Num("angle") ?? 0), Neutral.Code("ribExtrusion", def["extrusion"]) == 1, draft?.Bool("fromWall") ?? false);
             return Created(n0, null, nf, "rib");
         }
 
@@ -143,7 +143,7 @@ namespace Ncx.Sw
             string why = SelectAll(def.Arr("faces"), false, 0);
             if (why != null) return "gusset face: " + why;
             int n0 = FeatureCount();
-            FM.InsertGussetFeature(U.M(def.Num("thickness")), (short)def.Num("thicknessType"), (short)def.Num("location"), true,
+            FM.InsertGussetFeature(U.M(def.Num("thickness")), (short)Neutral.Code("gussetThickness", def["thicknessType"]), (short)Neutral.Code("gussetLocation", def["location"]), true,
                                    U.M(def.Num("d1")), U.M(def.Num("d2")), U.M(def.Num("d3")), U.Rad(def.Num("angle")), U.M(def.Num("d4")),
                                    def.Bool("offset"), U.M(def.Num("offsetDistance")), 0, false, false, false);
             string err = Created(n0, null, nf, "gusset");
@@ -151,16 +151,16 @@ namespace Ncx.Sw
             var feat = features[nf.Str("id")];
             var d = (IGussetFeatureData)feat.GetDefinition();
             d.AccessSelections((ModelDoc2)doc, null);   // this one wants the coclass
-            d.ProfileType = (int)def.Num("profileType");
+            d.ProfileType = Neutral.Code("gussetProfile", def["profileType"]);
             d.ProfileDistance1 = U.M(def.Num("d1"));
             d.ProfileDistance2 = U.M(def.Num("d2"));
             d.ProfileDistance3 = U.M(def.Num("d3"));
             d.ProfileDistance4 = U.M(def.Num("d4"));
             d.ProfileAngle = U.Rad(def.Num("angle"));
             d.UseAngle = def.Bool("useAngle");
-            d.ThicknessType = (int)def.Num("thicknessType");
+            d.ThicknessType = Neutral.Code("gussetThickness", def["thicknessType"]);
             d.Thickness = U.M(def.Num("thickness"));
-            d.ProfileLocation = (int)def.Num("location");
+            d.ProfileLocation = Neutral.Code("gussetLocation", def["location"]);
             d.OffsetUsed = def.Bool("offset");
             d.ProfileOffsetDistance = U.M(def.Num("offsetDistance"));
             d.FlipOffsetDirection = def.Bool("flipOffset");
@@ -184,7 +184,7 @@ namespace Ncx.Sw
             features[nf.Str("id")] = feat;
             var d = (ICosmeticThreadFeatureData)feat.GetDefinition();
             d.AccessSelections(doc, null);
-            d.EndCondition = (int)def.Num("endCondition");
+            d.EndCondition = Neutral.Code("threadEnd", def["endCondition"]);
             d.BlindDepth = U.M(def.Num("depth"));
             d.Diameter = U.M(def.Num("diameter"));
             d.ApplyThread = (int)def.Num("applyThread");

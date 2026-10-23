@@ -237,6 +237,31 @@ namespace Ncx.Sw
             finally { d.ReleaseSelectionAccess(); }
         }
 
+        /// <summary>Each leg of a vertex chamfer: {direction (unit, from the vertex along its edge), distance}, from
+        /// the corners of the chamfer's triangular face; null when that face is not found.</summary>
+        static List<object> VertexChamferLegs(IFeature f, double[] vertexMm)
+        {
+            if (vertexMm == null) return null;
+            foreach (IFace2 face in (object[])f.GetFaces() ?? new object[0])
+            {
+                if (!((ISurface)face.GetSurface()).IsPlane()) continue;
+                var corners = new List<double[]>();
+                foreach (IEdge e in (object[])face.GetEdges() ?? new object[0])
+                    foreach (var vx in new[] { (IVertex)e.GetStartVertex(), (IVertex)e.GetEndVertex() })   // edges need not run head to tail
+                    {
+                        if (vx == null) continue;
+                        var s = U.Mm((double[])vx.GetPoint());
+                        if (!corners.Any(c => V.Norm(V.Sub(c, s)) < 1e-6)) corners.Add(s);
+                    }
+                if (corners.Count != 3) continue;
+                return corners.Select(c => (object)new JObj
+                {
+                    { "direction", V.Unit(V.Sub(c, vertexMm)) }, { "distance", V.Norm(V.Sub(c, vertexMm)) }
+                }).ToList();
+            }
+            return null;
+        }
+
         void ExportChamfer(IFeature f, JObj nf)
         {
             var d = (IChamferFeatureData2)f.GetDefinition();
@@ -254,6 +279,21 @@ namespace Ncx.Sw
                         { "chamferType", "vertex" }, { "vertex", v },
                         { "distances", new[] { U.Mm(d.GetVertexChamferDistance(0)), U.Mm(d.GetVertexChamferDistance(1)), U.Mm(d.GetVertexChamferDistance(2)) } }
                     };
+                    // which distance goes along which edge, in neutral form: the chamfer's triangular face has one
+                    // corner on each edge, at that edge's distance from the vertex
+                    // (measured once the model is rolled forward: the face does not exist in the state the chamfer saw)
+                    var vp = v.Obj("geom")?.Obj("params")?.Vec("point");
+                    afterExport.Add(() =>
+                    {
+                        var legs = VertexChamferLegs(f, vp);
+                        if (legs != null) ((JObj)nf["def"])["legs"] = legs;
+                        else
+                        {
+                            const string why = "vertex chamfer: which distance runs along which edge not measured";
+                            Approx(nf, why);
+                            Report.Add(docId, nf.Str("name"), "approximate", why);   // the feature was reported before this ran
+                        }
+                    });
                     return;
                 }
                 var edges = ((object[])d.Edges ?? new object[0]).ToList();

@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "container.hpp"
 
 #include <algorithm>
@@ -177,7 +178,14 @@ Result write_payload(std::string step_text, const std::string& model_json, const
                          std::to_string(n) + ";b64len=" + std::to_string(b64.size()) + ";jsonlen=" +
                          std::to_string(model_json.size()) + ";sha256=" + sha256_hex(model_json) + ";fp=" + fp +
                          ";core=" + kVersion;
-    if (!notice.name.empty()) header += ";notice=" + sanitize(notice.name);   // ' and ; become _ (section 2.2)
+    if (!notice.name.empty()) {
+        header += ";notice=" + sanitize(notice.name);   // ' and ; become _ (section 2.2)
+        // its box, so a reader whose STEP importer drops body names can still find it (section 2.6)
+        char box[200];
+        std::snprintf(box, sizeof box, ";noticebox=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f", notice.box[0], notice.box[1],
+                      notice.box[2], notice.box[3], notice.box[4], notice.box[5]);
+        header += box;
+    }
     std::string gen = sanitize(opt.generator);
     size_t room = kMaxHeaderChars - std::min(kMaxHeaderChars, header.size() + 5);
     if (!gen.empty()) header += ";gen=" + gen.substr(0, room);

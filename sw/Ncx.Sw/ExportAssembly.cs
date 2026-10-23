@@ -568,7 +568,11 @@ namespace Ncx.Sw
                     if (r == null) return AssemblyOpaque(nf, "plane reference " + i + " not recognised", asmId);
                     int c = d.get_Constraint(i);   // swRefPlaneReferenceConstraints_e flags
                     double v = d.get_AngleOrDistance(i);
-                    refs.Add(new JObj { { "ref", r }, { "constraint", c }, { "value", (c & 16) != 0 ? U.Deg(v) : U.Mm(v) }, { "flip", (c & 256) != 0 } });
+                    var pr = new JObj { { "ref", r } };
+                    Neutral.PlaneConstraint(pr, c);
+                    pr["value"] = (c & 16) != 0 ? U.Deg(v) : U.Mm(v);
+                    pr["flip"] = (c & 256) != 0;
+                    refs.Add(pr);
                 }
                 var a = (double[])((IMathTransform)((IRefPlane)f.GetSpecificFeature2()).Transform).ArrayData;
                 nf["def"] = new JObj { { "references", refs }, { "origin", U.Mm(new[] { a[9], a[10], a[11] }) }, { "normal", new[] { a[6], a[7], a[8] } } };
@@ -724,8 +728,7 @@ namespace Ncx.Sw
                                 refs.Add(r);
                             }
                         jm["refs"] = refs;
-                        // swWidthMateConstraintType_e: centred, free, distance, percent
-                        jm["params"] = new JObj { { "constraint", w.ConstraintType }, { "distance", U.Mm(w.DistanceFromEnd) },
+                        jm["params"] = new JObj { { "constraint", Neutral.Word("widthConstraint", w.ConstraintType) }, { "distance", U.Mm(w.DistanceFromEnd) },
                                                   { "percent", w.PercentDistanceFromEnd }, { "flip", w.FlipDimension } };
                         return null;
                     }
@@ -758,10 +761,9 @@ namespace Ncx.Sw
                             refs.Add(r);
                         }
                         jm["refs"] = refs;
-                        // swSlotMateConstraintType_e: free, centred, distance along the slot, percent along it
                         jm["params"] = new JObj
                         {
-                            { "constraint", Convert.ToInt32(Late(data, "Constraint")) },
+                            { "constraint", Neutral.Word("slotConstraint", Convert.ToInt32(Late(data, "Constraint"))) },
                             { "distance", U.Mm(Convert.ToDouble(Late(data, "Distance"))) },
                             { "percent", Convert.ToDouble(Late(data, "Percent")) },
                             { "flip", Convert.ToBoolean(Late(data, "FlipDirection")) }
@@ -956,7 +958,7 @@ namespace Ncx.Sw
                         if (t == "symmetric") jm["params"] = new JObj { { "alignment", mate.Alignment } };
                         if (t == "slot")
                         {
-                            jm["params"] = new JObj { { "constraint", 0 } };
+                            jm["params"] = new JObj { { "constraint", "free" } };
                             status = "approximate";
                             jm["note"] = "slot mate constraint not readable in this SolidWorks version: replayed free";
                         }

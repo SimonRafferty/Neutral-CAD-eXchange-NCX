@@ -301,7 +301,7 @@ private:
 
 // The notice solid: a plate (x0..x1, y0..y1, z0..z1) with the text raised by `relief` on its top face.
 long notice_solid(const std::string& text, const std::array<double, 6>& model, double unit_scale, long& id,
-                  std::vector<std::string>& out) {
+                  std::vector<std::string>& out, std::array<double, 6>& box_mm) {
     // lines about five times wider than the block of text is tall
     size_t width = std::max<size_t>(12, static_cast<size_t>(std::ceil(std::sqrt(7.5 * text.size()))));
     Grid g = rasterize(wrap(text, width));
@@ -319,6 +319,7 @@ long notice_solid(const std::string& text, const std::array<double, 6>& model, d
 
     Brep b(id, out);
     double x1 = x0 + len;
+    box_mm = {x0, y0, z0, x1, y1, z2};
     // plate: bottom and four sides
     b.face({0, 0, -1}, {{P(x0, y0, z0), P(x1, y0, z0), P(x1, y1, z0), P(x0, y1, z0)}});
     b.face({0, -1, 0}, {{P(x0, y0, z0), P(x1, y0, z0), P(x1, y0, z1), P(x0, y0, z1)}});
@@ -546,7 +547,7 @@ NoticeEdit plan_assembly_notice(const StepText& st, const json& model, const std
     for (char& c : pname)
         if (std::string("/\\:*?\"<>|").find(c) != std::string::npos) c = '_';
 
-    long msb = notice_solid(text, model_box(model), 1.0 / unit_mm(st), next_id, out);
+    long msb = notice_solid(text, model_box(model), 1.0 / unit_mm(st), next_id, out, ed.box);
     long own = placement();
     long absr = add("ADVANCED_BREP_SHAPE_REPRESENTATION('',(" + ref(msb) + "," + ref(own) + ")," + ref(geom_ctx) + ")");
     long csr = add("SHAPE_REPRESENTATION(" + step_string(pname) + ",(" + ref(own) + ")," + ref(geom_ctx) + ")");
@@ -608,7 +609,7 @@ NoticeEdit plan_notice(const StepText& st, const json& model, const std::string&
         items += (items.empty() ? "" : ",") + ref(it.ref);
     }
 
-    long msb = notice_solid(text, model_box(model), 1.0 / unit_mm(st), next_id, ed.append);
+    long msb = notice_solid(text, model_box(model), 1.0 / unit_mm(st), next_id, ed.append, ed.box);
     items += (items.empty() ? "" : ",") + ref(msb);
 
     ed.remove.insert(rep->id);   // rewritten under the same id with the notice added

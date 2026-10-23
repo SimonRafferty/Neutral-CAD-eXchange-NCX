@@ -557,12 +557,26 @@ namespace Ncx.Sw
             };
             var ev = V.SymEigen(I).Select(x => x * k5).ToArray();
             var box = U.Mm((double[])b.GetBodyBox());
-            return new JObj
+            var fp = new JObj
             {
                 { "volume", m[3] * 1e9 }, { "area", m[4] * 1e6 }, { "centroid", U.Mm(new[] { m[0], m[1], m[2] }) },
                 { "moments", ev }, { "bbox", box },
                 { "faces", b.GetFaceCount() }, { "edges", b.GetEdgeCount() }
             };
+            if (IsFreeform(b)) fp["freeform"] = true;
+            return fp;
+        }
+
+        /// <summary>True when any face is not a plane, cylinder, cone, sphere or torus (FORMAT-SPEC 6: such a body
+        /// is compared with the freeform tolerances after going through STEP).</summary>
+        public static bool IsFreeform(IBody2 b)
+        {
+            foreach (IFace2 f in (object[])b.GetFaces() ?? new object[0])
+            {
+                var s = (ISurface)f.GetSurface();
+                if (!(s.IsPlane() || s.IsCylinder() || s.IsCone() || s.IsSphere() || s.IsTorus())) return true;
+            }
+            return false;
         }
 
         public static JObj PartFingerprint(IPartDoc part)

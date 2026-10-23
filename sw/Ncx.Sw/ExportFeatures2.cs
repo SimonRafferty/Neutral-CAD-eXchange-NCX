@@ -102,12 +102,11 @@ namespace Ncx.Sw
                     if (r == null) { Opaque(nf, "plane reference " + i + " not recognised"); return; }
                     int c = d.get_Constraint(i);   // swRefPlaneReferenceConstraints_e flags
                     double v = d.get_AngleOrDistance(i);
-                    refs.Add(new JObj
-                    {
-                        { "ref", r }, { "constraint", c },
-                        { "value", (c & 16) != 0 ? U.Deg(v) : U.Mm(v) },   // angle in degrees, else mm
-                        { "flip", (c & 256) != 0 }
-                    });
+                    var pr = new JObj { { "ref", r } };
+                    Neutral.PlaneConstraint(pr, c);
+                    pr["value"] = (c & 16) != 0 ? U.Deg(v) : U.Mm(v);   // angle in degrees, else mm
+                    pr["flip"] = (c & 256) != 0;
+                    refs.Add(pr);
                 }
                 // the resulting plane, so replay can check it and other systems can rebuild it directly
                 var rp = (IRefPlane)f.GetSpecificFeature2();
@@ -232,6 +231,21 @@ namespace Ncx.Sw
             return null;
         }
 
+        /// <summary>The distinct diameters (mm, ascending) of a hole feature's cylindrical faces.</summary>
+        static List<double> HoleDiameters(IFeature f)
+        {
+            var out_ = new List<double>();
+            foreach (IFace2 face in (object[])f.GetFaces() ?? new object[0])
+            {
+                var s = (ISurface)face.GetSurface();
+                if (!s.IsCylinder()) continue;
+                double dia = Math.Round(U.Mm(((double[])s.CylinderParams)[6]) * 2, 6);
+                if (!out_.Any(x => Math.Abs(x - dia) < 1e-4)) out_.Add(dia);
+            }
+            out_.Sort();
+            return out_;
+        }
+
         void ExportHoleWizard(IFeature f, JObj nf)
         {
             var d = (IWizardHoleFeatureData2)f.GetDefinition();
@@ -263,9 +277,22 @@ namespace Ncx.Sw
                     { "tapDrillDiameter", U.Mm(d.TapDrillDiameter) }, { "threadDepth", U.Mm(d.ThreadDepth) },
                     { "drillAngle", U.Deg(d.DrillAngle) }
                 };
+                // SolidWorks leaves sizes its table supplies at 0 (an M6 counterbore's drilled diameter): the hole's own
+                // cylindrical faces give them, smallest = the drilled hole, largest = a counterbore
+                var dias = HoleDiameters(f);
+                int kind = Neutral.GeneralHoleType(d.Type);
+                if (dias.Count > 0)
+                {
+                    sizes["measuredDiameters"] = dias.Cast<object>().ToList();
+                    if (sizes.Num("holeDiameter") <= 0) sizes["holeDiameter"] = dias[0];
+                    if ((kind == 0 || kind == 6) && sizes.Num("counterBoreDiameter") <= 0 && dias.Count > 1)
+                        sizes["counterBoreDiameter"] = dias[dias.Count - 1];
+                }
                 nf["def"] = new JObj
                 {
                     { "face", face }, { "points", pts },
+                    { "holeType", Neutral.Word("holeKind", kind) },
+                    { "end", new JObj { { "type", Neutral.Word("endCondition", d.EndCondition) }, { "depth", U.Mm(d.Depth) } } },
                     { "wizard", new JObj { { "app", "SOLIDWORKS" }, { "holeType", d.Type }, { "standard", d.Standard2 },
                                            { "fastenerType", d.FastenerType2 }, { "size", d.FastenerSize },
                                            { "endCondition", d.EndCondition }, { "depth", U.Mm(d.Depth) },

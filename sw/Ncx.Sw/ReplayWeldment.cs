@@ -33,6 +33,20 @@ namespace Ncx.Sw
             return null;
         }
 
+        /// <summary>swSolidworksWeldmentEndCondOptions_e for a corner treatment: a name (FORMAT-SPEC 4), or the
+        /// number files from add-in 0.4.0 and earlier carry; 0 = none.</summary>
+        static int CornerTreatmentCode(object v)
+        {
+            switch (v as string)
+            {
+                case "miter": return 1;
+                case "butt1": return 2;
+                case "butt2": return 3;
+                case null: return v == null ? 0 : Convert.ToInt32(v);
+                default: return 0;
+            }
+        }
+
         string ReplayStructuralMember(JObj nf, JObj def)
         {
             var p = def.Obj("profile");
@@ -55,10 +69,11 @@ namespace Ncx.Sw
                 var grp = (IStructuralMemberGroup)FM.CreateStructuralMemberGroup();
                 grp.Segments = segs.ToArray();
                 grp.Angle = U.Rad(g.Num("angle"));
-                if (g["cornerTreatment"] != null)
+                int corner = CornerTreatmentCode(g["cornerTreatment"]);
+                if (corner > 0)
                 {
                     grp.ApplyCornerTreatment = true;
-                    grp.CornerTreatmentType = (int)g.Num("cornerTreatment");
+                    grp.CornerTreatmentType = corner;
                 }
                 grp.GapWithinGroup = U.M(g.Num("gapWithinGroup"));
                 grp.GapForOtherGroups = U.M(g.Num("gapForOtherGroups"));
@@ -76,7 +91,9 @@ namespace Ncx.Sw
             };
             int m0 = members().Count;
             int n0 = FeatureCount();
-            var feat = FM.InsertStructuralWeldment5(lib[0], (int)def.Num("connectedSegments", 1), def.Bool("allowProtrusion", true),
+            object cs = def["connectedSegments"];
+            int connected = cs is string ? (cs as string == "copedCut" ? 2 : 1) : (int)def.Num("connectedSegments", 1);
+            var feat = FM.InsertStructuralWeldment5(lib[0], connected, def.Bool("allowProtrusion", true),
                                                     groups.ToArray(), lib[1]);
             // the call returns nothing usable and the tree's last item is not the member (cut-list folders follow
             // it); members are listed in creation order, so the new one is the next in that list. (Earlier members'

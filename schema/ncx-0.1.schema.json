@@ -99,7 +99,8 @@
         "name": {"type": "string"},
         "value": {"type": "number"},
         "unit": {"enum": ["mm", "deg", "none"]},
-        "driving": {"type": "boolean"}
+        "driving": {"type": "boolean"},
+        "expression": {"type": "string", "description": "the value as the user wrote it, in the neutral grammar (a number, or an expression of other parameters)"}
       }
     },
 
@@ -109,7 +110,17 @@
         "target": {"type": "string", "description": "parameter or full dimension name, e.g. Height or D1@SK_Outline"},
         "expression": {"type": "string", "description": "neutral grammar: + - * / ^ ( ), sin cos tan sqrt abs min max if, names of parameters/dimensions"},
         "native": {"type": "string"},
-        "status": {"$ref": "#/$defs/status"}
+        "status": {"$ref": "#/$defs/status"},
+        "targetRef": {
+          "type": "object", "required": ["kind", "feature"],
+          "description": "the target in neutral form: a sketch dimension by ids, or a field of a feature's definition",
+          "properties": {
+            "kind": {"enum": ["dimension", "featureField"]},
+            "feature": {"$ref": "#/$defs/id"},
+            "id": {"$ref": "#/$defs/id", "description": "kind dimension: the dimension's id in the sketch"},
+            "field": {"type": "string", "description": "kind featureField: dotted path in the feature's def, e.g. end.depth"}
+          }
+        }
       }
     },
 
@@ -158,7 +169,7 @@
       "required": ["kind"],
       "properties": {
         "kind": {"enum": ["originPlane", "origin", "feature", "sketchEntity", "transferred", "component", "face", "edge", "vertex", "frame", "generated", "body"]},
-        "by": {"enum": ["id", "geom"]},
+        "by": {"type": "string", "description": "id or geom; for kind generated, the name of the feature that creates the plane"},
         "id": {"$ref": "#/$defs/id"},
         "plane": {"enum": ["front", "top", "right"]},
         "feature": {"$ref": "#/$defs/id"},
@@ -166,7 +177,8 @@
         "geom": {"$ref": "#/$defs/descriptor"}
       },
       "allOf": [
-        {"if": {"properties": {"by": {"const": "geom"}}, "required": ["by"]}, "then": {"required": ["geom"]}}
+        {"if": {"properties": {"by": {"const": "geom"}}, "required": ["by"]}, "then": {"required": ["geom"]}},
+        {"if": {"properties": {"kind": {"not": {"const": "generated"}}}}, "then": {"properties": {"by": {"enum": ["id", "geom"]}}}}
       ]
     },
 
@@ -214,6 +226,17 @@
         "startPoint": {"$ref": "#/$defs/id"}, "endPoint": {"$ref": "#/$defs/id"}, "centerPoint": {"$ref": "#/$defs/id"},
         "ccw": {"type": "boolean"},
         "points": {"type": "array", "items": {"$ref": "#/$defs/vec2"}},
+        "nurbs": {
+          "type": "object", "required": ["degree", "knots", "controlPoints"],
+          "description": "spline: the exact B-spline (sketch coordinates, mm); the fit points stay the editable intent",
+          "properties": {
+            "degree": {"type": "integer", "minimum": 1},
+            "knots": {"type": "array", "items": {"type": "number"}, "description": "full knot vector (count = control points + degree + 1); any scale"},
+            "controlPoints": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 3}},
+            "weights": {"type": "array", "items": {"type": "number"}, "description": "rational splines only"},
+            "periodic": {"type": "boolean"}
+          }
+        },
         "name": {"type": "string"}
       }
     },
@@ -264,7 +287,8 @@
       "required": ["profile", "end"],
       "properties": {
         "profile": {"$ref": "#/$defs/reference"},
-        "contours": {"type": "array", "items": {"$ref": "#/$defs/id"}},
+        "contours": {"type": "array", "description": "selected contours of the profile, each the ids of the sketch segments around it",
+                     "items": {"type": "array", "items": {"$ref": "#/$defs/id"}}},
         "direction": {"$ref": "#/$defs/vec3"},
         "reverse": {"type": "boolean"},
         "end": {"$ref": "#/$defs/endCondition"},
@@ -348,7 +372,8 @@
         "centroid": {"$ref": "#/$defs/vec3"},
         "moments": {"$ref": "#/$defs/vec3"},
         "bbox": {"type": "array", "items": {"type": "number"}, "minItems": 6, "maxItems": 6},
-        "faces": {"type": "integer"}, "edges": {"type": "integer"}
+        "faces": {"type": "integer"}, "edges": {"type": "integer"},
+        "freeform": {"type": "boolean", "description": "a face is not a plane, cylinder, cone, sphere or torus: compared with the freeform tolerances under the exchange profile"}
       }
     },
 

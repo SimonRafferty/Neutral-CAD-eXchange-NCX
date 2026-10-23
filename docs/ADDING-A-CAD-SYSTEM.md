@@ -39,6 +39,7 @@ Import is the priority: it is what lets someone who received an NCX file use it.
 | `conformance/` | test vectors: STEP files with their expected read status and payload |
 | `python/ncx/occhost.py` | a complete geometry "host" written against OpenCASCADE: how to describe faces/edges and measure candidates for the matcher. A good model for your own host code. |
 | `sw/` | the SolidWorks add-in (C#): the reference implementation of export and import. Read it to see how each spec section was realised. |
+| `validator/` | `ncx_validate.py`: checks any NCX file against the format without a CAD system (container, schema, consistency, geometry). Run it on every file your exporter writes. |
 | `docs/COVERAGE.md` | what the SolidWorks add-in carries, its test corpus and its known gaps |
 | sample NCX files | exported from SolidWorks, one per feature area: your test inputs (ask the repository owner, or export your own with the SolidWorks add-in) |
 
@@ -84,6 +85,12 @@ Import is the priority: it is what lets someone who received an NCX file use it.
 - **The notice body.** Every NCX file carries a "READ ME" body (spec §2.6). The import must delete it from any geometry
   it imports and must never rebuild it.
 - **No hidden dependencies.** The add-in must run on a machine with only the target CAD system installed.
+- **The file's own geometry fills the gaps.** At import you have the file's B-rep as well as the payload. Where the
+  payload lacks something your system needs (a size another system takes from its own tables, an orientation),
+  measure it on that geometry and report the feature `approximate` with what you measured.
+- **What the spec does not describe, `sw/Ncx.Sw/Export*.cs` does.** Several feature definitions are only written
+  down by the SolidWorks exporter that writes them. Read the matching `Export*.cs` method rather than guessing
+  from the samples, and raise an Issue so the spec gets the definition.
 
 ## 4. Plan
 
@@ -99,10 +106,19 @@ Work in this order. Keep notes as you go (what you tried, what the target's API 
    bundled Python changes with updates) and how it will call `ncx_core` (link the C ABI directly from C++).
 
 ### Step 2: read a file
+0. **Make the add-in drivable without clicks** before anything else: you will run it hundreds of times. If the
+   target system has an out-of-process API, drive it from a script. If it does not (Fusion), make the add-in watch a
+   job folder: a watcher thread notices a JSON job file, hands it to the CAD system's main thread (Fusion:
+   `Application.fireCustomEvent`), runs it there and writes a result file. Load the real implementation from a copy
+   of its DLL, so a rebuild is reloaded without restarting the CAD system. Loading a new add-in the first time
+   usually needs a restart of the CAD system: check first that no document has unsaved changes.
 1. Build the core (`core/build.ps1`, or CMake on other platforms) and call `ncx_payload_read` on every sample and on
    `conformance/vectors`; check the statuses match `conformance/vectors/vectors.json`.
 2. Import the file's STEP geometry with the target's own importer as the **reference** (used for the stale check, the
-   face check and the plain-geometry fallback); delete the notice body from it.
+   face check and the plain-geometry fallback); delete the notice body from it. Find it by name (spec §2.6), or,
+   if your STEP importer drops body names (Fusion's does), by the header's `noticebox`: the solid with that box.
+   Check how your system measures an imported body: some report zero mass properties for a body without a material
+   (Fusion: give it one, any density, before measuring). Fingerprints cover solids only (§6).
 3. Implement the **stale check** (spec §6): fingerprint the imported bodies (volume, area, centroid, principal moments,
    box, in mm) and compare with the payload's fingerprint through `ncx_fingerprint_compare_ex` with the `exchange`
    profile. A mismatch means: import the plain geometry and say why.
@@ -127,6 +143,10 @@ the flex probes when the file carries them (spec §6.4).
 
 ### Step 4: assemblies
 Components with their placements and fixed state, nested sub-assemblies, mates (or joints derived from them).
+- If your system's multi-document features (derived parts, external references) need documents saved somewhere
+  first (Fusion's Derive needs saved cloud documents), building the whole file in one document is acceptable.
+  Insert Part is then rebuilt as the source's sketches in the part, with their dimensions linked to the source's
+  parameters: the layout still drives the part, and the flex probes prove it. Report it `approximate`.
 
 ### Step 5: the user's side
 - A minimal UI: two commands (Import NCX, Export NCX) where the target system puts such commands. Show progress
@@ -139,12 +159,18 @@ Walk the target's model and write the payload: the reverse of every step above, 
 state each feature saw, fingerprints, and flex probes where the spec says. Export the STEP geometry with the target's
 own exporter (AP214 when available) and let `ncx_payload_write` embed the payload and the notice body.
 Round-trip test: export from the target, import in the target, and compare.
+**Run `validator/ncx_validate.py` on every file you export** and fix every error before anything else: it checks
+what other add-ins rely on (units, frames, seeds against dimensions, references, fingerprints against the geometry),
+which your own importer may not notice because it shares your exporter's assumptions.
 
 ## 5. Testing
 
 - Every sample must import with every check matching, or with an honest `approximate`/`fallback` report saying exactly
   what and why. Record the results per sample in `<your-folder>/FINDINGS.md`.
-- Re-export what you imported and compare the payloads (feature names, types, sketch contents, parameters).
+- Every file your exporter writes passes `validator/ncx_validate.py` (verdict PASS).
+- Re-export what you imported and compare the payloads (feature names, types, sketch contents, parameters). A
+  re-export keeps every feature under its name, with its type where your system has it; a feature it cannot map
+  goes out `opaque` with its `result` carried (spec §4), never dropped. The re-import must verify.
 - When the target system and SolidWorks disagree on a construction, the geometry decides.
 
 ## 6. Done means
@@ -155,3 +181,19 @@ Round-trip test: export from the target, import in the target, and compare.
   learned, including every feature translated by functional equivalence and why.
 - Issues are raised for anything in the spec or core that had to be worked around.
 - A pull request from your fork/branch adds the add-in folder only.
+
+## 7. Traps by CAD system
+
+Each add-in's `FINDINGS.md` records the traps its CAD system set. Read the one for your system if there is one, and
+add yours. Ones that cost a debugging round each:
+
+- **Fusion** (`fusion/FINDINGS.md`): no out-of-process API (job folder, above); STEP import drops body names (find
+  the notice by `noticebox`); bodies without a material have zero mass properties; sketches on faces project the
+  face's edges by themselves; a one-direction pattern defaults to 3 instances in its second direction; pattern
+  instances cannot be suppressed through the API; moving an occurrence in a parametric design is only a pending
+  position until captured; MeasureManager measures only entities in the root's context; parameter names that are
+  unit symbols (`W`, `H`) are refused; centimetres and radians internally; a sketch on the XZ plane has its y axis
+  along -Z (map everything through the payload's `frame`).
+- **SolidWorks** (the comments in `sw/Ncx.Sw`): equation edits are refused unless the
+  document is active; any rebuild replaces body objects; arrays of SolidWorks objects must be typed dispatch arrays
+  out of process.

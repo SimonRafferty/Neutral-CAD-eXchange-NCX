@@ -49,10 +49,10 @@ namespace Ncx.Sw
             doc.ClearSelection2(true);
             string why = SelectAll(def, "references", 0);
             if (why != null) return "point reference: " + why;
-            int along = (int)def.Num("alongCurve");
+            int along = Neutral.Code("alongCurve", def["alongCurve"]);
             double dist = along == 0 ? U.M(def.Num("distance")) : def.Num("distance");
             int n0 = FeatureCount();
-            FM.InsertReferencePoint((int)def.Num("pointType"), along, dist, 1);
+            FM.InsertReferencePoint(Neutral.Code("pointType", def["pointType"]), along, dist, 1);
             string err = Created(n0, null, nf, "point");
             if (err != null) return err;
             var pt = (double[])((IRefPoint)features[nf.Str("id")].GetSpecificFeature2()).GetRefPoint().ArrayData;

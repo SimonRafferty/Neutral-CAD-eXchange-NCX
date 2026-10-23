@@ -17,6 +17,12 @@ struct FingerprintTolerances {
     double centroid_abs = 1e-3;    // mm
     double moment_rel = 1e-4;      // relative to the body's largest principal moment
     double bbox_abs = 0.5;         // mm; kernels' boxes are often not tight, so only a warning
+    // for a pair where either body is marked freeform (FORMAT-SPEC 6): spline surfaces written to STEP measure
+    // differently in another kernel. Same as the above unless the profile or the options loosen them.
+    double freeform_volume_rel = 1e-5;
+    double freeform_area_rel = 1e-5;
+    double freeform_centroid_abs = 1e-3;
+    double freeform_moment_rel = 1e-4;
 
     static FingerprintTolerances exchange() {
         FingerprintTolerances t;
@@ -24,6 +30,12 @@ struct FingerprintTolerances {
         t.area_rel = 2e-4;
         t.centroid_abs = 0.01;
         t.moment_rel = 5e-4;
+        // measured SolidWorks STEP vs OpenCASCADE on a guide-curve sweep: 3.0e-4 volume, 3.9e-4 area, 0.033 mm,
+        // 1.7e-3 moments; a 0.1 mm edit on a 100 mm part (1e-3 in volume) still fails
+        t.freeform_volume_rel = 6e-4;
+        t.freeform_area_rel = 6e-4;
+        t.freeform_centroid_abs = 0.05;
+        t.freeform_moment_rel = 3e-3;
         return t;
     }
 };

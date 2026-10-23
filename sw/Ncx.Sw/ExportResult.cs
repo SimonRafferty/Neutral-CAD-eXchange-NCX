@@ -41,11 +41,14 @@ namespace Ncx.Sw
         // set once a feature of the part is opaque: later features may depend on it, so they carry their results too
         bool opaqueSeen;
 
+        /// <summary>Features whose export found something the API cannot rebuild (they carry their result).</summary>
+        readonly HashSet<JObj> needsResult = new HashSet<JObj>();
+
         bool WantsResult(string type, JObj nf)
         {
             if (nf.Str("status") == "opaque") opaqueSeen = true;   // (a curve or sketch too: what is built on it may fail)
             if (NoGeometry.Contains(type)) return false;
-            if (nf.Str("status") == "opaque" || opaqueSeen) return true;
+            if (nf.Str("status") == "opaque" || opaqueSeen || needsResult.Contains(nf)) return true;
             // a full round cannot be made through SolidWorks' API (and few systems have one)
             if (nf.Obj("def")?.Str("filletType") == "fullRound") return true;
             return Results == "all" || (Results == "extended" && ExtendedTypes.Contains(type));

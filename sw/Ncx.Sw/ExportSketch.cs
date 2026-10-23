@@ -185,6 +185,11 @@ namespace Ncx.Sw
                             });
                         }
                         if (handles.Count > 0) e["handles"] = handles;
+                        // the exact curve, so a system that fits splines differently reproduces it (the fit points
+                        // stay the editable intent)
+                        var nurbs = SplineNurbs(s, spts, frame, is3d);
+                        if (nurbs != null) e["nurbs"] = nurbs;
+                        else Approx(nf, "spline " + e["id"] + ": exact curve not readable (fit points carried)");
                         break;
                     }
                     default:
@@ -266,6 +271,48 @@ namespace Ncx.Sw
         }
 
         /// <summary>A sketch entity as a local id, the origin as an external reference, else null.</summary>
+        /// <summary>A spline's exact B-spline in sketch coordinates (model coordinates for a 3D sketch), mm:
+        /// {degree, knots, controlPoints, weights?, periodic}. Null when the curve cannot be read or placed.</summary>
+        static JObj SplineNurbs(ISketchSegment seg, List<ISketchPoint> fit, SketchFrame frame, bool is3d)
+        {
+            try
+            {
+                var curve = (ICurve)seg.GetCurve();
+                var pd = (ISplineParamData)curve.GetBCurveParams5(false, false, true, false);
+                if (pd == null || fit.Count == 0) return null;
+                object cpo, kno;
+                pd.GetControlPoints(out cpo);
+                pd.GetKnotPoints(out kno);
+                var cp = (double[])cpo;
+                var kn = (double[])kno;
+                int dim = pd.Dimension, n = pd.ControlPointsCount;   // dim 3: x y z; 4: x y z w (rational)
+                if (cp == null || kn == null || cp.Length < n * dim) return null;
+                // the curve is in sketch space or in model space depending on the version: a clamped spline's first
+                // control point is its first fit point, which tells them apart
+                var f0 = new[] { fit[0].X, fit[0].Y, fit[0].Z };
+                var c0 = new[] { cp[0], cp[1], cp[2] };
+                bool sketchSpace = is3d || V.Norm(V.Sub(c0, f0)) < 1e-9;
+                if (!sketchSpace && V.Norm(V.Sub(frame.ToSketch(c0), f0)) > 1e-9) return null;
+                var pts = new List<object>();
+                var weights = new List<object>();
+                for (int i = 0; i < n; i++)
+                {
+                    var q = new[] { cp[i * dim], cp[i * dim + 1], cp[i * dim + 2] };
+                    if (!sketchSpace) q = frame.ToSketch(q);
+                    pts.Add(is3d ? new[] { U.Mm(q[0]), U.Mm(q[1]), U.Mm(q[2]) } : new[] { U.Mm(q[0]), U.Mm(q[1]) });
+                    if (dim == 4) weights.Add(cp[i * dim + 3]);
+                }
+                var o = new JObj
+                {
+                    { "degree", pd.Order - 1 }, { "knots", kn.Cast<object>().ToList() }, { "controlPoints", pts },
+                    { "periodic", pd.Periodic != 0 }
+                };
+                if (weights.Count > 0) o["weights"] = weights;
+                return o;
+            }
+            catch (Exception) { return null; }   // not a B-spline curve, or not readable in this version
+        }
+
         object LocalOrExternal(SketchIds ids, object o, SketchFrame frame)
         {
             string local = ids.Of(o);

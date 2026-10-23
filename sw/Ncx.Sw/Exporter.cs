@@ -203,6 +203,8 @@ namespace Ncx.Sw
             {
                 fm.EditRollback(1, "");   // swMoveRollbackBarToEnd: leave the model as it was
             }
+            foreach (var measure in afterExport) measure();   // what can only be measured in the finished model
+            afterExport.Clear();
             // not a fault: the shape arrives exactly (seeded coordinates); only later edits may differ
             foreach (JObj nf in features)
                 if (nf.Str("type") == "sketch" && nf.Obj("def")?.Str("constrained") == "under")
@@ -213,6 +215,7 @@ namespace Ncx.Sw
             string activeCfg;
             var configurations = ExportConfigurations(d, out activeCfg);
             var parameters = ExportParameters(out var equations);
+            AddEquationTargets(equations, features);
             var bodies = ((object[])part.GetBodies2(0, false) ?? new object[0]).Cast<IBody2>().ToList();
             var json = new JObj
             {
@@ -468,6 +471,9 @@ namespace Ncx.Sw
             nf.Remove("def");
         }
 
+        /// <summary>Measurements a feature's export defers until the model is rolled forward to its end.</summary>
+        readonly List<Action> afterExport = new List<Action>();
+
         static void Approx(JObj nf, string note)
         {
             nf["status"] = "approximate";
@@ -494,6 +500,55 @@ namespace Ncx.Sw
                     equations.Add(new JObj { { "target", lhs }, { "expression", rhs }, { "native", eq }, { "status", "mapped" } });
             }
             return pars;
+        }
+
+        /// <summary>Each equation's target in neutral form (FORMAT-SPEC 4, "Equations"): a sketch dimension by its sketch
+        /// and dimension ids, or a feature's own dimension (D1@Boss-Base) as the one field of the feature's definition
+        /// that holds its value (end.depth). Left out when that field is not unique.</summary>
+        void AddEquationTargets(List<object> equations, List<object> features)
+        {
+            var byName = new Dictionary<string, JObj>(StringComparer.OrdinalIgnoreCase);
+            foreach (JObj nf in features)
+                if (nf.Str("name") != null && !byName.ContainsKey(nf.Str("name"))) byName[nf.Str("name")] = nf;
+            foreach (JObj eq in equations)
+            {
+                string t = eq.Str("target");
+                int at = t.IndexOf('@');
+                JObj nf;
+                if (at < 0 || !byName.TryGetValue(t.Substring(at + 1), out nf) || nf.Obj("def") == null) continue;
+                string dimName = t.Substring(0, at);
+                var def = nf.Obj("def");
+                if (nf.Str("type") == "sketch" || nf.Str("type") == "sketch3d")
+                {
+                    var dm = def.Arr("dimensions").Cast<JObj>().FirstOrDefault(x => string.Equals(x.Str("name"), dimName, StringComparison.OrdinalIgnoreCase));
+                    if (dm != null) eq["targetRef"] = new JObj { { "kind", "dimension" }, { "feature", nf.Str("id") }, { "id", dm.Str("id") } };
+                    continue;
+                }
+                var dim = doc.Parameter(t) as IDimension;
+                if (dim == null) continue;
+                double sys = dim.SystemValue;   // m or rad
+                var want = new[] { U.Mm(sys), U.Deg(sys) };
+                var hits = new List<string>();
+                NumericFields(def, "", (path, v) =>
+                {
+                    if (want.Any(w => Math.Abs(w - v) <= 1e-6 * Math.Max(1, Math.Abs(v)))) hits.Add(path);
+                });
+                if (hits.Count == 1)
+                    eq["targetRef"] = new JObj { { "kind", "featureField" }, { "feature", nf.Str("id") }, { "field", hits[0] } };
+            }
+        }
+
+        /// <summary>Every number in a definition with its dotted path, not descending into references or lists.</summary>
+        static void NumericFields(JObj o, string prefix, Action<string, double> visit)
+        {
+            if (o.Has("kind") && o.Has("by")) return;   // a reference
+            foreach (var kv in o)
+            {
+                string path = prefix.Length == 0 ? kv.Key : prefix + "." + kv.Key;
+                if (kv.Value is double) visit(path, (double)kv.Value);
+                else if (kv.Value is int) visit(path, (int)kv.Value);
+                else if (kv.Value is JObj) NumericFields((JObj)kv.Value, path, visit);
+            }
         }
 
         // ------------------------------------------------------------------- references

@@ -55,6 +55,7 @@ with the source export.
 | P43_flange_options | base flange extruded both ways, edge flange with a position offset | exact | exact |
 | P44_cut_list | weldment cut-list items with user properties | exact | exact² |
 | P45_sketch3d | 3D sketches (lines along x/y/z with dimensions, an arc), a member along a 3D path | exact | exact² |
+| P46_weldment_corners | weldment corner treatments: end miter, end butt 1 with a 1 mm gap, end butt 2 with coped joints | exact | exact² |
 | L01 | layout → Insert Part (derived plate) + pin → assembly, face mates | exact | exact |
 | L02 | plane mates, nested sub-assembly, mates to a sub-assembly plane and to nested components | exact | exact |
 | L03 | mates on axes, a reference point, a component origin, a sketch point, vertices; a limit mate | exact | exact |

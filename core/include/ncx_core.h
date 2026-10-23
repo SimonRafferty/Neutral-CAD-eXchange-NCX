@@ -95,7 +95,8 @@ NCX_API ncx_status ncx_fingerprint_hash(const char* fingerprint_json, char** out
 
 /*
  * Resolve one geometric reference against host-measured candidates (FORMAT-SPEC.md section 5).
- * request_json: {"ref": {descriptor: geom.type, params, samples, area|length, bbox, weak?},
+ * request_json: {"ref": the whole reference as the payload carries it, {kind, by: "geom", geom: {type, params,
+ *                        samples, area|length, bbox, weak?}} (not its inner geom: that resolves nothing),
  *                "tolerance"?: mm (default 0.001), "relax"?: bool (default true: retry once at 10x),
  *                "candidates": [{id, type, params, distances: [one per ref sample],
  *                                area|length, samples?: [own points], neighbors?: [ids]}]}

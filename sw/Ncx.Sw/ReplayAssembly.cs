@@ -322,9 +322,10 @@ namespace Ncx.Sw
             var md = (IWidthMateFeatureData)asm.CreateMateData(11);   // swMateWIDTH
             md.WidthSelection = width;
             md.TabSelection = tab;
-            md.ConstraintType = (int)p.Num("constraint");
-            if (p.Num("constraint") == 2) md.DistanceFromEnd = U.M(p.Num("distance"));
-            if (p.Num("constraint") == 3) md.PercentDistanceFromEnd = p.Num("percent");
+            int wc = Neutral.Code("widthConstraint", p["constraint"]);
+            md.ConstraintType = wc;
+            if (wc == 2) md.DistanceFromEnd = U.M(p.Num("distance"));
+            if (wc == 3) md.PercentDistanceFromEnd = p.Num("percent");
             md.FlipDimension = p.Bool("flip");
             if (asm.CreateMate(md) == null) return "width mate rejected";
             Name(LastMate(adoc), m.Str("name"));
@@ -370,9 +371,10 @@ namespace Ncx.Sw
                     var bind = System.Reflection.BindingFlags.SetProperty;
                     Action<string, object> set = (name, v) => md.GetType().InvokeMember(name, bind, null, md, new[] { v });
                     set("EntitiesToMate", ents.ToArray());
-                    set("Constraint", (int)p.Num("constraint"));
-                    if (p.Num("constraint") == 2) set("Distance", U.M(p.Num("distance")));
-                    if (p.Num("constraint") == 3) set("Percent", p.Num("percent"));
+                    int sc = Neutral.Code("slotConstraint", p["constraint"]);
+                    set("Constraint", sc);
+                    if (sc == 2) set("Distance", U.M(p.Num("distance")));
+                    if (sc == 3) set("Percent", p.Num("percent"));
                     set("FlipDirection", p.Bool("flip"));
                     if (asm.CreateMate(md) != null)
                     {
@@ -386,7 +388,7 @@ namespace Ncx.Sw
             // no slot mate data (SolidWorks 2018): AddMate5, which makes a free slot mate
             for (int i = 0; i < ents.Count; i++) ((IEntity)ents[i].WrappedObject).Select4(i > 0, null);
             int err;
-            var mate = asm.AddMate5(21, 2, false, 0, 0, 0, 0, 0, 0, 0, 0, false, false, (int)p.Num("constraint"), out err);
+            var mate = asm.AddMate5(21, 2, false, 0, 0, 0, 0, 0, 0, 0, 0, false, false, Neutral.Code("slotConstraint", p["constraint"]), out err);
             adoc.ClearSelection2(true);
             if (mate == null) return "slot mate rejected (error " + err + ")";
             Name(LastMate(adoc), m.Str("name"));
@@ -493,7 +495,7 @@ namespace Ncx.Sw
             {
                 string why = SelectAssemblyRef(adoc, comps, refs[i].Obj("ref"), i > 0, i);   // marks 0, 1, 2
                 if (why != null) return "plane reference " + i + ": " + why;
-                c[i] = (int)refs[i].Num("constraint");
+                c[i] = Neutral.PlaneConstraintCode(refs[i]);
                 v[i] = (c[i] & 16) != 0 ? U.Rad(refs[i].Num("value")) : U.M(refs[i].Num("value"));
             }
             var feat = (IFeature)((IFeatureManager)adoc.FeatureManager).InsertRefPlane(c[0], v[0], c[1], v[1], c[2], v[2]);

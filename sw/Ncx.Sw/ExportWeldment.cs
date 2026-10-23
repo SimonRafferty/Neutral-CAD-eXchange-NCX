@@ -24,6 +24,26 @@ namespace Ncx.Sw
             return new JObj { { "standard", Path.GetFileName(Path.GetDirectoryName(dir)) }, { "type", Path.GetFileName(dir) }, { "size", file } };
         }
 
+        /// <summary>Corner treatment names (FORMAT-SPEC 4, structuralMember) by swSolidworksWeldmentEndCondOptions_e.</summary>
+        static readonly Dictionary<int, string> CornerTreatments = new Dictionary<int, string>
+        {
+            { 0, "none" }, { 1, "miter" }, { 2, "butt1" }, { 3, "butt2" }
+        };
+
+        /// <summary>True when the part has per-corner treatments (Corner Management, SolidWorks 2021+). No API
+        /// call creates them, so members are then carried with their result.</summary>
+        bool HasCornerManagement()
+        {
+            try
+            {
+                object fm = doc.FeatureManager;
+                var folders = fm.GetType().InvokeMember("GetCornerManagementFolders",
+                    System.Reflection.BindingFlags.InvokeMethod, null, fm, null) as object[];
+                return folders != null && folders.Length > 0;
+            }
+            catch { return false; }   // 2018-2020: no corner management
+        }
+
         void ExportStructuralMember(IFeature f, JObj nf)
         {
             var d = (IStructuralMemberFeatureData)f.GetDefinition();
@@ -43,10 +63,17 @@ namespace Ncx.Sw
                     if (segs == null) return;
                     if (g.MirrorProfile) Approx(nf, "mirrored profile not carried");
                     if (g.LocateProfilePoint != null) Approx(nf, "located profile point not carried (profile centred)");
+                    string corner;
+                    if (!g.ApplyCornerTreatment) corner = "none";
+                    else if (!CornerTreatments.TryGetValue(g.CornerTreatmentType, out corner))
+                    {
+                        corner = "none";
+                        Approx(nf, "corner treatment " + g.CornerTreatmentType + " not carried");
+                    }
                     groups.Add(new JObj
                     {
                         { "segments", segs }, { "angle", U.Deg(g.Angle) },
-                        { "cornerTreatment", g.ApplyCornerTreatment ? (object)g.CornerTreatmentType : null },
+                        { "cornerTreatment", corner },
                         { "gapWithinGroup", U.Mm(g.GapWithinGroup) }, { "gapForOtherGroups", U.Mm(g.GapForOtherGroups) },
                         { "mergeArcSegmentBodies", g.MergeArcSegmentBodies }, { "miterMergeCondition", g.MiterMergeCondition }
                     });
@@ -54,8 +81,14 @@ namespace Ncx.Sw
                 nf["def"] = new JObj
                 {
                     { "profile", profile }, { "groups", groups },
-                    { "connectedSegments", d.ConnectedSegmentsOption }, { "allowProtrusion", d.AllowProtrusion }
+                    { "connectedSegments", d.ConnectedSegmentsOption == 2 ? "copedCut" : "simpleCut" },
+                    { "allowProtrusion", d.AllowProtrusion }
                 };
+                if (HasCornerManagement())
+                {
+                    Approx(nf, "per-corner treatments (Corner Management) are not carried: no API call creates them; the member's result is");
+                    needsResult.Add(nf);
+                }
             }
             finally { d.ReleaseSelectionAccess(); }
         }

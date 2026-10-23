@@ -58,7 +58,7 @@ namespace Ncx.Sw
                 refs = new List<object> { hit.Item1 };
                 axisType = hit.Item2;
             }
-            var def = new JObj { { "axisType", axisType }, { "references", refs } };
+            var def = new JObj { { "axisType", Neutral.Word("axisType", axisType) }, { "references", refs } };
             if (p != null)
                 def["line"] = new JObj { { "start", U.Mm(new[] { p[0], p[1], p[2] }) }, { "end", U.Mm(new[] { p[3], p[4], p[5] }) } };
             nf["def"] = def;
@@ -107,7 +107,7 @@ namespace Ncx.Sw
                 int along = d.AlongCurveOption;   // swRefPointAlongCurveType_e: 0 distance, 1 percentage, 2 evenly
                 nf["def"] = new JObj
                 {
-                    { "pointType", d.Type }, { "references", refs }, { "alongCurve", along },
+                    { "pointType", Neutral.Word("pointType", d.Type) }, { "references", refs }, { "alongCurve", Neutral.Word("alongCurve", along) },
                     { "distance", along == 0 ? U.Mm(d.Distance) : d.Distance }, { "point", U.Mm(new[] { pt[0], pt[1], pt[2] }) }
                 };
             }

@@ -45,11 +45,11 @@ namespace Ncx.Sw
             var want = nf.Obj("def");
             var d = (ISheetMetalFeatureData)f.GetDefinition();
             bool change = false;
-            if (d.BendAllowanceType != (int)want.Num("bendAllowanceType")) { d.BendAllowanceType = (int)want.Num("bendAllowanceType"); change = true; }
+            if (d.BendAllowanceType != Neutral.Code("bendAllowance", want["bendAllowanceType"])) { d.BendAllowanceType = Neutral.Code("bendAllowance", want["bendAllowanceType"]); change = true; }
             if (Math.Abs(d.KFactor - want.Num("kFactor")) > 1e-9) { d.KFactor = want.Num("kFactor"); change = true; }
             if (Math.Abs(U.Mm(d.BendAllowance) - want.Num("bendAllowance")) > 1e-6) { d.BendAllowance = U.M(want.Num("bendAllowance")); change = true; }
             if (d.UseAutoRelief != want.Bool("autoRelief")) { d.UseAutoRelief = want.Bool("autoRelief"); change = true; }
-            if (d.AutoReliefType != (int)want.Num("reliefType")) { d.AutoReliefType = (int)want.Num("reliefType"); change = true; }
+            if (d.AutoReliefType != Neutral.Code("relief", want["reliefType"])) { d.AutoReliefType = Neutral.Code("relief", want["reliefType"]); change = true; }
             if (Math.Abs(d.ReliefRatio - want.Num("reliefRatio")) > 1e-9) { d.ReliefRatio = want.Num("reliefRatio"); change = true; }
             if (change && !f.ModifyDefinition(d, doc, null)) return "sheet-metal defaults could not be applied";
             return null;
@@ -137,8 +137,8 @@ namespace Ncx.Sw
             // arrays of SolidWorks objects must reach it as VT_DISPATCH (out of process too)
             var feat = FM.InsertSheetMetalEdgeFlange2(edges.Select(x => new DispatchWrapper(x)).ToArray(),
                                                       skNfs.Select(x => new DispatchWrapper(features[x.Str("id")])).ToArray(), opts,
-                                                      U.Rad(def.Num("angle")), U.M(def.Num("bendRadius")), (int)def.Num("position"), 0,
-                                                      (int)def.Num("reliefType"), def.Num("reliefRatio"),
+                                                      U.Rad(def.Num("angle")), U.M(def.Num("bendRadius")), Neutral.Code("flangePosition", def["position"]), 0,
+                                                      Neutral.Code("relief", def["reliefType"]), def.Num("reliefRatio"),
                                                       U.M(def.Num("reliefWidth")), U.M(def.Num("reliefDepth")), 1, null);
             string err = Created(n0, feat, nf, "edge flange");
             if (err != null) return err;
@@ -150,7 +150,7 @@ namespace Ncx.Sw
                 var d = (IEdgeFlangeFeatureData)ef.GetDefinition();
                 d.AccessSelections(doc, null);
                 d.UsePositionOffset = true;
-                d.PositionOffsetType = (int)po.Num("type", 1);
+                d.PositionOffsetType = Neutral.Code("flangeOffset", po["type"], 1);
                 d.PositionOffsetDistance = U.M(po.Num("distance"));
                 d.ReversePositionOffset = po.Bool("reverse");
                 if (!ef.ModifyDefinition(d, doc, null)) return "edge flange position offset not applied";
@@ -173,7 +173,7 @@ namespace Ncx.Sw
             string why = SelectAll(def.Arr("edges"), false, 0);
             if (why != null) return "hem edge: " + why;
             int n0 = FeatureCount();
-            FM.InsertSheetMetalHem2((int)def.Num("hemType"), (int)def.Num("position"), def.Bool("reverse"), U.M(def.Num("length")),
+            FM.InsertSheetMetalHem2(Neutral.Code("hemType", def["hemType"]), Neutral.Code("hemPosition", def["position"]), def.Bool("reverse"), U.M(def.Num("length")),
                                     U.M(def.Num("gap")), U.Rad(def.Num("angle")), U.M(def.Num("radius")), U.M(def.Num("miterGap")),
                                     null, true, 0, 0, false, 0.5, 0, 0);
             return Created(n0, null, nf, "hem");
@@ -185,7 +185,7 @@ namespace Ncx.Sw
             string why = SelectAll(def.Arr("entities"), false, 0);
             if (why != null) return "corner: " + why;
             int n0 = FeatureCount();
-            doc.InsertSheetMetalBreakCorner((int)def.Num("breakType"), U.M(def.Num("distance")));
+            doc.InsertSheetMetalBreakCorner(Neutral.Code("breakType", def["breakType"]), U.M(def.Num("distance")));
             return Created(n0, null, nf, "break corner");
         }
 
@@ -199,7 +199,7 @@ namespace Ncx.Sw
             if (why != null) return "fixed face: " + why;
             int n0 = FeatureCount();
             FM.InsertSheetMetal3dBend(U.Rad(def.Num("angle")), def.Bool("useDefaultRadius"), U.M(def.Num("radius")),
-                                      def.Bool("reverse"), (short)def.Num("position"), null);
+                                      def.Bool("reverse"), (short)Neutral.Code("flangePosition", def["position"]), null);
             return Created(n0, null, nf, "sketched bend");
         }
 
@@ -213,8 +213,8 @@ namespace Ncx.Sw
             if (why != null) return "miter edge: " + why;
             FM.InsertSheetMetalMiterFlange(def.Bool("useDefaultRadius"), U.M(def.Num("bendRadius")), U.M(def.Num("gap")),
                                            def.Bool("useDefaultRelief"), def.Bool("useReliefRatio"), def.Num("reliefRatio"),
-                                           U.M(def.Num("reliefWidth")), U.M(def.Num("reliefDepth")), (int)def.Num("reliefType"),
-                                           def.Bool("trimSideBends"), (int)def.Num("position"), U.M(def.Num("startOffset")),
+                                           U.M(def.Num("reliefWidth")), U.M(def.Num("reliefDepth")), Neutral.Code("relief", def["reliefType"]),
+                                           def.Bool("trimSideBends"), Neutral.Code("flangePosition", def["position"]), U.M(def.Num("startOffset")),
                                            U.M(def.Num("endOffset")), null);
             doc.ClearSelection2(true);
             var feat = FindFeature("SMMiteredFlange", x => !Registered(x));
@@ -239,7 +239,7 @@ namespace Ncx.Sw
             features[nf.Str("id")] = feat;
             var d = (IClosedCornerFeatureData)feat.GetDefinition();
             d.AccessSelections(doc, null);
-            d.CornerType = (int)def.Num("cornerType");
+            d.CornerType = Neutral.Code("closedCorner", def["cornerType"]);
             d.GapDistance = U.M(def.Num("gap"));
             d.OverlapUnderlapRatio = def.Num("overlapRatio");
             d.OpenBendRegion = def.Bool("openBendRegion");
@@ -259,7 +259,7 @@ namespace Ncx.Sw
             // positions one lower than the feature data reports them. The angle is rounded: a jog is discontinuous at
             // 90 degrees (90.0000000000002, the radian round trip of 90, folds it differently)
             doc.InsertSheetMetalJog(Math.Round(def.Num("angle"), 9), U.M(def.Num("radius")), U.M(def.Num("offset")), def.Bool("reverse"),
-                                    def.Bool("fixProjectedLength"), (short)(def.Num("dimensionPosition") - 1), (short)(def.Num("bendPosition") - 1));
+                                    def.Bool("fixProjectedLength"), (short)(Neutral.Code("jogDimension", def["dimensionPosition"]) - 1), (short)(Neutral.Code("jogPosition", def["bendPosition"]) - 1));
             return Created(n0, null, nf, "jog");
         }
 
