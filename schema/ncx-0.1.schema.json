@@ -337,7 +337,7 @@
       "properties": {
         "id": {"$ref": "#/$defs/id"},
         "document": {"$ref": "#/$defs/id"},
-        "configuration": {"$ref": "#/$defs/id"},
+        "configuration": {"type": "string", "minLength": 1, "description": "the referenced configuration's name (not its id)"},
         "name": {"type": "string"},
         "transform": {"type": "array", "items": {"type": "number"}, "minItems": 16, "maxItems": 16, "description": "row-major 4x4, mm"},
         "fixed": {"type": "boolean"},

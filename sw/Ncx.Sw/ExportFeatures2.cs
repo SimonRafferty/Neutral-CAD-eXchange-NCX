@@ -278,16 +278,18 @@ namespace Ncx.Sw
                     { "drillAngle", U.Deg(d.DrillAngle) }
                 };
                 // SolidWorks leaves sizes its table supplies at 0 (an M6 counterbore's drilled diameter): the hole's own
-                // cylindrical faces give them, smallest = the drilled hole, largest = a counterbore
-                var dias = HoleDiameters(f);
+                // cylindrical faces give them, smallest = the drilled hole, largest = a counterbore. Measured once the
+                // model is rolled forward: the feature has no faces in the rolled-back state it is exported in.
                 int kind = Neutral.GeneralHoleType(d.Type);
-                if (dias.Count > 0)
+                afterExport.Add(() =>
                 {
+                    var dias = HoleDiameters(f);
+                    if (dias.Count == 0) return;
                     sizes["measuredDiameters"] = dias.Cast<object>().ToList();
                     if (sizes.Num("holeDiameter") <= 0) sizes["holeDiameter"] = dias[0];
                     if ((kind == 0 || kind == 6) && sizes.Num("counterBoreDiameter") <= 0 && dias.Count > 1)
                         sizes["counterBoreDiameter"] = dias[dias.Count - 1];
-                }
+                });
                 nf["def"] = new JObj
                 {
                     { "face", face }, { "points", pts },

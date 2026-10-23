@@ -193,7 +193,7 @@ other systems may use them where they understand them, and otherwise ignore them
 | `breakType` (breakCorner) | `fillet` `chamfer` |
 | `cornerType` (closedCorner) | `butt` `overlap` `underlap` |
 | `cornerType` (weldmentTrim) | `none` `miter` `butt1` `butt2` `endTrim` |
-| `reliefType` (sheetMetal, edgeFlange, miterFlange) | `rectangular` `tear` `obround` `none` `tearBend` |
+| `reliefType` (sheetMetal, edgeFlange, miterFlange) | `rectangular` `tear` `obround` `none` `tearBend`; `default` = the sheet metal's own relief |
 | `bendAllowanceType` (sheetMetal) | `bendTable` `kFactor` `bendAllowance` `bendDeduction` `bendCalculationTable` `gaugeTable` |
 | `position` (edgeFlange, miterFlange, sketchedBend) | `materialInside` `materialOutside` `bendOutside` `bendCenterline` `bendSharp` `bendTangent` |
 | `positionOffset.type` (edgeFlange) | `blind` `upToVertex` `upToSurface` `offsetFromSurface` `midPlane` `upToEdgeAndMerge` |
@@ -297,7 +297,10 @@ that meets a field it does not understand reports the feature `approximate` rath
     segment *starts* there stops against it;
   - `butt2`: the reverse of `butt1`.
 
-  Segment direction is the sketch entity's start to end. Treatments apply only between members of one group. Per-
+  Segment direction is the direction of travel along the group's segments in the order listed (each segment runs
+  towards the point it shares with the next), not the sketch entity's own start to end. With `connectedSegments:
+  copedCut`, the stopping member is cut to the other member's whole outer section. Treatments apply only between
+  members of one group. Per-
   corner overrides (a different treatment, trim or order at one corner) are not in schema 0.1: an exporter carries
   such a member's `result` and reports it `approximate`. Files written by the SolidWorks add-in 0.4.0 and earlier
   carry `cornerTreatment` and `connectedSegments` as SolidWorks enumeration numbers (1 miter, 2 butt1, 3 butt2;

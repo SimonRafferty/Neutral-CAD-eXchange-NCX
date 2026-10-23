@@ -36,8 +36,8 @@ is about, and a message saying what is wrong.
 
 ## Setup
 
-- Python 3.10 or later, with `pip install jsonschema cadquery-ocp` (the versions this was tested with are in
-  `requirements.lock.txt` at the repository root, if present: jsonschema 4, cadquery-ocp 7.9).
+- Python 3.10 or later, with `pip install "jsonschema>=4" "cadquery-ocp>=7.9,<8"`. cadquery-ocp 8 renamed OCP
+  classes the validator uses: with it, level 4 does not run and every file comes out INCOMPLETE.
 - The core: `core/build.ps1` (Windows; CMake elsewhere). The validator finds `core/build/Release/ncx_core.dll`, or
   the library named by `NCX_CORE_DLL`.
 

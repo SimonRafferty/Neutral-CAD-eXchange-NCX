@@ -691,6 +691,8 @@ def level3(rep, model, core):
                     and ft.get("type") not in ("sketch", "sketch3d", "plane", "axis", "point", "coordinateSystem"):
                 rep.warn(L, "M-RESULT-MISSING", "4", f"opaque feature '{name}' carries no result: an importer must fall "
                          "back to plain geometry for the whole part if it changes geometry", fpath)
+            if isinstance(ft.get("def"), dict):
+                check_enumerated(rep, ft, fpath)
             for cfg in (ft.get("suppressed") or {}):
                 if cfg not in cfg_ids | cfg_names:
                     rep.error(L, "M-CONFIG", "4", f"suppression state for unknown configuration {cfg}",
@@ -896,6 +898,49 @@ def check_sketch(rep, ft, fpath, dims_by_full):
                 hint = f" (out by a factor of {measured / val:.6g}: a unit mistake?)"
             rep.error(L, "M-SEED-DIMENSION", "4", f"sketch '{ft.get('name')}': dimension {dm.get('name')} is {val} but "
                       f"the seeded geometry measures {measured:.6g}{hint}", f"{fpath}/def/dimensions/{di}")
+
+
+# FORMAT-SPEC §4 "Enumerated values": the fields that hold a word (paths inside `def`; "[]" = each list item).
+# `native` and a hole's `wizard` block hold the source's own data and are not checked.
+ENUMERATED = {
+    "plane": ["references[].constraint"], "axis": ["axisType"], "point": ["pointType", "alongCurve"],
+    "hole": ["holeType", "end.type"], "cosmeticThread": ["endCondition", "diameterType"],
+    "hem": ["hemType", "position"], "breakCorner": ["breakType"], "closedCorner": ["cornerType"],
+    "weldmentTrim": ["cornerType"], "sheetMetal": ["reliefType", "bendAllowanceType"],
+    "edgeFlange": ["reliefType", "position", "positionOffset.type"], "miterFlange": ["reliefType", "position"],
+    "sketchedBend": ["position"], "jog": ["bendPosition", "dimensionPosition"],
+    "gusset": ["profileType", "thicknessType", "location"], "rib": ["extrusion", "ribType"],
+    "structuralMember": ["cornerTreatment", "connectedSegments"],
+}
+
+
+def field_values(o, parts, path):
+    """(value, path) for a dotted field path inside o; "name[]" walks each item of a list."""
+    if not parts:
+        yield o, path
+        return
+    key, rest = parts[0], parts[1:]
+    if not isinstance(o, dict):
+        return
+    if key.endswith("[]"):
+        for i, item in enumerate(o.get(key[:-2]) or []):
+            yield from field_values(item, rest, f"{path}/{key[:-2]}/{i}")
+    elif key in o:
+        yield from field_values(o[key], rest, f"{path}/{key}")
+
+
+def check_enumerated(rep, ft, fpath):
+    L = 3
+    for field in ENUMERATED.get(ft.get("type"), []):
+        for v, where in field_values(ft["def"], field.split("."), fpath + "/def"):
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                rep.warn(L, "M-ENUM-NUMBER", "4", f"'{field}' of {ft.get('type')} '{ft.get('name')}' is the number {v}, "
+                         "not one of the spec's words: another system cannot read it", where)
+    if ft.get("type") == "hole":
+        sizes = ft["def"].get("sizes") or {}
+        if not (sizes.get("holeDiameter") or 0) > 0 and not sizes.get("measuredDiameters"):
+            rep.warn(L, "M-HOLE-SIZE", "4", f"hole '{ft.get('name')}' has no drilled diameter (holeDiameter 0 and no "
+                     "measuredDiameters): another system has to measure it on the geometry", fpath + "/def/sizes")
 
 
 def check_result_shape(rep, ft, fpath):

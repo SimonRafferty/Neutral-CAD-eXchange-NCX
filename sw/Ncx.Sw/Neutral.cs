@@ -30,8 +30,8 @@ namespace Ncx.Sw
             { "breakType", new Dictionary<int, string> { { 0, "fillet" }, { 1, "chamfer" } } },
             // swClosedCornerTypes_e
             { "closedCorner", new Dictionary<int, string> { { 1, "butt" }, { 2, "overlap" }, { 3, "underlap" } } },
-            // swSheetMetalReliefTypes_e
-            { "relief", new Dictionary<int, string> { { 1, "rectangular" }, { 2, "tear" }, { 3, "obround" }, { 4, "none" }, { 5, "tearBend" } } },
+            // swSheetMetalReliefTypes_e (-1: the sheet metal's default, as a miter flange reports it)
+            { "relief", new Dictionary<int, string> { { -1, "default" }, { 1, "rectangular" }, { 2, "tear" }, { 3, "obround" }, { 4, "none" }, { 5, "tearBend" } } },
             // swFlangePositionTypes_e (edge flange, miter flange, sketched bend)
             { "flangePosition", new Dictionary<int, string> { { 1, "materialInside" }, { 2, "materialOutside" }, { 3, "bendOutside" }, { 4, "bendCenterline" }, { 5, "bendSharp" }, { 6, "bendTangent" } } },
             // swFlangeOffsetTypes_e
