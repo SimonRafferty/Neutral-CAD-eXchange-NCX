@@ -283,10 +283,17 @@ that meets a field it does not understand reports the feature `approximate` rath
   chain it runs along), `useDefaultRadius`, `bendRadius`, `position`, `trimSideBends`, `gap`,
   `startOffset`, `endOffset`, and relief (`useDefaultRelief`, `reliefType`, `useReliefRatio`,
   `reliefRatio`, `reliefWidth`, `reliefDepth`).
+  - `gap`: at a corner between two of its flanges, each flange ends **square** (its end face normal to its own
+    edge, not cut on the mitre plane), and the two ends sit symmetrically so that the flanges' inner end edges are
+    `gap` apart. P35 (90° corner, gap 1, thickness 2): each end face lies 0.707 (gap/√2) beyond the other flange's
+    inner face. A system whose corners are mitred builds the nearest it can and checks against the `result`.
 - `edgeFlange`: `edge` (the edge it is built on), `profile` (the flange's outline, a sketch on a plane through
   the edge at `angle` to the face), `angle`, `useDefaultRadius`, `bendRadius`, `position`, relief (as for
   `miterFlange`), `positionOffset` (`{type, distance, reverse}`, a shift of the flange along the face), `length`
-  and `bendGeometry`. Along several edges in one feature it adds `edges` and `profiles` (one profile sketch per
+  and `bendGeometry`. `positionOffset`: the flange is placed as `position` says for the edge, then moved `distance`
+  outward along the face, and the sheet is extended along the face to meet its bend (P43, materialInside, offset
+  5 from an edge at x 80: the flange's outer face is at 85, the bend axis at 81, the base sheet now runs to 81). A
+  system without an offset builds the same thing as an extension of the face plus a flange. Along several edges in one feature it adds `edges` and `profiles` (one profile sketch per
   edge, in the same order) to the single `edge` and `profile` (the first of each).
   - `length`: `{type, distance, datum, reverse}`: how far the flange runs (`type` as `positionOffset.type`), and
     the line it is measured from: `outerVirtualSharp` (where the outer faces of the sheet and of the flange,
@@ -297,10 +304,25 @@ that meets a field it does not understand reports the feature `approximate` rath
     edge (the outer size grows by the thickness); `bendOutside`: the bend starts at the edge. Check the result
     against `bendGeometry`.
 - `closedCorner`: `faces` (the flange end faces to extend), `cornerType` (butt, overlap, underlap),
-  `gap`, `overlapRatio`, `openBendRegion`.
+  `gap`, `overlapRatio`, `openBendRegion`. With t the thickness, "the listed flange" the one whose end face is in
+  `faces` and "the other flange" the one it meets (measured on P34, gap 0.2, t 2):
+  - `overlap`: the listed flange is extended until its end is `gap` short of the other flange's inner face; the
+    other flange runs across the listed flange's end for `overlapRatio` × t, measured from the listed flange's
+    inner face (ratio 1: across its whole thickness; 0.5: half way);
+  - `underlap`: the reverse: the other flange stops `gap` short of the listed flange's inner face, and the listed
+    flange runs across its end for `overlapRatio` × t;
+  - `butt`: both flanges end square, symmetrically, with their inner end edges `gap` apart (as `miterFlange.gap`).
+  The bend region at the corner (`openBendRegion: false`) is closed in the source system's own way; the feature's
+  `result` has its exact shape.
 - `jog`: `line`, `fixedFace`, `angle`, `offset`, `reverse`, `dimensionPosition`, `bendPosition`,
-  `fixProjectedLength`, `radius`. A jog is discontinuous at 90°: importers should round the angle
-  before use (a radian round trip gives 90.0000000000002).
+  `fixProjectedLength`, `radius`, and `bendGeometry` (its two bends). A jog is discontinuous at 90°: importers
+  should round the angle before use (a radian round trip gives 90.0000000000002). With t the thickness, the
+  sheet beyond the line moves by `offset` + t for `dimensionPosition: insideOffset` (`offset` is the clear gap
+  between the fixed and the moved sheet), by `offset` for `outsideOffset` (between like faces of the two) and by
+  `offset` − t for `overall` (from the outer face of one to the far face of the other) (measured on P29).
+  `fixProjectedLength: true`: the moved part keeps its extent (its far edge stays where it was; the jog adds
+  material); `false`: the developed length is kept, so the far edge moves towards the line by what the jog uses.
+  A system without a jog builds it as two bends placed on `bendGeometry`.
 
 - `cosmeticThread`: `edge` (the circular edge it starts from), `diameter` (the minor diameter of an
   external thread, major of an internal one), `depth`, `endCondition`, `callout` (e.g. `M10x1.5`),
@@ -330,9 +352,11 @@ that meets a field it does not understand reports the feature `approximate` rath
   the other), `thickness`, `location` (end or mid point), `offset`, `offsetDistance`.
 - `variable` fillets (`filletType: "variable"`): `edges`, `vertexRadii` (`{vertex, radius}`), `radius`
   (the default, may be 0), and `transition`, how the radius changes between vertices: `straight` (in proportion
-  to the distance along the edge) or `smooth` (SolidWorks' smooth law, which leaves and reaches each vertex radius
-  without a sudden change of slope). A system without the source's law uses its own smooth one and reports the
-  fillet approximate; the feature's `result` (always carried for variable fillets) has the exact faces.
+  to the distance along the edge) or `smooth`: between two vertex radii r0 and r1,
+  r(s) = r0 + (r1 − r0)(3s² − 2s³), s the fraction of the edge's length from the r0 vertex (it leaves and reaches
+  each radius with zero slope). Measured on P30: a Fusion fillet with intermediate radii placed on this law (9 per
+  edge) matches the source at native tolerance. A system without a variable law builds it from intermediate radii
+  on this curve; the feature's `result` (always carried for variable fillets) has the exact faces.
 - `loft` / `loftCut`: `sections` (the section sketches, in order), `guides`, `centerline`, `closed`, the start
   and end tangency (`startTangency`, `endTangency`, `startTangentLength`, `endTangentLength`,
   `reverseStartTangent`, `reverseEndTangent`), `maintainTangency`, `merge`, and `connectors`.

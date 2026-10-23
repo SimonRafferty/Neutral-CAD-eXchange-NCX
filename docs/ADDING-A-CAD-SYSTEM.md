@@ -136,7 +136,10 @@ Implement in this order, testing each on its sample before moving on:
 8. properties, materials, appearances.
 From step 1 on, any feature you have not implemented yet (or whose rebuild fails) takes its carried `result` when
 it has one. Exporters attach results only to opaque features and to the feature types few systems share (spec §4),
-so the core types above must still be rebuilt properly.
+so the core types above must still be rebuilt properly. A mapped feature can carry a `result` too (a sheet-metal
+corner, a loft between unlike sections): rebuild it natively first and use the result only if your rebuild differs.
+Sheet metal is where most of the per-system work goes: start from `bendGeometry` and the definitions in spec §4,
+not from the source's option words.
 **Use a carried result to check your own rebuild.** Where the payload does not pin down one of your system's
 settings (which side a flange's bend goes, which datum its length is from, which way a loft lines up), build each
 candidate and keep the one whose bodies equal the feature's `result` (fingerprint compare, `exchange` tolerance).
@@ -201,7 +204,10 @@ add yours. Ones that cost a debugging round each:
   along -Z (map everything through the payload's `frame`). Fusion has a sheet-metal API (flanges, hems, unfold); a
   one-sided through-all cut on a sheet-metal face fails (a two-sided one works); its sheet-metal chamfer takes
   plain millimetre numbers, not centimetres; a split's body list shows only one piece; lofts merge tangent arcs
-  unless told not to; a face's plane normal ignores the face's orientation.
+  unless told not to; a face's plane normal ignores the face's orientation. Changing a sheet-metal rule invalidates
+  every edge already found (find them again after); a new edge flange that meets an earlier flange re-shapes the
+  earlier flange's bend (SolidWorks leaves it whole); the lofted flange refuses open profiles; a variable fillet's
+  intermediate-radius list is not in position order; `windows.h` defines `near` (a name clash in C++).
 - **SolidWorks** (the comments in `sw/Ncx.Sw`): equation edits are refused unless the
   document is active; any rebuild replaces body objects; arrays of SolidWorks objects must be typed dispatch arrays
   out of process.
