@@ -1,0 +1,2 @@
+# shell scripts must keep LF line endings on Windows checkouts (core.autocrlf=true breaks them in sh)
+*.sh text eol=lf

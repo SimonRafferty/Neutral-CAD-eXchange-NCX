@@ -23,7 +23,7 @@ If you have received an NCX file and your CAD system has no NCX add-in, you can 
 | CAD system | add-in | state |
 |---|---|---|
 | SolidWorks | `sw/` | import and export; a 56-model test corpus rebuilds exactly in 2018 and 2026 |
-| Autodesk Fusion | `fusion/` | in progress |
+| Autodesk Fusion | `fusion/` | 0.1.0, import and export, written by an AI agent from this repo alone (no SolidWorks): of the 56 test files, 25 rebuild exactly and 31 approximately (sheet-metal cut lists, jogs and other features Fusion lacks are built as functional equivalents), none fall back to plain geometry |
 | Onshape | | planned |
 | *your CAD system* | | see "Adding a CAD system" below |
 

@@ -1,0 +1,13 @@
+{
+	"autodeskProduct":	"Fusion",
+	"type":	"addin",
+	"id":	"7d6a2f0e-5b1c-4c39-9d0a-6c0b2c8e4a11",
+	"author":	"NCX project",
+	"description":	{
+		"":	"NCX (Neutral CAD eXchange): import and export parametric models in one STEP file."
+	},
+	"version":	"0.1.0",
+	"runOnStartup":	true,
+	"supportedOS":	"windows",
+	"editEnabled":	false
+}
