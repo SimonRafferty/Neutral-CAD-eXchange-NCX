@@ -936,6 +936,22 @@ def check_enumerated(rep, ft, fpath):
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 rep.warn(L, "M-ENUM-NUMBER", "4", f"'{field}' of {ft.get('type')} '{ft.get('name')}' is the number {v}, "
                          "not one of the spec's words: another system cannot read it", where)
+    d = ft["def"]
+    for i, b in enumerate(d.get("bendGeometry") or []):
+        ax = b.get("axis") or {}
+        ok = is_vec(ax.get("point")) and is_vec(ax.get("direction")) and abs(vnorm(ax["direction"]) - 1) < 1e-6 \
+            and 0 <= (b.get("innerRadius") or -1) <= (b.get("outerRadius") or -1)
+        if not ok:
+            rep.error(L, "M-BEND-GEOMETRY", "4", f"bendGeometry {i} of '{ft.get('name')}' is not an axis (point, unit "
+                      "direction) with 0 <= innerRadius <= outerRadius", f"{fpath}/def/bendGeometry/{i}")
+    n_sections = len(d.get("sections") or [])
+    for i, c in enumerate(d.get("connectors") or []):
+        pts = c.get("points") or []
+        ok = len(pts) == 2 and all(is_vec(p) for p in pts) and \
+            all(isinstance(c.get(k), int) and 0 <= c[k] < n_sections for k in ("from", "to")) and c["from"] != c["to"]
+        if not ok:
+            rep.error(L, "M-LOFT-CONNECTOR", "4", f"connector {i} of loft '{ft.get('name')}' is not two points joining "
+                      "two of its sections", f"{fpath}/def/connectors/{i}")
     if ft.get("type") == "hole":
         sizes = ft["def"].get("sizes") or {}
         if not (sizes.get("holeDiameter") or 0) > 0 and not sizes.get("measuredDiameters"):

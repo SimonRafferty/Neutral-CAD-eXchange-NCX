@@ -230,7 +230,8 @@ namespace Ncx.Sw
                 nf["def"] = new JObj
                 {
                     { "filletType", "variable" }, { "radius", U.Mm(d.DefaultRadius) }, { "edges", edges },
-                    { "vertexRadii", vertexRadii }, { "propagate", d.PropagateToTangentFaces }
+                    { "vertexRadii", vertexRadii }, { "propagate", d.PropagateToTangentFaces },
+                    { "transition", Neutral.Word("filletTransition", d.TransitionType) }
                 };
                 if (d.GetControlPointsCount() > 0) Approx(nf, d.GetControlPointsCount() + " control points along the edges not carried (vertex radii are)");
             }

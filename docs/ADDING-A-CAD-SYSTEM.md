@@ -137,6 +137,11 @@ Implement in this order, testing each on its sample before moving on:
 From step 1 on, any feature you have not implemented yet (or whose rebuild fails) takes its carried `result` when
 it has one. Exporters attach results only to opaque features and to the feature types few systems share (spec §4),
 so the core types above must still be rebuilt properly.
+**Use a carried result to check your own rebuild.** Where the payload does not pin down one of your system's
+settings (which side a flange's bend goes, which datum its length is from, which way a loft lines up), build each
+candidate and keep the one whose bodies equal the feature's `result` (fingerprint compare, `exchange` tolerance).
+If none matches, use the result itself and report the feature `approximate`. Measured placement fields
+(`bendGeometry`, loft `connectors`) give the same check where no result is carried.
 After each part is rebuilt, **verify** it (spec §6.1): mass properties (`native` tolerances), face by face
 (`ncx_face_compare` with your measured candidates), structure (every payload feature present under its name), and
 the flex probes when the file carries them (spec §6.4).
@@ -193,7 +198,10 @@ add yours. Ones that cost a debugging round each:
   instances cannot be suppressed through the API; moving an occurrence in a parametric design is only a pending
   position until captured; MeasureManager measures only entities in the root's context; parameter names that are
   unit symbols (`W`, `H`) are refused; centimetres and radians internally; a sketch on the XZ plane has its y axis
-  along -Z (map everything through the payload's `frame`).
+  along -Z (map everything through the payload's `frame`). Fusion has a sheet-metal API (flanges, hems, unfold); a
+  one-sided through-all cut on a sheet-metal face fails (a two-sided one works); its sheet-metal chamfer takes
+  plain millimetre numbers, not centimetres; a split's body list shows only one piece; lofts merge tangent arcs
+  unless told not to; a face's plane normal ignores the face's orientation.
 - **SolidWorks** (the comments in `sw/Ncx.Sw`): equation edits are refused unless the
   document is active; any rebuild replaces body objects; arrays of SolidWorks objects must be typed dispatch arrays
   out of process.

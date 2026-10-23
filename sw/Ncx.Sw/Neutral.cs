@@ -36,6 +36,10 @@ namespace Ncx.Sw
             { "flangePosition", new Dictionary<int, string> { { 1, "materialInside" }, { 2, "materialOutside" }, { 3, "bendOutside" }, { 4, "bendCenterline" }, { 5, "bendSharp" }, { 6, "bendTangent" } } },
             // swFlangeOffsetTypes_e
             { "flangeOffset", new Dictionary<int, string> { { 1, "blind" }, { 2, "upToVertex" }, { 3, "upToSurface" }, { 4, "offsetFromSurface" }, { 5, "midPlane" }, { 6, "upToEdgeAndMerge" } } },
+            // swFlangeDimTypes_e: where an edge flange's length is measured from
+            { "flangeDatum", new Dictionary<int, string> { { 1, "outerVirtualSharp" }, { 2, "innerVirtualSharp" }, { 3, "bendTangent" } } },
+            // swVariableRadiusFilletOptions_e
+            { "filletTransition", new Dictionary<int, string> { { 0, "smooth" }, { 1, "straight" } } },
             // swJogPositionType_e
             { "jogPosition", new Dictionary<int, string> { { 1, "bendCenterline" }, { 2, "materialInside" }, { 3, "materialOutside" }, { 4, "bendOutside" } } },
             // swJogDimensionPositionType_e

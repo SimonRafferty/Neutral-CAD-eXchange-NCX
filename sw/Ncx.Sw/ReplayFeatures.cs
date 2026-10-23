@@ -199,6 +199,7 @@ namespace Ncx.Sw
                     if (res.Str("result") != "resolved") { data.ReleaseSelectionAccess(); return "fillet vertex " + res.Str("result"); }
                     data.SetRadius(ents[0], U.M(vr.Num("radius")));
                 }
+                if (def.Has("transition")) data.TransitionType = Neutral.Code("filletTransition", def["transition"]);
             }
             catch (System.Runtime.InteropServices.COMException e)
             {

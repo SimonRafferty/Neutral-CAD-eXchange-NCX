@@ -365,24 +365,29 @@ namespace Ncx.Sw
                         break;
                     case "EdgeFlange":
                         ExportEdgeFlange(f, nf);
+                        DeferBendGeometry(f, nf);
                         break;
                     case "Hem":
                         ExportHem(f, nf);
+                        DeferBendGeometry(f, nf);
                         break;
                     case "BreakCorner":
                         ExportBreakCorner(f, nf);
                         break;
                     case "SMMiteredFlange":
                         ExportMiterFlange(f, nf);
+                        DeferBendGeometry(f, nf);
                         break;
                     case "CornerFeat":
                         ExportClosedCorner(f, nf);
                         break;
                     case "Jog":
                         ExportJog(f, nf);
+                        DeferBendGeometry(f, nf);
                         break;
                     case "SM3dBend":   // sketched bend
                         ExportSketchedBend(f, nf);
+                        DeferBendGeometry(f, nf);
                         break;
                     case "Sweep":
                     case "SweepCut":
@@ -442,6 +447,7 @@ namespace Ncx.Sw
                 string at = (e.StackTrace ?? "").Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Contains("Ncx.Sw."));
                 Opaque(nf, "export failed: " + e.Message + (at == null ? "" : " (" + at + ")"));
             }
+            MeasureAfterFeature(f, fm, nf);
             if (ForceOpaque.Contains(type)) Opaque(nf, "exported as opaque on request (testing)");
             if (!nf.Has("status")) nf["status"] = "mapped";
             if (WantsResult(type, nf))

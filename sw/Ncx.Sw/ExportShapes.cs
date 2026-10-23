@@ -110,6 +110,15 @@ namespace Ncx.Sw
                 {
                     var r = BendRef(b);
                     if (r == null) { Opaque(nf, "bend " + b.Name + " not recognised"); return; }
+                    // the bend's inner (smaller) cylindrical face, in the state the feature saw: how another system,
+                    // which has no bend sub-features, finds the bend. Flat (before a fold), the bend is a flat strip:
+                    // its larger face is carried instead.
+                    var bendFaces = ((object[])b.GetFaces() ?? new object[0]).Cast<IFace2>().ToList();
+                    var inner = bendFaces.Where(x => ((ISurface)x.GetSurface()).IsCylinder())
+                        .OrderBy(x => ((double[])((ISurface)x.GetSurface()).CylinderParams)[6]).FirstOrDefault()
+                        ?? bendFaces.OrderByDescending(x => x.GetArea()).FirstOrDefault();
+                    var bendFace = inner == null ? null : EntityRef(inner);
+                    if (bendFace != null) r["face"] = bendFace;
                     bends.Add(r);
                 }
                 if (bends.Count == 0) { Opaque(nf, "no bends found"); return; }

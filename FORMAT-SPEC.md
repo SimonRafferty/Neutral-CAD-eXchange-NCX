@@ -196,6 +196,8 @@ other systems may use them where they understand them, and otherwise ignore them
 | `reliefType` (sheetMetal, edgeFlange, miterFlange) | `rectangular` `tear` `obround` `none` `tearBend`; `default` = the sheet metal's own relief |
 | `bendAllowanceType` (sheetMetal) | `bendTable` `kFactor` `bendAllowance` `bendDeduction` `bendCalculationTable` `gaugeTable` |
 | `position` (edgeFlange, miterFlange, sketchedBend) | `materialInside` `materialOutside` `bendOutside` `bendCenterline` `bendSharp` `bendTangent` |
+| `length.datum` (edgeFlange) | `outerVirtualSharp` `innerVirtualSharp` `bendTangent`; `length.type` as `positionOffset.type` |
+| `transition` (variable fillet) | `smooth` `straight` |
 | `positionOffset.type` (edgeFlange) | `blind` `upToVertex` `upToSurface` `offsetFromSurface` `midPlane` `upToEdgeAndMerge` |
 | `bendPosition` / `dimensionPosition` (jog) | `bendCenterline` `materialInside` `materialOutside` `bendOutside` / `insideOffset` `outsideOffset` `overall` |
 | `profileType` / `thicknessType` / `location` (gusset) | `polygon` `triangle` / `inner` `bothSides` `outer` / `start` `center` `end` |
@@ -269,13 +271,31 @@ that meets a field it does not understand reports the feature `approximate` rath
   `angle`, `radius`, `miterGap`.
 - `breakCorner`: `entities` (corner edges or vertices), `breakType` (chamfer, fillet), `distance`.
 - `sketchedBend`: `line` (the bend-line sketch), `fixedFace` (a face descriptor), `angle`,
-  `reverse`, `position`, `useDefaultRadius`, `radius`.
+  `reverse`, `position`, `useDefaultRadius`, `radius`, and `bendGeometry` (below). `position` is where the bend
+  lies relative to the line. `materialInside`: the line, projected through the sheet, is the bend's outer virtual
+  sharp (where the outer faces of the fixed side and of the bent side, extended, meet). The other words are
+  SolidWorks' placements; for them, place the bend so it matches `bendGeometry`.
+- **`bendGeometry`** (edgeFlange, miterFlange, sketchedBend, hem, jog): each bend the feature made, measured just
+  after it: `axis` (`point`, at the middle of the bend along the axis, and unit `direction`), `innerRadius` and
+  `outerRadius`. It fixes where the bend is whatever the source system's position words mean: a system whose own
+  bend placements differ builds its bend so that its bend faces are these cylinders, and checks that they are.
 - `miterFlange`: `profile` (a sketch on a plane normal to the first edge, at its end), `edges` (the
   chain it runs along), `useDefaultRadius`, `bendRadius`, `position`, `trimSideBends`, `gap`,
   `startOffset`, `endOffset`, and relief (`useDefaultRelief`, `reliefType`, `useReliefRatio`,
   `reliefRatio`, `reliefWidth`, `reliefDepth`).
-- `edgeFlange` along several edges in one feature adds `edges` and `profiles` (one profile sketch per
+- `edgeFlange`: `edge` (the edge it is built on), `profile` (the flange's outline, a sketch on a plane through
+  the edge at `angle` to the face), `angle`, `useDefaultRadius`, `bendRadius`, `position`, relief (as for
+  `miterFlange`), `positionOffset` (`{type, distance, reverse}`, a shift of the flange along the face), `length`
+  and `bendGeometry`. Along several edges in one feature it adds `edges` and `profiles` (one profile sketch per
   edge, in the same order) to the single `edge` and `profile` (the first of each).
+  - `length`: `{type, distance, datum, reverse}`: how far the flange runs (`type` as `positionOffset.type`), and
+    the line it is measured from: `outerVirtualSharp` (where the outer faces of the sheet and of the flange,
+    extended, meet), `innerVirtualSharp` (the same for the inner faces) or `bendTangent` (the line where the bend
+    ends and the flange's flat part begins, on the outer face). The profile sketch shows the flange at this length.
+  - `position`: where the flange sits relative to the edge. `materialInside`: the flange's outer face is flush
+    with the edge (the part's outer size is kept); `materialOutside`: the flange's inner face is flush with the
+    edge (the outer size grows by the thickness); `bendOutside`: the bend starts at the edge. Check the result
+    against `bendGeometry`.
 - `closedCorner`: `faces` (the flange end faces to extend), `cornerType` (butt, overlap, underlap),
   `gap`, `overlapRatio`, `openBendRegion`.
 - `jog`: `line`, `fixedFace`, `angle`, `offset`, `reverse`, `dimensionPosition`, `bendPosition`,
@@ -309,7 +329,18 @@ that meets a field it does not understand reports the feature `approximate` rath
   (triangular, polygonal), `d1`..`d4`, `angle`, `useAngle`, `thicknessType` (both sides, one side,
   the other), `thickness`, `location` (end or mid point), `offset`, `offsetDistance`.
 - `variable` fillets (`filletType: "variable"`): `edges`, `vertexRadii` (`{vertex, radius}`), `radius`
-  (the default, may be 0).
+  (the default, may be 0), and `transition`, how the radius changes between vertices: `straight` (in proportion
+  to the distance along the edge) or `smooth` (SolidWorks' smooth law, which leaves and reaches each vertex radius
+  without a sudden change of slope). A system without the source's law uses its own smooth one and reports the
+  fillet approximate; the feature's `result` (always carried for variable fillets) has the exact faces.
+- `loft` / `loftCut`: `sections` (the section sketches, in order), `guides`, `centerline`, `closed`, the start
+  and end tangency (`startTangency`, `endTangency`, `startTangentLength`, `endTangentLength`,
+  `reverseStartTangent`, `reverseEndTangent`), `maintainTangency`, `merge`, and `connectors`.
+  - `connectors`: the loft's alignment, measured on the loft: each edge of the loft that runs from one section to
+    another, as `{from, to, points}`: the two sections' indices and the points it joins (model frame, mm). A
+    system lines its sections up so that these points join. Where the sections have different numbers of
+    segments (a rectangle to a circle), systems' default alignments differ, so such a loft also carries its
+    `result`.
 - `sketch3d`: a 3D sketch, defined as for `sketch` with these differences:
   - It has `space: "3d"` and no `plane` or `frame`.
   - Every coordinate is `[x, y, z]` in the model frame (mm), and dimension text positions are too.
@@ -322,8 +353,11 @@ that meets a field it does not understand reports the feature `approximate` rath
 - `planarSurface`: `profile`, a closed sketch.
 - `knit`: `surfaces` (bodies or faces), `formSolid`, `mergeEntities`, `gapControl`, `tolerance`, `maxGap`.
 - `wrap`: `sketch`, `face`, `wrapType` (`emboss`, `deboss`, `scribe`), `thickness`, `reverse`.
-- `unfold` / `fold` (sheet metal): `fixedFace`, and `bends` as `{feature, sub, name}`. `feature` is the
-  feature the bend belongs to, and `sub` is the bend's index among that feature's sub-features.
+- `unfold` / `fold` (sheet metal): `fixedFace`, and `bends` as `{feature, sub, name, face}`. `face` is a face
+  descriptor of the bend in the state the feature saw: its inner cylindrical face when bent (before an unfold), or
+  the flat strip's larger face when flat (before a fold). `feature` (the feature the bend belongs to), `sub` (the
+  bend's index among that feature's sub-features) and `name` are the source's own; a system without bend
+  sub-features finds the bend by `face`.
 - `mirrorPart`: the document is the mirror image of another part: `source` (a document id), `plane` (one
   of the source's origin planes, `{kind: "originPlane", plane}`), `transfer` (as for `insertPart`). It is
   the first feature of its document; an importer creates the document by mirroring the source.

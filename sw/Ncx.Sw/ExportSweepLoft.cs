@@ -99,8 +99,15 @@ namespace Ncx.Sw
                 if (centerline != null) def["centerline"] = centerline;
                 if (!cut) def["merge"] = d.Merge;
                 if (d.IsThinFeature()) Approx(nf, "thin loft replayed solid");
-                // the connectors (which vertices join across sections) are not carried: SolidWorks' default
-                // connection is used, which is what an unedited loft has
+                // the alignment (which point of each section joins which point of the next) is measured on the loft
+                // as its connectors; where the sections have different numbers of segments, no system can rely on its
+                // own default matching SolidWorks', so the loft also carries its result
+                var sketches = ((object[])d.Profiles ?? new object[0]).Select(o => o as IFeature)
+                    .Select(p => p == null ? null : p.GetSpecificFeature2() as ISketch).ToList();
+                DeferLoftConnectors(f, nf, sketches);
+                var counts = sketches.Select(s => s == null ? -1 : ((object[])s.GetSketchSegments() ?? new object[0])
+                    .Cast<ISketchSegment>().Count(g => !g.ConstructionGeometry)).Distinct().ToList();
+                if (counts.Count > 1) needsResult.Add(nf);
                 nf["def"] = def;
             }
             finally { d.ReleaseSelectionAccess(); }

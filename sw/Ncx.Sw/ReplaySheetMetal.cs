@@ -155,6 +155,20 @@ namespace Ncx.Sw
                 d.ReversePositionOffset = po.Bool("reverse");
                 if (!ef.ModifyDefinition(d, doc, null)) return "edge flange position offset not applied";
             }
+            var len = def.Obj("length");
+            if (len != null && len.Has("datum"))
+            {
+                // the line the flange length (and so the profile) is measured from; set only where it differs
+                var ef = features[nf.Str("id")];
+                var d = (IEdgeFlangeFeatureData)ef.GetDefinition();
+                int datum = Neutral.Code("flangeDatum", len["datum"], 1);
+                if (d.OffsetDimType != datum)
+                {
+                    d.AccessSelections(doc, null);
+                    d.OffsetDimType = datum;
+                    if (!ef.ModifyDefinition(d, doc, null)) return "edge flange length datum not applied";
+                }
+            }
             // the flange owns its profiles now (SolidWorks may have replaced the sketches): register those, in order
             int k = 0;
             for (var sub = (IFeature)features[nf.Str("id")].GetFirstSubFeature(); sub != null && k < skNfs.Count; sub = (IFeature)sub.GetNextSubFeature())

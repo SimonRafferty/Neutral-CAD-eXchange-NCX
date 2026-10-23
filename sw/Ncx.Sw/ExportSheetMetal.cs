@@ -278,6 +278,10 @@ namespace Ncx.Sw
                     if (d.PositionOffsetType != 0 && d.PositionOffsetType != 1)
                         Approx(nf, "position offset up to a reference (type " + d.PositionOffsetType + ") carried as its distance");
                 }
+                // the flange's length: how it ends, how far, and from which line it is measured (the profile sketch
+                // draws the flange to this length)
+                def["length"] = new JObj { { "type", Neutral.Word("flangeOffset", d.OffsetType) }, { "distance", U.Mm(d.OffsetDistance) },
+                                           { "datum", Neutral.Word("flangeDatum", d.OffsetDimType) }, { "reverse", d.ReverseOffset } };
                 if (!d.UseDefaultBendAllowance) Approx(nf, "flange bend allowance not carried (sheet-metal default used)");
                 nf["def"] = def;
             }
