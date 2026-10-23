@@ -171,6 +171,13 @@ Round-trip test: export from the target, import in the target, and compare.
 what other add-ins rely on (units, frames, seeds against dimensions, references, fingerprints against the geometry),
 which your own importer may not notice because it shares your exporter's assumptions.
 
+### Step 7: package
+Make the add-in installable by someone without build tools: the version set in one place; a build from a clean
+tree (delete the build output first) that works exactly as your README says; the built files checked for runtime
+dependencies a user would not have (link the C runtime statically, or ship it); a script that writes a zip of the
+ready-to-install add-in folder; and install-from-zip instructions in your README, tested on a machine by installing
+from the zip and importing a sample. The zip is published as a release asset, not committed.
+
 ## 5. Testing
 
 - Every sample must import with every check matching, or with an honest `approximate`/`fallback` report saying exactly
@@ -185,6 +192,7 @@ which your own importer may not notice because it shares your exporter's assumpt
 
 - Import works on all samples (matching, or reported and justified).
 - Export works and round-trips in the target system.
+- The add-in installs from its zip (Step 7).
 - `<your-folder>/README.md` says how to build and install the add-in; `<your-folder>/FINDINGS.md` records what was
   learned, including every feature translated by functional equivalence and why.
 - Issues are raised for anything in the spec or core that had to be worked around.
@@ -207,7 +215,10 @@ add yours. Ones that cost a debugging round each:
   unless told not to; a face's plane normal ignores the face's orientation. Changing a sheet-metal rule invalidates
   every edge already found (find them again after); a new edge flange that meets an earlier flange re-shapes the
   earlier flange's bend (SolidWorks leaves it whole); the lofted flange refuses open profiles; a variable fillet's
-  intermediate-radius list is not in position order; `windows.h` defines `near` (a name clash in C++).
+  intermediate-radius list is not in position order; `windows.h` defines `near` (a name clash in C++). A bend
+  radius override given as a plain number is read in millimetres; two-offset edge flange offsets run outward from
+  the edge's ends (holding a flange back needs a negative offset); a fold with two bend lines keeps the strip
+  between them and folds both sides (a jog is two folds, the far line first).
 - **SolidWorks** (the comments in `sw/Ncx.Sw`): equation edits are refused unless the
   document is active; any rebuild replaces body objects; arrays of SolidWorks objects must be typed dispatch arrays
   out of process.
