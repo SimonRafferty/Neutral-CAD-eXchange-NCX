@@ -22,7 +22,7 @@ If you have received an NCX file and your CAD system has no NCX add-in, you can 
 
 | CAD system | add-in | state |
 |---|---|---|
-| SolidWorks 2018 to 2026 (one binary) | `sw/` | import and export; a 55-model test corpus rebuilds exactly in 2018 and 2026 |
+| SolidWorks | `sw/` | import and export; a 55-model test corpus rebuilds exactly in 2018 and 2026 |
 | Autodesk Fusion | `fusion/` | in progress |
 | Onshape | | planned |
 | *your CAD system* | | see "Adding a CAD system" below |
