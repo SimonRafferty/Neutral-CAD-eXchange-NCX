@@ -60,6 +60,17 @@ To remove it, uninstall **NCX Translator for SOLIDWORKS** from Windows' *Install
 **Building it yourself** (developers): `installer\build.bat` builds the add-in and the installer. It needs the Visual
 Studio Build Tools, a SolidWorks 2018 install (for its interop libraries), the core built first, and Inno Setup 6.
 
+## Installing the Fusion add-in
+
+1. Download **`NCX-Fusion-<version>.zip`** from the
+   [Releases page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases) and unblock it (right-click >
+   Properties > Unblock).
+2. Extract it into Fusion's add-ins folder, `%APPDATA%\Autodesk\Autodesk Fusion 360\API\AddIns`, and restart
+   Fusion (or start **NCX** from Utilities > Add-Ins).
+3. The commands are in the **File** menu: *Import NCX...* and *Export NCX...*.
+
+Details, building it yourself and what it carries: [`fusion/README.md`](fusion/README.md).
+
 ## Adding a CAD system
 
 NCX is meant to grow by people adding add-ins for the CAD systems they use, and the repository is organised so that an
