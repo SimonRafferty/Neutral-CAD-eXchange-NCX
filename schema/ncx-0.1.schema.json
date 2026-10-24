@@ -360,6 +360,11 @@
         }},
         "params": {"type": "object"},
         "alignment": {"enum": ["aligned", "antiAligned", "closest"]},
+        "frame": {
+          "type": "object", "required": ["origin", "x", "z"],
+          "properties": {"origin": {"$ref": "#/$defs/vec3"}, "x": {"$ref": "#/$defs/vec3"}, "z": {"$ref": "#/$defs/vec3"}},
+          "description": "the mate's frame in the assembly frame at the solved placement (FORMAT-SPEC 5, Mates)"
+        },
         "status": {"$ref": "#/$defs/status"}
       }
     },

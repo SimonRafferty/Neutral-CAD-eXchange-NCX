@@ -709,6 +709,16 @@ def level3(rep, model, core):
             for ref_path, ref in refs:
                 check_id_ref(rep, M, did, ref, ref_path, fi)
             refs.clear()
+        for mi, mate in enumerate(doc.get("mates", []) or []):
+            fr = mate.get("frame") if isinstance(mate, dict) else None
+            if fr is None:
+                continue
+            x, z = (fr.get("x"), fr.get("z")) if isinstance(fr, dict) else (None, None)
+            if not (is_vec(fr.get("origin")) and is_vec(x) and is_vec(z)) if isinstance(fr, dict) else True:
+                rep.error(3, "M-FRAME", "5", f"mate '{mate.get('name')}' frame needs {{origin, x, z}}", f"{dpath}/mates/{mi}/frame")
+            elif abs(vnorm(x) - 1) > UNIT_TOL or abs(vnorm(z) - 1) > UNIT_TOL or abs(vdot(x, z)) > UNIT_TOL:
+                rep.error(3, "M-FRAME", "5", f"mate '{mate.get('name')}' frame axes are not perpendicular unit vectors",
+                          f"{dpath}/mates/{mi}/frame")
         for key in ("mates", "appearances", "cutLists"):
             walk_refs(doc.get(key), f"{dpath}/{key}", refs)
         for ref_path, ref in refs:

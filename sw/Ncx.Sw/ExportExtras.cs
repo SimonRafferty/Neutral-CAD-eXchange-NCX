@@ -217,8 +217,15 @@ namespace Ncx.Sw
             try
             {
                 nf["type"] = "revolvedSurface";
-                var def = new JObj { { "profile", ProfileRef(f, nf) } };   // the axis is the sketch's centreline
+                var def = new JObj { { "profile", ProfileRef(f, nf) } };
                 if (nf.Str("status") == "opaque") return;
+                // the axis as for a solid revolve. The API does not expose a revolved surface's axis: SolidWorks
+                // revolves about the profile sketch's centreline, so that is the axis when there is exactly one
+                var sk = (f.GetFirstSubFeature() as IFeature)?.GetSpecificFeature2() as ISketch;
+                var centrelines = ((object[])sk?.GetSketchSegments() ?? new object[0]).OfType<ISketchSegment>()
+                    .Where(s => s.ConstructionGeometry && s.GetType() == 0).ToList();   // GetType 0: a line
+                var axis = centrelines.Count == 1 ? EntityRef(centrelines[0]) : null;
+                if (axis != null) def["axis"] = axis;
                 int t = d.Type;   // swRevolveType_e
                 def["mode"] = t % 3 == 0 ? "oneDirection" : t % 3 == 1 ? "midPlane" : "twoDirection";
                 def["revolveType"] = t;

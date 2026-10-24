@@ -438,7 +438,9 @@ with the rest of the history.
   - The importer reports the feature as `approximate`, giving the reason it was not rebuilt.
   - The part is verified at exchange tolerance, because the bodies went through STEP.
   - Parameter-flex probes that move such a part are skipped, with a reason.
-- **What exporters attach it to:** always to an `opaque` feature that changes geometry, and by
+- **What exporters attach it to:** to every `opaque` feature that changes geometry (where producing it has a real
+  cost, such as a quota-limited STEP export of an intermediate state, an exporter may leave it out: the validator
+  warns, `M-RESULT-MISSING`, and an importer that cannot rebuild the feature falls back to plain geometry), and by
   default to the feature types few systems share. The SolidWorks exporter uses: the sheet-metal
   extras (`hem`, `jog`, `miterFlange`, `closedCorner`, `breakCorner`, `sketchedBend`, `loftedBend`,
   `edgeFlange`), `gusset`, `endCap`, `weldmentTrim`, `rib`, variable fillets, dome, wrap and
@@ -498,7 +500,10 @@ linked to the source's parameters: the source then still drives the part, and th
   `frame.z`; `reverse` puts it on the left.
 - `baseFlange` thickness: to the right of an open profile, as for a thin wall; against `frame.z` for a closed one.
 - `revolve`: an unreversed revolve turns clockwise about its axis's direction as recorded (start to end), that is
-  against the right-hand rule; `reverse` turns it the other way.
+  against the right-hand rule; `reverse` turns it the other way. `revolveCut` and `revolvedSurface` the same.
+  `revolvedSurface` carries `axis` like `revolve` (the profile sketch's centreline). Files from the SolidWorks
+  add-in before 0.5.2 lack it, and so does one whose profile sketch has several centrelines: the axis is then the
+  sketch's only construction line, else undetermined (report the feature `approximate` and check by geometry).
 - Patterns: along the direction reference's own direction (an edge descriptor's `params.direction`, an axis's
   `line` from start to end); `reverse` flips it. `skipped` instance indices count from 0, the seed being 0.
 - Where a system's own convention differs, build by these rules and check by fingerprint; if that fails, try the
@@ -563,6 +568,17 @@ MINOR, and ignores unknown fields and feature types, reporting them as warnings.
 the origin, features, sketch entities and transferred items, for example
 `{kind:"sketchEntity", by:"id", feature, id}`. Ids are stable because replay records the native
 handle it creates for each id.
+
+**Origin planes** are named by geometry, in the model's own frame (the names happen to be SolidWorks'):
+
+| `plane` | plane | normal |
+|---|---|---|
+| `front` | XY | +Z |
+| `top` | XZ | +Y |
+| `right` | YZ | +X |
+
+An importer maps each name to its own plane with that geometry, never to its own plane of the same name (Onshape's
+*Front* is XZ). A sketch's `frame` is authoritative for the sketch's axes; the plane only says which plane it lies on.
 
 **Rule 2, by geometry:** B-rep topology (faces, edges, vertices picked by fillets, chamfers,
 shells, drafts, face-based sketches and mates) is referenced by a **descriptor**. It is recorded
@@ -647,7 +663,17 @@ within 0.01 mm.
   - `rackPinion`: the rack's edge (or face) and the pinion's cylindrical face, `params {pitchDiameter,
     travelPerTurn (= π × pitchDiameter), byTravel (which of the two the user set), reverse}`.
   - `cam`: the cam's faces (a tangent chain) and the follower's face or point.
-- A mate whose parameters the source could not fully read is `approximate` with a `note` (e.g.
+- **`frame`** (optional; SolidWorks add-in 0.5.2 on): `{origin, x, z}` in the assembly frame at the solved
+  placement (mm), for systems whose mates join two coordinate frames (Onshape mate connectors, Fusion joints).
+  - `z` is the direction of the mate's first axial entity (cylinder, cone, circle, line or axis), else the normal
+    of its first plane.
+  - `origin` is where that axis meets the mate's first plane not parallel to it (a hinge: the pin axis on the
+    coincident face), else a point of the entity itself (any point on a concentric mate's axis).
+  - `x` is the assembly's X made square to `z` (its Y when `z` is within about 25° of X); it carries no intent.
+  - A connector at `frame`, expressed in each mated component's own frame (through its `transform`), puts both
+    sides at the same frame in the solved placement, so the joint is satisfied there with no sense to choose.
+    A concentric + coincident pair becomes one revolute at the concentric mate's axis through the coincident
+    mate's origin. The refs stay the intent; a dimensioned mate's value still lies between its refs.
   SolidWorks 2018 cannot read a screw's pitch or a gear's direction).
 - **Mates with no counterpart.** Every component arrives where the file places it (`transform`), so
   an importer that cannot make a mate loses only that mate's motion, never a position.
@@ -718,6 +744,20 @@ An importer verifies each part it rebuilt, and reports every check:
 A mass `mismatch` replaces the part by its reference B-rep (the other checks are then not run).
 The others are reported, not acted on.
 
+**When the target cannot measure exactly.** Two kernels measure the same freeform surface differently (measured:
+9e-5 relative in volume for one spline extrusion, SolidWorks against Onshape), which fails `native` even for a perfect
+rebuild. For a body the payload marks `freeform`, the mass check also passes when the rebuild matches the importer's
+own measurement of the file's B-rep (the stale check's reference) at `native` *and* the payload at `exchange`. Some
+systems give exact volume and area but centroid and moments only from a mesh, or only after assigning a material that
+would change the user's model. Volume and area must then still meet `native`. Centroid and moments may be compared at
+`exchange` instead, and the report says so (for example `mass: match (centroid, moments at exchange: mesh)`).
+A mesh of a curved body lies inside it and measures small: scale mesh moments to the exact volume,
+`moments × (V / V_mesh)^(5/3)`, and name the correction in the report (measured on a radius-40 gear: 6.6e-4 low
+uncorrected, 1.2e-4 corrected).
+
+The comparisons here and in 6.3 and 6.4 are **per body**: bodies are paired as `ncx_fingerprint_compare_ex` pairs
+them.
+
 ### 6.2 Structure
 
 Every payload feature that is not opaque must exist in the rebuild under its name, and, when the
@@ -729,6 +769,9 @@ either way (seeded coordinates), so this is what shows a lost relation or dimens
 dimension where a driving one was. It costs nothing and touches nothing in the source. An `under`
 sketch is reported to the user as a note: it arrives with exactly the source's shape, but when edited
 each CAD system's solver decides what moves.
+The definition-state check applies where the target reports a sketch's definition state (Onshape's API does not).
+An importer that cannot read it reports `structure: match (definition state not checkable)`; flex probes (6.4), where
+the file carries them, test the same behaviour.
 
 ### 6.3 Face by face
 
@@ -743,6 +786,10 @@ reference face is resolved as by `ncx_reference_match`; then:
 
 `match` = one for one with equal areas; `topology` = the same surfaces and areas cut into faces
 differently (not a failure); anything unmatched, extra or of different area = `mismatch`.
+
+In a part with several bodies, run the comparison once per pair of bodies (paired as in 6.1), with only that body's
+faces as candidates. Faces of two bodies can coincide (a block split by a plane): compared together they would be
+`ambiguous`.
 
 ### 6.4 Parameter flex
 

@@ -81,7 +81,14 @@ Import is the priority: it is what lets someone who received an NCX file use it.
 - **Units.** The payload is in millimetres and degrees. Many CAD APIs use other units internally (Fusion: centimetres,
   radians); convert at the boundary and nowhere else.
 - **Coordinate frames.** Sketches carry an explicit frame (origin, x, z). A target sketch's own axes may differ;
-  map through the frame (see the SolidWorks `SketchFrame`).
+  map through the frame (see the SolidWorks `SketchFrame`). The hard part is knowing your system's own frame for a
+  sketch, especially on a face: before writing the sketch translator, measure it with one throwaway sketch each on
+  every default plane, on a face in each axis direction and on an offset plane.
+- **Origin planes by geometry, not by name.** `originPlane` names are defined by geometry in spec §5 (`front` = XY,
+  `top` = XZ, `right` = YZ). Your system may give the same words to other planes (Onshape's *Front* is XZ).
+- **Find the target's machine-readable feature definitions first.** Many CAD APIs publish every feature's parameter
+  names, enum values and types (Onshape: `featurespecs` plus its OpenAPI file). Cache them and check every feature
+  you create against them before sending it; it makes nearly every feature right first time.
 - **The notice body.** Every NCX file carries a "READ ME" body (spec §2.6). The import must delete it from any geometry
   it imports and must never rebuild it.
 - **No hidden dependencies.** The add-in must run on a machine with only the target CAD system installed.
@@ -103,7 +110,20 @@ Work in this order. Keep notes as you go (what you tried, what the target's API 
    is used, and `sw/Ncx.Sw/Host.cs` for how geometry facts are measured for the core.
 3. Open the sample NCX files in the target CAD system as plain STEP, to see the geometry and the notice body.
 4. Decide the add-in technology (the target's preferred, version-stable route: e.g. C++ for Fusion, as its
-   bundled Python changes with updates) and how it will call `ncx_core` (link the C ABI directly from C++).
+   bundled Python changes with updates) and how it will call `ncx_core` (link the C ABI directly from C++). A
+   cloud-only system may leave no choice: if its own scripting cannot read a local file or create features (Onshape's
+   FeatureScript cannot), the importer is a client of its web API, and a real distribution is an app of that system
+   (sign-in, a service running your code, a panel for the UI). Build the client and describe the distribution.
+5. **Metered APIs (cloud systems): find the quotas before designing anything.** Many limit calls per account and per
+   endpoint, often without publishing the per-endpoint numbers (Onshape, measured 2026-10, may change: FeatureScript
+   evaluation 100 a day; reading a Part Studio's feature list 100 per window; `bodydetails` 500 per window;
+   translations and STEP exports 10 per window, refilled within minutes; no header reports the per-key or annual
+   total). Read the rate-limit headers (`X-Rate-Limit-Remaining`, `Retry-After`) on every response from the first
+   request and log them per endpoint with a count of your own; never let the design depend on one quota-limited
+   endpoint. Know what the
+   measurements are *for*, so you can take each from its cheapest source: the matcher needs each candidate's type,
+   parameters, size and distances to the samples; the mass check needs volume, area, centroid and principal moments.
+   A B-rep description endpoint (Onshape's `bodydetails`) often has all of the matcher's facts.
 
 ### Step 2: read a file
 0. **Make the add-in drivable without clicks** before anything else: you will run it hundreds of times. If the
@@ -112,6 +132,10 @@ Work in this order. Keep notes as you go (what you tried, what the target's API 
    `Application.fireCustomEvent`), runs it there and writes a result file. Load the real implementation from a copy
    of its DLL, so a rebuild is reloaded without restarting the CAD system. Loading a new add-in the first time
    usually needs a restart of the CAD system: check first that no document has unsaved changes.
+   With a metered API you cannot run it hundreds of times: make every run cheap and resumable instead (cache every
+   response on disk, never upload the same file twice, delete your own earlier attempt, work out locally all you can).
+   A cache must be order-aware: the same request made in another model state (a flex probe repeats a measurement)
+   must be replayed in sequence, not matched by content, or a flexed measurement ends up in an export.
 1. Build the core (`core/build.ps1`, or CMake on other platforms) and call `ncx_payload_read` on every sample and on
    `conformance/vectors`; check the statuses match `conformance/vectors/vectors.json`.
 2. Import the file's STEP geometry with the target's own importer as the **reference** (used for the stale check, the
@@ -119,6 +143,9 @@ Work in this order. Keep notes as you go (what you tried, what the target's API 
    if your STEP importer drops body names (Fusion's does), by the header's `noticebox`: the solid with that box.
    Check how your system measures an imported body: some report zero mass properties for a body without a material
    (Fusion: give it one, any density, before measuring). Fingerprints cover solids only (§6).
+   Where importing into the target is expensive (a metered translation), read the reference locally instead: the
+   repository's OpenCASCADE host (`python/ncx/occhost.py`) gives its face descriptors and fingerprint for nothing.
+   Import it into the target only when it is needed as the plain-geometry fallback.
 3. Implement the **stale check** (spec §6): fingerprint the imported bodies (volume, area, centroid, principal moments,
    box, in mm) and compare with the payload's fingerprint through `ncx_fingerprint_compare_ex` with the `exchange`
    profile. A mismatch means: import the plain geometry and say why.
@@ -133,7 +160,9 @@ Implement in this order, testing each on its sample before moving on:
 5. equations, parameters, configurations;
 6. derived parts (`insertPart`), multibody features;
 7. sweep, loft, sheet metal, hole wizard, weldments (functionally equivalent where needed);
-8. properties, materials, appearances.
+8. properties, materials, appearances, cut lists: these are not features and are easy to forget. Report each of
+   them per document (carried, approximate or dropped) even when you carry nothing, or a part with lost appearances
+   reports "exact".
 From step 1 on, any feature you have not implemented yet (or whose rebuild fails) takes its carried `result` when
 it has one. Exporters attach results only to opaque features and to the feature types few systems share (spec §4),
 so the core types above must still be rebuilt properly. A mapped feature can carry a `result` too (a sheet-metal
@@ -143,11 +172,18 @@ not from the source's option words.
 **Use a carried result to check your own rebuild.** Where the payload does not pin down one of your system's
 settings (which side a flange's bend goes, which datum its length is from, which way a loft lines up), build each
 candidate and keep the one whose bodies equal the feature's `result` (fingerprint compare, `exchange` tolerance).
-If none matches, use the result itself and report the feature `approximate`. Measured placement fields
+If none matches, use the result itself and report the feature `approximate`. Check *before* the result too: its
+`replaces` fingerprint is the part as it was just before the feature, so it tells whether your earlier steps were
+right (a thickness side, an extrude sense) at the moment the result is used; flip the earlier undetermined senses
+until it matches. Measured placement fields
 (`bendGeometry`, loft `connectors`) give the same check where no result is carried.
 After each part is rebuilt, **verify** it (spec §6.1): mass properties (`native` tolerances), face by face
 (`ncx_face_compare` with your measured candidates), structure (every payload feature present under its name), and
-the flex probes when the file carries them (spec §6.4).
+the flex probes when the file carries them (spec §6.4). If your system cannot give exact mass properties without
+changing the user's model (a material it would have to assign, a centroid only from a mesh), spec §6.1 says which
+quantities must still be exact and how to report the rest.
+A carried result is cheap on a desktop system but may not be elsewhere: on Onshape a STEP enters a Part Studio only
+through a translation job, which costs several requests and leaves an extra Part Studio in the document.
 
 ### Step 4: assemblies
 Components with their placements and fixed state, nested sub-assemblies, mates (or joints derived from them).
@@ -155,6 +191,16 @@ Components with their placements and fixed state, nested sub-assemblies, mates (
   first (Fusion's Derive needs saved cloud documents), building the whole file in one document is acceptable.
   Insert Part is then rebuilt as the source's sketches in the part, with their dimensions linked to the source's
   parameters: the layout still drives the part, and the flex probes prove it. Report it `approximate`.
+- **Frame-based mate systems** (Onshape mate connectors, Fusion joints) join two coordinate frames, while the payload's
+  mates carry faces, edges and planes. Use the mate's `frame` (spec §5, "Mates"): put a connector at that frame on
+  each mated component (the frame taken into the component's own frame through its `transform`); both sides then
+  coincide at the solved placement, with no axis sense to guess. A concentric + coincident pair is one revolute at
+  the concentric mate's axis through the coincident mate's origin. Files without `frame` (SolidWorks add-in before
+  0.5.2): put the connector at the centre of the circular edge where the cylinder meets the mated plane, build,
+  read the placement back and flip the axis sense if the component moved (a revolute's free turn is not a move).
+- **Assembly cuts** in a system whose assemblies cannot cut: cutting the part itself is right only when the cut
+  changes every instance the same way. Otherwise report the cut failed and keep the instances uncut (each part still
+  matches its own fingerprint).
 
 ### Step 5: the user's side
 - A minimal UI: two commands (Import NCX, Export NCX) where the target system puts such commands. Show progress
@@ -167,6 +213,8 @@ Walk the target's model and write the payload: the reverse of every step above, 
 state each feature saw, fingerprints, and flex probes where the spec says. Export the STEP geometry with the target's
 own exporter (AP214 when available) and let `ncx_payload_write` embed the payload and the notice body.
 Round-trip test: export from the target, import in the target, and compare.
+A feature your importer built from a carried result has no native counterpart to export: write it `opaque` with
+that same result again (you know its provenance), so the file stays rebuildable everywhere.
 **Run `validator/ncx_validate.py` on every file you export** and fix every error before anything else: it checks
 what other add-ins rely on (units, frames, seeds against dimensions, references, fingerprints against the geometry),
 which your own importer may not notice because it shares your exporter's assumptions.
@@ -176,7 +224,9 @@ Make the add-in installable by someone without build tools: the version set in o
 tree (delete the build output first) that works exactly as your README says; the built files checked for runtime
 dependencies a user would not have (link the C runtime statically, or ship it); a script that writes a zip of the
 ready-to-install add-in folder; and install-from-zip instructions in your README, tested on a machine by installing
-from the zip and importing a sample. The zip is published as a release asset, not committed.
+from the zip and importing a sample. The zip is published as a release asset, not committed. For a web-API client
+the package is its scripts plus the core library; describe in the README what a real distribution (the system's own
+app store, sign-in, a server) would need, and where progress and cancel would live in its UI.
 
 ## 5. Testing
 
@@ -219,6 +269,23 @@ add yours. Ones that cost a debugging round each:
   radius override given as a plain number is read in millimetres; two-offset edge flange offsets run outward from
   the edge's ends (holding a flange back needs a negative offset); a fold with two bend lines keeps the strip
   between them and folds both sides (a jog is two folds, the far line first).
+- **Onshape** (from a trial add-in, not yet in this repository): cloud-only, so a web-API client (or an Onshape app's server), not a desktop
+  add-in. Use a versioned path (`/api/v17`) and `application/json;charset=UTF-8; qs=0.09`: unversioned paths use a
+  legacy JSON form and every feature post fails with a bare "Error processing json". Quotas: FeatureScript
+  evaluation 100 a day (then refused for 23 h), feature-list reads 100 per window, translations and STEP exports
+  10 per window; honour `Retry-After`. A feature in `WARNING` state is built: keep it.
+  Default planes: Top = XY, Front = XZ, Right = YZ; a sketch on a face uses a canonical frame (origin = the world
+  origin projected onto the plane), not the face's own, and imprints the face's edges into the sketch. Thin extrudes
+  take the curves as `wallShape`; "through all" both ways is `symmetric`. REST mass properties need a material (zero
+  centroid and inertia without one); `bodydetails` gives exact analytic parameters, areas, lengths and loops, but a
+  plane's `normal` must be flipped when the face's `orientation` is false, and a cone gives a point on the axis with
+  the radius there, not its apex. A STEP enters a Part Studio only through a translation (then reference its Import
+  feature's `foreignId`); a raw STEP blob is refused. Assembly mates on implicit mate connectors lose their entity ids
+  and fail without a message: create explicit mate connector features and mate those. A part of an active
+  sheet-metal model cannot be deleted: finish the model (`sheetMetalEnd`) before a carried result replaces it.
+  Plain plates are refused as sheet metal by both thicken and convert, without a message; the sheet-metal extrude
+  ignores its second direction and start offset. Mate relations (gear, rack) need "mate query data" the API does not
+  describe. Assemblies have no planes, sketches or cuts.
 - **SolidWorks** (the comments in `sw/Ncx.Sw`): equation edits are refused unless the
   document is active; any rebuild replaces body objects; arrays of SolidWorks objects must be typed dispatch arrays
   out of process.

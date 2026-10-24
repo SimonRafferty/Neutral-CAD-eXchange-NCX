@@ -22,7 +22,7 @@ If you have received an NCX file and your CAD system has no NCX add-in, you can 
 
 | CAD system | add-in | download | state |
 |---|---|---|---|
-| SolidWorks | `sw/` | [0.5.1](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/v0.5.1) | import and export; a 56-model test corpus rebuilds exactly in 2018 and 2026 |
+| SolidWorks | `sw/` | [0.5.2](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/v0.5.2) | import and export; a 56-model test corpus rebuilds exactly in 2018 and 2026 |
 | Autodesk Fusion | `fusion/` | [0.1.0](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/fusion-v0.1.0) | import and export, written by an AI agent from this repo alone (no SolidWorks): of the 56 test files, 25 rebuild exactly and 31 approximately (sheet-metal cut lists, jogs and other features Fusion lacks are built as functional equivalents), none fall back to plain geometry |
 | Onshape | | | planned |
 | *your CAD system* | | | see "Adding a CAD system" below |
@@ -48,8 +48,8 @@ Every import reports, feature by feature, anything that did not carry exactly an
 
 ## Installing the SolidWorks add-in
 
-1. Download the installer: **[NCX-Translator-Setup-0.5.1.exe](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/v0.5.1/NCX-Translator-Setup-0.5.1.exe)**
-   ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/v0.5.1)).
+1. Download the installer: **[NCX-Translator-Setup-0.5.2.exe](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/v0.5.2/NCX-Translator-Setup-0.5.2.exe)**
+   ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/v0.5.2)).
 2. Close SolidWorks, run the downloaded file and follow the steps. It works with SolidWorks 2018 and every later
    version, and asks for administrator permission once.
    If Windows says "Windows protected your PC", click **More info**, then **Run anyway** (the installer is not

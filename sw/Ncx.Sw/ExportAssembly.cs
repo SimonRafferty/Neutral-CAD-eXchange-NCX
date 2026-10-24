@@ -823,6 +823,61 @@ namespace Ncx.Sw
             return null;
         }
 
+        /// <summary>The mate's frame (FORMAT-SPEC §5, "Mates"), in the assembly frame at the solved placement, for
+        /// systems whose mates join two coordinate frames. Built from the mate entities as SolidWorks solved them
+        /// (EntityParams: point, direction, radius, in assembly metres). z: the first axial entity's direction (a
+        /// cylinder, cone, circle, line or axis), else the first plane's normal; origin: where that axis meets the
+        /// mate's first plane not parallel to it, else the entity's own point; x: the assembly's X made square to z
+        /// (its Y when z is within ~25° of X). Null when no entity has a direction.</summary>
+        static JObj MateFrame(IMate2 mate)
+        {
+            try
+            {
+                double[] axisPt = null, axisDir = null, planePt = null, planeN = null;
+                var planes = new List<double[][]>();
+                for (int i = 0; i < mate.GetMateEntityCount(); i++)
+                {
+                    var me = (IMateEntity2)mate.MateEntity(i);
+                    var p = (double[])me.EntityParams;
+                    if (p == null || p.Length < 6) continue;
+                    var pt = new[] { p[0], p[1], p[2] };
+                    var dir = new[] { p[3], p[4], p[5] };
+                    if (V.Norm(dir) < 1e-12) continue;   // a point
+                    dir = V.Unit(dir);
+                    int rt = me.ReferenceType2;   // swSelectType_e: 1 edge, 2 face, 4 datum plane, 5 datum axis
+                    bool axial = (p.Length > 6 && p[6] > 1e-12) || rt == 1 || rt == 5;
+                    if (axial) { if (axisDir == null) { axisPt = pt; axisDir = dir; } }
+                    else
+                    {
+                        planes.Add(new[] { pt, dir });
+                        if (planeN == null) { planePt = pt; planeN = dir; }
+                    }
+                }
+                double[] z, o;
+                if (axisDir != null)
+                {
+                    z = axisDir; o = axisPt;
+                    foreach (var pl in planes)
+                    {
+                        double dn = V.Dot(z, pl[1]);
+                        if (Math.Abs(dn) < 1e-6) continue;   // the axis lies in (or along) this plane
+                        double s = V.Dot(V.Sub(pl[0], axisPt), pl[1]) / dn;
+                        o = new[] { axisPt[0] + s * z[0], axisPt[1] + s * z[1], axisPt[2] + s * z[2] };
+                        break;
+                    }
+                }
+                else if (planeN != null) { z = planeN; o = planePt; }
+                else return null;
+                var refX = Math.Abs(z[0]) > 0.9 ? new[] { 0.0, 1.0, 0.0 } : new[] { 1.0, 0.0, 0.0 };
+                double k = V.Dot(refX, z);
+                var x = V.Unit(new[] { refX[0] - k * z[0], refX[1] - k * z[1], refX[2] - k * z[2] });
+                return new JObj { { "origin", new[] { U.Mm(o[0]), U.Mm(o[1]), U.Mm(o[2]) } }, { "x", Round(x) }, { "z", Round(z) } };
+            }
+            catch (Exception e) when (e is System.Runtime.InteropServices.COMException || e is InvalidCastException) { return null; }
+        }
+
+        static double[] Round(double[] v) { return new[] { Math.Round(v[0], 12) + 0.0, Math.Round(v[1], 12) + 0.0, Math.Round(v[2], 12) + 0.0 }; }
+
         /// <summary>A mated plane or origin of the assembly itself: one of its planes (matched by geometry; the first
         /// three are the origin planes) or its origin point. Other assembly-level datums are not carried yet.</summary>
         static JObj AssemblyDatumRef(IModelDoc2 asmDoc, int rt, object ent, double[] p)
@@ -943,6 +998,11 @@ namespace Ncx.Sw
                     refs.Add(jr);
                 }
                 jm["refs"] = refs;
+                if (status != "opaque")
+                {
+                    var frame = MateFrame(mate);
+                    if (frame != null) jm["frame"] = frame;
+                }
                 if (status == "mapped" && (t == "gear" || t == "width" || t == "screw" || t == "hinge" || t == "symmetric" || t == "slot" ||
                                            t == "rackPinion" || t == "cam"))
                 {
