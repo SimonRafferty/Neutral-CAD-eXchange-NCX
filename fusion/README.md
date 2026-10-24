@@ -14,20 +14,24 @@ as a functional equivalent or taken from the geometry the file carries, each rep
 back to plain geometry. Every design re-exported from Fusion passes the format validator. Details, per sample, and
 what is approximate and why: `FINDINGS.md` (sections 5 and 8). Problems with the format or the core: `ISSUES.md`.
 
-## Installing (from the release zip, no build tools needed)
+## Installing
 
-1. Download `NCX-Fusion-0.1.0.zip`.
-2. Unblock it before extracting: right-click the zip > **Properties** > tick **Unblock** > OK. (Windows marks
-   downloaded files; DLLs extracted from a blocked zip may be refused.)
-3. Open the folder `%APPDATA%\Autodesk\Autodesk Fusion 360\API\AddIns` (paste that into Explorer's address bar) and
-   extract the zip there, so that you have `...\API\AddIns\NCX\NCX.manifest` next to `NCX.dll`,
-   `NcxFusionImpl.dll` and `ncx_core.dll`. (If an older `NCX` folder is there, close Fusion first and replace it.)
-4. Start (or restart) Fusion. The add-in starts with Fusion. If it does not: **Utilities** tab > **Add-Ins**
-   (Shift+S) > **Add-Ins** tab > **NCX** > **Run**, and tick **Run on Startup**.
+1. Download the installer:
+   **[NCX-Fusion-Setup-0.1.0.exe](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/fusion-v0.1.0/NCX-Fusion-Setup-0.1.0.exe)**
+   ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/fusion-v0.1.0)).
+2. Double-click it. If Windows says "Windows protected your PC", click **More info**, then **Run anyway** (the
+   installer is not signed by a paid certificate).
+3. Click **Install**, then **Finish**. If Fusion is open, the installer asks you to close it first.
+4. Start Fusion. **Import NCX...** and **Export NCX...** are in Fusion's **File** menu.
 
-Nothing else is installed: the DLLs carry their own C runtime. To uninstall, stop NCX in the Add-Ins dialog (untick
-Run on Startup) and delete the `NCX` folder. The add-in writes a log to `%LOCALAPPDATA%\NcxFusion\ncx.log` and
-temporary files to `%LOCALAPPDATA%\NcxFusion`.
+No administrator rights are needed: it installs for your Windows user only. Run the same installer again to update.
+To remove it: Windows **Settings** > **Apps** > **NCX for Autodesk Fusion** > **Uninstall**.
+
+If the commands are missing after starting Fusion: **Utilities** tab > **Add-Ins** (Shift+S) > **Add-Ins** tab >
+**NCX** > **Run**, and tick **Run on Startup**.
+
+Nothing else is installed: the DLLs carry their own C runtime. The add-in writes a log to
+`%LOCALAPPDATA%\NcxFusion\ncx.log` and temporary files to `%LOCALAPPDATA%\NcxFusion` (the uninstaller removes them).
 
 ## Using it
 
@@ -67,7 +71,7 @@ From the repository root:
 ```
 powershell -ExecutionPolicy Bypass -File fusion\build.ps1            # build and deploy
 powershell -ExecutionPolicy Bypass -File fusion\build.ps1 -Clean     # the same from an empty build folder
-powershell -ExecutionPolicy Bypass -File fusion\package.ps1          # build and write fusion\out\NCX-Fusion-<version>.zip
+powershell -ExecutionPolicy Bypass -File fusion\package.ps1          # build, then write the installer to fusion\out
 ```
 
 `build.ps1` builds the shared core (`../core`, unchanged), `NCX.dll` and `NcxFusionImpl.dll` into `fusion\build`,
@@ -76,8 +80,9 @@ to skip). A build from scratch takes about two minutes. Restart Fusion once and 
 Fusion runs, `NCX.dll` is locked: the script says so, and the new stub is deployed by rerunning it with Fusion
 closed (the implementation DLLs are always replaced).
 
-`package.ps1` puts the add-in folder (`NCX\` with the manifest, the three DLLs, this README and the licence) in a zip
-for the installation above. The version is set once, in `CMakeLists.txt` (`project(... VERSION ...)`), and
+`package.ps1` writes `fusion\out\NCX-Fusion-Setup-<version>.exe` (from `installer\NCX-Fusion.iss`; needs Inno Setup 6:
+`winget install JRSoftware.InnoSetup`), which installs the add-in folder (`NCX\` with the manifest, the three DLLs, this
+README and the licence) as described above. The version is set once, in `CMakeLists.txt` (`project(... VERSION ...)`), and
 `NCX\NCX.manifest` must say the same (`build.ps1` checks).
 
 Layout of the add-in folder:

@@ -521,6 +521,9 @@ Ready to publish:
   the licence). Tested: Fusion closed gracefully (no document open, no autosaved document), the developer add-in
   folder moved aside, the zip extracted into `%APPDATA%\Autodesk\Autodesk Fusion 360\API\AddIns`, Fusion
   started: the add-in started with it (log: "NCX add-in 0.1.0 starting in Fusion 2706.1.14") and imported P01 (exact),
-  P29 and P43 through the job folder. The developer install (build.ps1) was then put back;
+  P29 and P43 through the job folder. The developer install (build.ps1) was then put back. (2026-10-24: the zip was
+  replaced by a per-user installer, `installer\NCX-Fusion.iss`, which `package.ps1` now builds instead: installed
+  silently, the add-in started with Fusion 2706.1.14, and the uninstaller removed it; users are not expected to copy
+  files into AppData by hand);
 - tracked files hold no path of this machine (`rebuild.sh` takes `$PYTHON`); `tools/__pycache__` is untracked;
   `fusion/.gitattributes` keeps `*.sh` with LF line endings.

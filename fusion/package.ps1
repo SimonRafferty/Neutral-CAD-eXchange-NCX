@@ -1,8 +1,8 @@
-# Package the NCX Fusion add-in for end users: builds it (unless -NoBuild) and writes
-#   fusion\out\NCX-Fusion-<version>.zip
-# holding one folder, NCX\, with everything Fusion needs at run time (NCX.manifest, NCX.dll, NcxFusionImpl.dll,
-# ncx_core.dll), the add-in's README and the licence. Users unzip it into Fusion's AddIns folder (README.md,
-# "Installing from the zip"); no build tools or runtime installers are needed (the DLLs link the C runtime
+# Package the NCX Fusion add-in for end users: builds it (unless -NoBuild) and writes the installer
+#   fusion\out\NCX-Fusion-Setup-<version>.exe
+# from fusion\installer\NCX-Fusion.iss (needs Inno Setup 6: winget install JRSoftware.InnoSetup). It installs the
+# add-in folder Fusion loads (NCX.manifest, NCX.dll, NcxFusionImpl.dll, ncx_core.dll, the add-in's README and the
+# licence). No build tools or runtime installers are needed on the user's machine (the DLLs link the C runtime
 # statically).
 #
 #   powershell -ExecutionPolicy Bypass -File fusion\package.ps1 [-Config Release] [-NoBuild]
@@ -14,44 +14,22 @@ $version = ([regex]::Match((Get-Content -Raw (Join-Path $here 'NCX\NCX.manifest'
 if (-not $version) { throw 'no version in NCX\NCX.manifest' }
 $build = Join-Path $here "build"
 
-# the add-in folder, exactly as Fusion loads it
-$files = [ordered]@{
-    'NCX.manifest'      = Join-Path $here 'NCX\NCX.manifest'
-    'NCX.dll'           = Join-Path $build "$Config\NCX.dll"
-    'NcxFusionImpl.dll' = Join-Path $build "$Config\NcxFusionImpl.dll"
-    'ncx_core.dll'      = Join-Path $build "core\$Config\ncx_core.dll"
-    'README.md'         = Join-Path $here 'README.md'
-    'LICENSE'           = Join-Path $here '..\LICENSE'
-}
-foreach ($k in $files.Keys) { if (-not (Test-Path $files[$k])) { throw "missing $k ($($files[$k])): build first" } }
+# the add-in folder's files, exactly as Fusion loads them (the installer script lists the same)
+$files = @(
+    (Join-Path $here 'NCX\NCX.manifest'),
+    (Join-Path $build "$Config\NCX.dll"),
+    (Join-Path $build "$Config\NcxFusionImpl.dll"),
+    (Join-Path $build "core\$Config\ncx_core.dll"),
+    (Join-Path $here 'README.md'),
+    (Join-Path $here '..\LICENSE')
+)
+foreach ($f in $files) { if (-not (Test-Path $f)) { throw "missing $f`: build first" } }
 
 $outDir = Join-Path $here 'out'
 New-Item -ItemType Directory -Force $outDir | Out-Null
-$zip = Join-Path $outDir "NCX-Fusion-$version.zip"
-if (Test-Path $zip) { Remove-Item -Force $zip }
-
-# entries written one by one with '/' separators (Compress-Archive in Windows PowerShell 5.1 can write '\')
-Add-Type -AssemblyName System.IO.Compression
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$fs = [System.IO.File]::Open($zip, [System.IO.FileMode]::CreateNew)
-try {
-    $archive = New-Object System.IO.Compression.ZipArchive($fs, [System.IO.Compression.ZipArchiveMode]::Create)
-    try {
-        foreach ($k in $files.Keys) {
-            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, (Resolve-Path $files[$k]).Path, "NCX/$k",
-                [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
-        }
-        # the folder that holds an add-in's resources (command icons), kept if there is one
-        $res = Join-Path $here 'NCX\resources'
-        if (Test-Path $res) {
-            Get-ChildItem -Recurse -File $res | ForEach-Object {
-                $rel = $_.FullName.Substring($res.Length + 1).Replace('\', '/')
-                [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $_.FullName, "NCX/resources/$rel",
-                    [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
-            }
-        }
-    }
-    finally { $archive.Dispose() }
-}
-finally { $fs.Dispose() }
-Write-Host "OK: $zip"
+$iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $iscc) { throw 'Inno Setup 6 not found: winget install JRSoftware.InnoSetup' }
+& $iscc /Q "/DAppVersion=$version" "/DConfig=$Config" "/DBuildDir=$build" (Join-Path $here 'installer\NCX-Fusion.iss')
+if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed ($LASTEXITCODE)" }
+Write-Host "OK: $(Join-Path $outDir "NCX-Fusion-Setup-$version.exe")"
