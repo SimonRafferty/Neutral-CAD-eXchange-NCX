@@ -18,7 +18,13 @@ namespace Ncx.Sw
             { 8, "symmetric" }, { 21, "slot" }, { 9, "cam" }, { 13, "rackPinion" }
         };
 
-        /// <summary>Items an Insert Part brought into this part: named "&lt;source item&gt;-&lt;source title&gt;".</summary>
+        static readonly HashSet<string> TransferTypes = new HashSet<string> { "ProfileFeature", "3DProfileFeature", "RefPlane", "RefAxis", "RefPoint", "CoordSys" };
+
+        /// <summary>Items an Insert Part brought into this part: named "&lt;source item&gt;-&lt;source title&gt;", where the
+        /// title is the source's name when it was inserted. That is usually the Insert Part feature's own name, but not
+        /// always the file's current name (a file renamed or prefixed later, e.g. by Pack and Go, keeps the old
+        /// suffix), so both are tried. The items are the Insert Part's sub-features; same-named top-level features
+        /// are taken too (older files list some there).</summary>
         void CollectTransferred(List<IFeature> all)
         {
             foreach (var stock in all.Where(f => f.GetTypeName2() == "Stock"))
@@ -26,12 +32,17 @@ namespace Ncx.Sw
                 var data = stock.GetDefinition() as IDerivedPartFeatureData;
                 string srcId;
                 if (data == null || !docIdByPath.TryGetValue(data.PathName, out srcId)) continue;
-                string suffix = "-" + Path.GetFileNameWithoutExtension(data.PathName);
+                var suffixes = new[] { "-" + stock.Name, "-" + Path.GetFileNameWithoutExtension(data.PathName) }.Distinct().ToList();
                 var srcFeatures = featureIdsByDoc[srcId];
                 var srcPlanes = originPlanesByDoc[srcId];
-                foreach (var f in all)
+                var candidates = new List<IFeature>();
+                for (var s = (IFeature)stock.GetFirstSubFeature(); s != null; s = (IFeature)s.GetNextSubFeature())
+                    if (TransferTypes.Contains(s.GetTypeName2())) candidates.Add(s);
+                candidates.AddRange(all.Where(f => TransferTypes.Contains(f.GetTypeName2()) && candidates.All(c => c.Name != f.Name)));
+                foreach (var f in candidates)
                 {
-                    if (!f.Name.EndsWith(suffix)) continue;
+                    string suffix = suffixes.FirstOrDefault(x => f.Name.EndsWith(x) && f.Name.Length > x.Length);
+                    if (suffix == null) continue;
                     string srcName = f.Name.Substring(0, f.Name.Length - suffix.Length);
                     var r = new JObj { { "kind", "transferred" }, { "by", "id" }, { "document", srcId }, { "name", f.Name } };
                     string fid, plane;
@@ -40,9 +51,19 @@ namespace Ncx.Sw
                     else continue;
                     r["nativeType"] = f.GetTypeName2();
                     r["stock"] = stock.Name;
+                    r["sourceName"] = srcName;   // its name in the source document (not written to the payload)
                     transferred[f.Name] = r;
                 }
             }
+        }
+
+        /// <summary>An inserted item for the payload: its source and its name here, and whether it is hidden here.</summary>
+        JObj ItemJson(JObj r)
+        {
+            var it = new JObj { { "source", r.Str("feature") ?? "plane:" + r.Str("plane") }, { "name", r.Str("name") } };
+            var f = (doc as IPartDoc)?.FeatureByName(r.Str("name")) as IFeature;
+            if (f != null && f.Visible == 1) it["hidden"] = true;   // swVisibilityStateHide
+            return it;
         }
 
         void ExportInsertPart(IFeature f, JObj nf)
@@ -66,7 +87,7 @@ namespace Ncx.Sw
             {
                 { "source", srcId }, { "transfer", transfer },
                 { "transform", new double[] { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 } },
-                { "items", items.Select(r => (object)new JObj { { "source", r.Str("feature") ?? "plane:" + r.Str("plane") }, { "name", r.Str("name") } }).ToList() }
+                { "items", items.Select(r => (object)ItemJson(r)).ToList() }
             };
             if (data.GetMoveFeature() != null) Approx(nf, "insert-part move/copy transform not carried");
         }
@@ -174,7 +195,10 @@ namespace Ncx.Sw
                 if (type == "MateGroup")
                 {
                     for (var sub = (IFeature)f.GetFirstSubFeature(); sub != null; sub = (IFeature)sub.GetNextSubFeature())
-                        mates.Add(ExportMate(d, sub, compIds, id));
+                    {
+                        var jm = ExportMate(d, sub, compIds, id);
+                        if (jm != null) mates.Add(jm);
+                    }
                 }
                 else if (type == "LocalLPattern" || type == "LocalCirPattern")
                     features.Add(ExportComponentPattern(d, f, type == "LocalLPattern", comps, compIds, components, id));
@@ -190,7 +214,14 @@ namespace Ncx.Sw
                     // nothing at assembly level may disappear silently
                     var nf = new JObj { { "id", "a:" + f.Name }, { "type", "opaque" }, { "name", f.Name },
                                         { "native", new JObj { { "app", "SOLIDWORKS" }, { "type", type } } } };
-                    features.Add(AssemblyOpaque(nf, "assembly feature type " + type + " is not mapped yet", id));
+                    if (type == "DimController")
+                    {
+                        // a Mate Controller: saved positions for driving mates. It changes no geometry and the
+                        // components arrive where the file places them, so it is a note, not a loss
+                        nf["noGeometry"] = true;
+                        features.Add(AssemblyOpaque(nf, "Mate Controller (saved mate positions) not carried: it changes no geometry", id));
+                    }
+                    else features.Add(AssemblyOpaque(nf, "assembly feature type " + type + " is not mapped yet", id));
                 }
             }
             Report.Add(id, Path.GetFileName(d.GetPathName()), "mapped", components.Count + " components, " + mates.Count + " mates");
@@ -587,7 +618,7 @@ namespace Ncx.Sw
         {
             nf["status"] = "opaque";
             nf["reason"] = reason;
-            Report.Add(asmId, nf.Str("name"), "opaque", reason);
+            Report.Add(asmId, nf.Str("name"), nf.Bool("noGeometry") ? "note" : "opaque", reason);
             return nf;
         }
 
@@ -961,10 +992,18 @@ namespace Ncx.Sw
                     var comp = (IComponent2)me.ReferenceComponent;
                     int rt = me.ReferenceType2;   // swSelectType_e
                     var ent = me.Reference;
+                    // a component's face, edge or vertex is sometimes reported against the root assembly: the
+                    // entity itself knows its component
+                    if ((comp == null || comp.IsRoot()) && (ent is IFace2 || ent is IEdge || ent is IVertex))
+                    {
+                        var own = ((IEntity)ent).GetComponent() as IComponent2;
+                        if (own != null && !own.IsRoot()) comp = own;
+                    }
                     if (comp == null || comp.IsRoot() || string.IsNullOrEmpty(comp.Name2))
                     {
                         // the assembly's own plane or origin (layoutcad mates every component's planes to them)
                         var own = AssemblyDatumRef(asmDoc, rt, ent, (double[])me.EntityParams);
+                        if (own == null && ent == null) return MissingGeometry(asmId, f);
                         if (own == null)
                         {
                             status = "opaque"; reason = "mate on an assembly-level reference other than its origin planes or origin";
@@ -988,6 +1027,7 @@ namespace Ncx.Sw
                     else if (rt == 4) r = ComponentPlaneRef(comp, (double[])me.EntityParams);   // swSelDATUMPLANES
                     else if (rt == 5 || rt == 6) r = ComponentDatumRef(comp, ent as IFeature);    // axes, points
                     else if (ent is ISketchSegment || ent is ISketchPoint) r = ComponentSketchRef(comp, ent);
+                    if (r == null && ent == null && rt != 4) return MissingGeometry(asmId, f);
                     if (r == null)
                     {
                         status = "opaque";
@@ -1037,8 +1077,22 @@ namespace Ncx.Sw
             }
             jm["status"] = status;
             if (reason != null) jm["reason"] = reason;
+            // a suppressed mate is carried suppressed (it holds nothing, but is the user's to switch back on)
+            bool[] sup = null;
+            try { sup = (bool[])f.IsSuppressed2(1, null); }   // swThisConfiguration
+            catch (Exception) { }
+            if (sup != null && sup.Length > 0 && sup[0]) jm["suppressed"] = new JObj { { "cfg:active", true } };
             Report.Add(asmId, f.Name, status, reason);
             return jm;
+        }
+
+        /// <summary>A mate with an end SolidWorks reports no geometry for (its part deleted, or a mate it keeps
+        /// hidden): nothing to carry, and the assembly is held the same without it. Left out, with a note (user,
+        /// 2026-10-25: ignore these, suppressed or not).</summary>
+        JObj MissingGeometry(string asmId, IFeature f)
+        {
+            Report.Add(asmId, f.Name, "note", "mate to geometry SolidWorks does not report (missing): left out");
+            return null;
         }
     }
 }

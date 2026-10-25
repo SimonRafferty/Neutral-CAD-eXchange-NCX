@@ -46,6 +46,7 @@ namespace Ncx.Sw
 
         bool WantsResult(string type, JObj nf)
         {
+            if (nf.Bool("noGeometry")) return false;   // reference data (a scan): nothing depends on it geometrically
             if (nf.Str("status") == "opaque") opaqueSeen = true;   // (a curve or sketch too: what is built on it may fail)
             if (NoGeometry.Contains(type)) return false;
             if (nf.Str("status") == "opaque" || opaqueSeen || needsResult.Contains(nf)) return true;

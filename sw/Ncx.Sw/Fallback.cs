@@ -17,8 +17,7 @@ namespace Ncx.Sw
         string refDir;
         readonly Dictionary<string, string> refParts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         // the imported reference parts themselves (open while the replay runs), for face-by-face verification
-        readonly Dictionary<string, IModelDoc2> refDocs = new Dictionary<string, IModelDoc2>(StringComparer.OrdinalIgnoreCase);
-        const string RootRef = "|root|";   // key of the reference when the file's root is a part
+        string rootRefPath;   // the saved reference when the file's root is a part
         JObj referenceFingerprint;   // measured on the B-rep actually in the file (the stale check)
         IModelDoc2 referenceRoot;     // the imported reference, kept open for a whole-file fallback
 
@@ -50,13 +49,18 @@ namespace Ncx.Sw
                         var md = (IModelDoc2)c.GetModelDoc2();
                         if (md == null || md.GetType() != 1) continue;
                         string name = System.Text.RegularExpressions.Regex.Replace(c.Name2.Split('/').Last(), @"-\d+$", "");
-                        if (!refParts.ContainsKey(name)) { refParts[name] = SaveRef(md, name); refDocs[name] = md; }
+                        if (refParts.ContainsKey(name)) continue;
+                        refParts[name] = SaveRef(md, name);
+                        // a part already open under its own name (the rebuilt one) is imported as "<name>_1": file it
+                        // under the payload's name too, or the fallback would not find it
+                        string bare = System.Text.RegularExpressions.Regex.Replace(name, @"_\d+$", "");
+                        if (bare != name && !refParts.ContainsKey(bare)) refParts[bare] = refParts[name];
                     }
                 }
                 else
                 {
-                    refParts[Path.GetFileNameWithoutExtension(ContainerPath)] = SaveRef(imp, "__root");
-                    refDocs[RootRef] = imp;   // the file's B-rep is the root part's
+                    rootRefPath = SaveRef(imp, "__root");   // the file's B-rep is the root part's
+                    refParts[Path.GetFileNameWithoutExtension(ContainerPath)] = rootRefPath;
                 }
             }
             finally
@@ -160,7 +164,14 @@ namespace Ncx.Sw
         {
             string path = Path.Combine(refDir, name + "__ref.SLDPRT");
             int err = 0, warn = 0;
-            if (File.Exists(path)) File.Delete(path);
+            // SolidWorks keeps a file it opened read-only locked after closing it (until it exits): a reference copy
+            // from an earlier import of the same file in this session may not be replaceable; then a fresh name
+            for (int n = 2; File.Exists(path); n++)
+            {
+                try { File.Delete(path); }
+                catch (IOException) { path = Path.Combine(refDir, name + "__ref_" + n + ".SLDPRT"); }
+                catch (UnauthorizedAccessException) { path = Path.Combine(refDir, name + "__ref_" + n + ".SLDPRT"); }
+            }
             return md.Extension.SaveAs(path, 0, 1 | 2, null, ref err, ref warn) ? path : null;   // silent copy
         }
 
@@ -172,6 +183,8 @@ namespace Ncx.Sw
             string refPath;
             if (!refParts.TryGetValue(d.Str("name"), out refPath) && !(singlePartFile && refParts.TryGetValue("__root_any", out refPath)))
                 refPath = singlePartFile ? refParts.Values.FirstOrDefault() : null;
+            // a part file that also carries other documents (the layout it is derived from): its B-rep is the root's
+            if (refPath == null && rootRefPath != null && d.Str("id") == Model?.Str("root")) refPath = rootRefPath;
             if (refPath == null)
             {
                 Report.Add(d.Str("id"), d.Str("name"), "failed", reason + "; no reference geometry for a fallback");
@@ -186,6 +199,7 @@ namespace Ncx.Sw
 
             var nd = (IModelDoc2)sw.NewDocument(sw.GetUserPreferenceStringValue(8), 0, 0, 0);
             created.Add(nd);
+            quiet?.Add(nd);
             var np = (IPartDoc)nd;
             int n0 = ((IFeatureManager)nd.FeatureManager).GetFeatureCount(false);
             np.InsertPart2(refPath, 1 | 512);   // solid bodies, link broken: plain imported geometry

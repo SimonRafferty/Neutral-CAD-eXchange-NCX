@@ -71,10 +71,14 @@ namespace Ncx.Sw
                 if (!cut) def["merge"] = d.Merge;
                 if (d.GetContoursCount() > 0)
                 {
-                    string cwhy;
-                    var contours = Contours((object[])d.Contours, ((IFeature)f.GetFirstSubFeature()).Name, out cwhy);
-                    if (contours == null) Approx(nf, "selected contours not carried (" + cwhy + "); whole sketch used");
-                    else def["contours"] = contours;
+                    string cwhy = SelectedProfile(def, (object[])d.Contours, (IFeature)f.GetFirstSubFeature());
+                    if (cwhy != null) Approx(nf, "selected contours not carried (" + cwhy + "); whole sketch used");
+                    else if (unreadableContours > 0)
+                    {
+                        // built from the rest; the result it carries shows whether that is the same
+                        Approx(nf, unreadableContours + " selected contour(s) not readable through SolidWorks' API: built from the others");
+                        needsResult.Add(nf);
+                    }
                 }
                 if (d.IsThinFeature())
                     def["thin"] = new JObj
@@ -87,19 +91,44 @@ namespace Ncx.Sw
             finally { d.ReleaseSelectionAccess(); }
         }
 
+        /// <summary>The plane where it is, without its references (FORMAT-SPEC 4, plane): for a plane whose references
+        /// cannot be carried, e.g. one placed on a 3D scan. Null if even its position is not readable.</summary>
+        static JObj FixedPlane(IFeature f)
+        {
+            var mt = (f.GetSpecificFeature2() as IRefPlane)?.Transform as IMathTransform;
+            var a = mt?.ArrayData as double[];
+            if (a == null) return null;
+            return new JObj { { "references", new List<object>() }, { "origin", U.Mm(new[] { a[9], a[10], a[11] }) }, { "normal", new[] { a[6], a[7], a[8] } } };
+        }
+
         void ExportRefPlane(IFeature f, JObj nf)
         {
-            var d = (IRefPlaneFeatureData)f.GetDefinition();
-            d.AccessSelections(doc, null);
+            nf["type"] = "plane";
+            var d = f.GetDefinition() as IRefPlaneFeatureData;
+            if (d == null || !d.AccessSelections(doc, null))
+            {
+                var fixedDef = FixedPlane(f);
+                if (fixedDef == null) { Opaque(nf, "plane definition not readable"); return; }
+                nf["def"] = fixedDef;
+                Approx(nf, "plane definition not readable: carried at its position");
+                return;
+            }
             try
             {
-                nf["type"] = "plane";
                 var refs = new List<object>();
                 int n = d.GetSelectionsCount();
                 for (int i = 0; i < n; i++)
                 {
                     var r = EntityRef(d.get_Reference(i));
-                    if (r == null) { Opaque(nf, "plane reference " + i + " not recognised"); return; }
+                    if (r == null)
+                    {
+                        // e.g. a plane on a scan's reference geometry: keep the plane where it is
+                        var fixedDef = FixedPlane(f);
+                        if (fixedDef == null) { Opaque(nf, "plane reference " + i + " not recognised"); return; }
+                        nf["def"] = fixedDef;
+                        Approx(nf, "plane reference " + i + " not recognised: carried at its position");
+                        return;
+                    }
                     int c = d.get_Constraint(i);   // swRefPlaneReferenceConstraints_e flags
                     double v = d.get_AngleOrDistance(i);
                     var pr = new JObj { { "ref", r } };

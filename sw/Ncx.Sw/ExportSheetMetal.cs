@@ -46,6 +46,113 @@ namespace Ncx.Sw
                 Approx(nf, "bend table " + d.BendTableFile + " not carried (K-factor used)");
         }
 
+        /// <summary>Convert to Sheet Metal (FORMAT-SPEC 4, convertToSheetMetal): a sheet wrapped over faces of a solid,
+        /// bent at chosen edges of it. SolidWorks' API cannot read the feature's settings, so they are taken from the
+        /// geometry: thickness and bend radius from the Sheet-Metal feature it made; each bend's axis from the
+        /// cylinders of its bends; the bend edges as the solid's straight edges (just before the feature) along a
+        /// bend axis whose two faces both touch one of that bend's cylinders; the fixed face as the flat pattern's.
+        /// The feature also carries its result, so an importer can check its rebuild.</summary>
+        void ExportConvertToSheetMetal(IFeature f, JObj nf)
+        {
+            nf["type"] = "convertToSheetMetal";
+            var fm = (IFeatureManager)doc.FeatureManager;
+            // the Sheet-Metal feature it made: the nearest one before it
+            IFeature smf = null;
+            for (var g = (IFeature)doc.FirstFeature(); g != null && g.Name != f.Name; g = (IFeature)g.GetNextFeature())
+                if (g.GetTypeName2() == "SheetMetal") smf = g;
+            var smd = smf?.GetDefinition() as ISheetMetalFeatureData;
+            if (smd == null) { Opaque(nf, "its Sheet-Metal feature was not found"); return; }
+            double t = smd.Thickness, r = smd.BendRadius;
+
+            // the bends, just after it: axis origin, direction and the radii of their cylinders (m)
+            fm.EditRollback(4, f.Name);
+            var bends = new List<Tuple<double[], double[], double>>();
+            for (var sub = (IFeature)f.GetFirstSubFeature(); sub != null; sub = (IFeature)sub.GetNextSubFeature())
+                foreach (IFace2 fc in (object[])sub.GetFaces() ?? new object[0])
+                {
+                    var s = (ISurface)fc.GetSurface();
+                    if (!s.IsCylinder()) continue;
+                    var p = (double[])s.CylinderParams;
+                    bends.Add(Tuple.Create(new[] { p[0], p[1], p[2] }, V.Unit(new[] { p[3], p[4], p[5] }), p[6]));
+                }
+            int bodiesAfter = ((object[])((IPartDoc)doc).GetBodies2(0, false) ?? new object[0]).Length;
+            // the fixed face's plane: the flat pattern's fixed face, wherever the flat pattern is
+            double[] fixedPlane = null;
+            for (var g = (IFeature)doc.FirstFeature(); g != null && fixedPlane == null; g = (IFeature)g.GetNextFeature())
+            {
+                if (g.GetTypeName2() != "FlatPattern") continue;
+                var fd = g.GetDefinition() as IFlatPatternFeatureData;
+                if (fd == null || !fd.AccessSelections(doc, null)) continue;
+                try { fixedPlane = ((fd.FixedFace2 as IFace2)?.GetSurface() as ISurface)?.PlaneParams as double[]; }
+                finally { fd.ReleaseSelectionAccess(); }
+            }
+
+            // the solid just before it
+            fm.EditRollback(3, f.Name);
+            var bendEdges = new List<object>();
+            bool outside = false;
+            IFace2 fixedFace = null;
+            int bodiesBefore = 0;
+            try
+            {
+                var solids = ((object[])((IPartDoc)doc).GetBodies2(0, false) ?? new object[0]).Cast<IBody2>().ToList();
+                bodiesBefore = solids.Count;
+                Func<IFace2, double[], double> planeDist = (fc, o) =>
+                {
+                    var s = (ISurface)fc.GetSurface();
+                    if (!s.IsPlane()) return double.NaN;
+                    var p = (double[])s.PlaneParams;   // normal, root
+                    return Math.Abs((o[0] - p[3]) * p[0] + (o[1] - p[4]) * p[1] + (o[2] - p[5]) * p[2]);
+                };
+                foreach (var b in solids)
+                {
+                    foreach (IEdge ed in (object[])b.GetEdges() ?? new object[0])
+                    {
+                        var c = (ICurve)ed.GetCurve();
+                        if (!c.IsLine()) continue;
+                        var lp = (double[])c.LineParams;
+                        var dir = V.Unit(new[] { lp[3], lp[4], lp[5] });
+                        var faces = ((object[])ed.GetTwoAdjacentFaces2() ?? new object[0]).Cast<IFace2>().ToList();
+                        if (faces.Count != 2) continue;
+                        foreach (var bd in bends)
+                        {
+                            if (Math.Abs(Math.Abs(V.Dot(dir, bd.Item2)) - 1) > 1e-6) continue;
+                            double d1 = planeDist(faces[0], bd.Item1), d2 = planeDist(faces[1], bd.Item1);
+                            // both faces touch this bend's outer cylinder (the sheet inside the solid) or its inner one
+                            bool atOuter = Math.Abs(d1 - (r + t)) < 1e-7 && Math.Abs(d2 - (r + t)) < 1e-7;
+                            bool atInner = Math.Abs(d1 - r) < 1e-7 && Math.Abs(d2 - r) < 1e-7;
+                            if (!atOuter && !atInner) continue;
+                            if (atInner && !atOuter) outside = true;
+                            var dsc = EntityRef(ed);
+                            if (dsc != null && !bendEdges.Contains(dsc)) bendEdges.Add(dsc);
+                            break;
+                        }
+                    }
+                    if (fixedPlane != null)
+                        foreach (IFace2 fc in (object[])b.GetFaces() ?? new object[0])
+                        {
+                            var s = (ISurface)fc.GetSurface();
+                            if (!s.IsPlane()) continue;
+                            var p = (double[])s.PlaneParams;
+                            bool parallel = Math.Abs(Math.Abs(p[0] * fixedPlane[0] + p[1] * fixedPlane[1] + p[2] * fixedPlane[2]) - 1) < 1e-9;
+                            double off = (p[3] - fixedPlane[3]) * fixedPlane[0] + (p[4] - fixedPlane[4]) * fixedPlane[1] + (p[5] - fixedPlane[5]) * fixedPlane[2];
+                            // the sheet lies on the solid's face (inside) or t off it (outside)
+                            if (parallel && (Math.Abs(off) < 1e-7 || Math.Abs(Math.Abs(off) - t) < 1e-7) && (fixedFace == null || fc.GetArea() > fixedFace.GetArea())) fixedFace = fc;
+                        }
+                }
+                var fixedRef = fixedFace == null ? null : EntityRef(fixedFace);
+                if (bends.Count > 0 && bendEdges.Count == 0) { Opaque(nf, "its bend edges were not found on the solid"); return; }
+                if (fixedRef == null) { Opaque(nf, "its fixed face was not found (no flat pattern to take it from)"); return; }
+                nf["def"] = new JObj
+                {
+                    { "fixedFace", fixedRef }, { "bendEdges", bendEdges }, { "thickness", U.Mm(t) }, { "bendRadius", U.Mm(r) },
+                    { "reverse", outside }, { "keepBody", bodiesAfter > bodiesBefore }
+                };
+                needsResult.Add(nf);   // carried too: the importer checks its rebuild against it
+            }
+            finally { fm.EditRollback(4, f.Name); }
+        }
+
         void ExportBaseFlange(IFeature f, JObj nf)
         {
             var d = (IBaseFlangeFeatureData)f.GetDefinition();

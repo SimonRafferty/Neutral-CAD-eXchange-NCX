@@ -55,6 +55,55 @@ namespace Ncx.Sw
             return null;
         }
 
+        /// <summary>Convert to Sheet Metal (FORMAT-SPEC 4): the fixed face and the bend edges selected, then
+        /// InsertConvertToSheetMetal2. The result the feature carries decides the thickness sense: if the bodies do
+        /// not match it, the other sense is tried. The Sheet-Metal feature it makes takes the recorded defaults.</summary>
+        string ReplayConvertToSheetMetal(JObj nf, JObj def)
+        {
+            var res = nf.Obj("result");
+            string last = null;
+            foreach (bool reverse in new[] { def.Bool("reverse"), !def.Bool("reverse") })
+            {
+                doc.ClearSelection2(true);
+                string why = SelectRef(def.Obj("fixedFace"), false, 0);
+                if (why != null) return "fixed face: " + why;
+                foreach (JObj e in def.Arr("bendEdges"))
+                    if ((why = SelectRef(e, true, 0)) != null) return "bend edge: " + why;
+                int n0 = FeatureCount();
+                FM.InsertConvertToSheetMetal2(U.M(def.Num("thickness")), reverse, false, U.M(def.Num("bendRadius")),
+                                              U.M(def.Num("gap", 0.1)), 2, def.Num("reliefRatio", 0.5), 0, 0.5, def.Bool("keepBody"));
+                doc.ClearSelection2(true);
+                if (FeatureCount() == n0) { last = "convert to sheet metal was not created"; continue; }
+                if (res == null || MatchesResult(res)) { last = null; break; }
+                last = "rebuilt bodies differ from its result" + (reverse == def.Bool("reverse") ? "" : " in both thickness senses");
+                doc.EditUndo2(1);
+            }
+            if (last != null) return last;
+            IFeature made = null;
+            for (var f = (IFeature)doc.FirstFeature(); f != null; f = (IFeature)f.GetNextFeature())
+                if (f.GetTypeName2() == "SolidToSheetMetal") made = f;
+            if (made == null) return "convert to sheet metal was not created";
+            Name(made, nf.Str("name"));
+            features[nf.Str("id")] = made;
+            // the Sheet-Metal feature it made takes the recorded defaults (K-factor, relief)
+            if (pendingSheetMetal != null)
+            {
+                var sm = FindFeature("SheetMetal", f => !Registered(f));
+                var p = pendingSheetMetal;
+                pendingSheetMetal = null;
+                if (sm != null) return ApplySheetMetalDefaults(sm, p);
+            }
+            return null;
+        }
+
+        /// <summary>Every body of the feature's carried result has a body of the rebuilt part with the same
+        /// fingerprint (exchange tolerance: the result went through STEP).</summary>
+        bool MatchesResult(JObj res)
+        {
+            var bodies = ((object[])part.GetBodies2(-1, false) ?? new object[0]).Cast<IBody2>().Select(Host.BodyFingerprint).ToList();
+            return res.Arr("bodies").Cast<JObj>().All(rb => bodies.Any(b => BodyDistance(rb.Obj("fingerprint"), b) < 1e-3));
+        }
+
         string ReplayBaseFlange(JObj nf, JObj def)
         {
             doc.ClearSelection2(true);

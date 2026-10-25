@@ -41,7 +41,7 @@ Import is the priority: it is what lets someone who received an NCX file use it.
 | `sw/` | the SolidWorks add-in (C#): the reference implementation of export and import. Read it to see how each spec section was realised. |
 | `validator/` | `ncx_validate.py`: checks any NCX file against the format without a CAD system (container, schema, consistency, geometry). Run it on every file your exporter writes. |
 | `docs/COVERAGE.md` | what the SolidWorks add-in carries, its test corpus and its known gaps |
-| sample NCX files | exported from SolidWorks, one per feature area: your test inputs (ask the repository owner, or export your own with the SolidWorks add-in) |
+| sample NCX files | exported from SolidWorks, one per feature area: your test inputs. `NCX-samples-<version>.zip` on the latest SolidWorks add-in release (GitHub Releases); or export your own with the SolidWorks add-in |
 
 ## 3. Rules
 
@@ -153,7 +153,12 @@ Work in this order. Keep notes as you go (what you tried, what the target's API 
 ### Step 3: rebuild parts
 Implement in this order, testing each on its sample before moving on:
 1. sketches: lines, arcs, circles, splines, ellipses, points; relations; dimensions; the frame mapping; seeded
-   coordinates (place every entity where the payload says, then add relations and dimensions);
+   coordinates (place every entity where the payload says, then add relations and dimensions). Keep every payload
+   point a separate entity, even where two share a position (spec §4, sketches): finding points again by position
+   after drawing ties a relation to the wrong one. Relations to another sketch's entities (`sketchEntity`) may
+   point off the sketch's plane (a layout point below a sheet face): relate to its projection. A fully defined
+   source sketch must arrive fully defined: compare your solver's status with the payload's `constrained`;
+   samples P47 (slots), P48 (polygons) and L11 (layout points into sheet metal) exercise these;
 2. extrude/cut (end conditions, thin, start conditions, selected contours), revolve;
 3. reference planes, axes, points, coordinate systems;
 4. fillets, chamfers; patterns, mirrors; shell, draft;
@@ -198,6 +203,9 @@ Components with their placements and fixed state, nested sub-assemblies, mates (
   the concentric mate's axis through the coincident mate's origin. Files without `frame` (SolidWorks add-in before
   0.5.2): put the connector at the centre of the circular edge where the cylinder meets the mated plane, build,
   read the placement back and flip the axis sense if the component moved (a revolute's free turn is not a move).
+- **Suppressed mates** (`suppressed`, spec §5): make the mate and suppress it, or leave it out and say so. Either
+  way every component stays at its `transform`: a suppressed mate may not hold in the placement (sample L11's
+  `Distance-Lift`). Mates whose source lost their geometry are not in the file.
 - **Assembly cuts** in a system whose assemblies cannot cut: cutting the part itself is right only when the cut
   changes every instance the same way. Otherwise report the cut failed and keep the instances uncut (each part still
   matches its own fingerprint).

@@ -16,6 +16,9 @@ namespace Ncx.Sw
     {
         public const string Version = Exporter.Version;
         const int T_INPUT_DIM_ON_CREATE = 10;   // swInputDimValOnCreate: the Modify box would block the API
+        // swSketchAutomaticRelations, swSketchInferFromModel, swSketchInference, swSketchSnapsPoints: off while
+        // sketches are drawn, so SolidWorks adds no relation of its own (an extra one over-defines the sketch)
+        static readonly int[] T_AUTO_RELATIONS = { 9, 95, 249, 266 };
 
         readonly ISldWorks sw;
         public readonly Report Report = new Report();
@@ -39,6 +42,7 @@ namespace Ncx.Sw
         public Func<string, bool> Progress;
         public bool Cancelled { get; private set; }
         readonly List<IModelDoc2> created = new List<IModelDoc2>();
+        QuietUpdates quiet;   // screen updates off during a replay
 
         void Step(string message)
         {
@@ -48,6 +52,9 @@ namespace Ncx.Sw
                 throw new OperationCanceledException("cancelled by the user at: " + message);
             }
         }
+
+        /// <summary>A timing mark inside a step (the timing log shows where a slow step spends its time).</summary>
+        void Trace(string message) { Step("  - " + message); }
 
         /// <summary>Replay every document of the model into outDir; returns the saved paths (root last).
         /// On cancel, every document this replay created is closed unsaved and nothing is left half-built.</summary>
@@ -60,9 +67,13 @@ namespace Ncx.Sw
             Directory.CreateDirectory(outDir);
             var saved = new List<string>();
             savedByDoc.Clear();
+            builtNames.Clear();
             created.Clear();
             bool inputDim = sw.GetUserPreferenceToggle(T_INPUT_DIM_ON_CREATE);
             sw.SetUserPreferenceToggle(T_INPUT_DIM_ON_CREATE, false);
+            var autoRel = T_AUTO_RELATIONS.ToDictionary(t => t, t => sw.GetUserPreferenceToggle(t));
+            foreach (int t in T_AUTO_RELATIONS) sw.SetUserPreferenceToggle(t, false);
+            quiet = new QuietUpdates(sw);
             try
             {
                 CloseEarlierOutputs(model, outDir);
@@ -75,7 +86,11 @@ namespace Ncx.Sw
                     if (referenceRoot != null) saved.Add(PlainImport(model, outDir));
                     return saved;
                 }
+                // the file's geometry stays on disk (one part per product) for the fallback and the face check:
+                // the imported copy of the whole model need not stay open
+                CloseReference();
                 var rebuilt = new Dictionary<string, IModelDoc2>();
+                bool hasFlex = model.Arr("documents").Cast<JObj>().Any(x => x.Arr("flex").Count > 0);
                 var fellBack = new HashSet<string>();
                 fixedGeometry.Clear();
                 // documents come in dependency order (a layout before the parts inserting it, parts before
@@ -118,8 +133,22 @@ namespace Ncx.Sw
                     saved.Add(path);
                     savedByDoc[d.Str("id")] = path;
                     rebuilt[d.Str("id")] = rd;
+                    // few documents open at once (many slow SolidWorks down and make it less stable): every
+                    // document no later one uses is closed now - this one, and earlier ones whose last user this
+                    // was. One a later document uses stays open and visible (a hidden document cannot be added as a
+                    // component); the flex check needs every part
+                    if (!hasFlex)
+                        foreach (var id in rebuilt.Keys.ToList())
+                            if (id != model.Str("root") && !UsedLater(model, id, d.Str("id")))
+                            {
+                                try { sw.CloseDoc(rebuilt[id].GetTitle()); } catch (System.Runtime.InteropServices.COMException) { }
+                                rebuilt.Remove(id);
+                            }
                 }
                 VerifyFlex(model, rebuilt, fellBack);
+                // only the result stays open: the assembly keeps its components loaded itself
+                foreach (var kv in rebuilt)
+                    if (kv.Key != model.Str("root")) try { sw.CloseDoc(kv.Value.GetTitle()); } catch (System.Runtime.InteropServices.COMException) { }
             }
             catch (OperationCanceledException e)
             {
@@ -135,9 +164,31 @@ namespace Ncx.Sw
             finally
             {
                 sw.SetUserPreferenceToggle(T_INPUT_DIM_ON_CREATE, inputDim);
+                foreach (var kv in autoRel) sw.SetUserPreferenceToggle(kv.Key, kv.Value);   // the user's settings back
+                quiet.Dispose();
+                quiet = null;
                 CloseReference();
             }
             return saved;
+        }
+
+        /// <summary>Does a later document of the model use this one: insert or mirror it, or place it as a component
+        /// (documents come in dependency order, so "later" is "after it in the list")?</summary>
+        static bool UsedLater(JObj model, string docId, string after = null)
+        {
+            bool later = false;
+            foreach (JObj d in model.Arr("documents"))
+            {
+                if (d.Str("id") == (after ?? docId)) { later = true; continue; }
+                if (!later) continue;
+                if (d.Arr("components").Cast<JObj>().Any(c => c.Str("document") == docId)) return true;
+                // a mate on a sketch entity of a nested component's part finds it through that part's rebuilt sketch
+                if (d.Arr("mates").Cast<JObj>().Any(m => m.Arr("refs").Cast<JObj>().Any(r => r.Obj("ref")?.Str("document") == docId)))
+                    return true;
+                if (d.Arr("features").Cast<JObj>().Any(f => (f.Str("type") == "insertPart" || f.Str("type") == "mirrorPart") && f.Obj("def")?.Str("source") == docId))
+                    return true;
+            }
+            return false;
         }
 
         void CloseCreated(List<string> saved)
@@ -167,6 +218,7 @@ namespace Ncx.Sw
         void Save(IModelDoc2 d, string path)
         {
             int err = 0, warn = 0;
+            quiet?.Release(d);   // drawn again before it is saved (its preview) and left open
             if (File.Exists(path)) File.Delete(path);
             if (!d.Extension.SaveAs(path, 0, 1, null, ref err, ref warn))   // current version, silent
                 throw new InvalidOperationException("could not save " + path + " (error " + err + ")");
@@ -182,6 +234,7 @@ namespace Ncx.Sw
             if (doc == null) doc = (IModelDoc2)sw.NewDocument(template, 0, 0, 0);
             if (doc == null) throw new InvalidOperationException("cannot create a part from " + template);
             created.Add(doc);
+            quiet?.Add(doc);
             part = (IPartDoc)doc;
             features.Clear();
             resultsApplied = false;
@@ -215,6 +268,7 @@ namespace Ncx.Sw
                 {
                     if (nf.Str("status") == "opaque")
                     {
+                        if (nf.Bool("noGeometry")) { Report.Add(docId, name, "note", nf.Str("reason")); continue; }
                         if (nf.Obj("result") == null) { Report.Add(docId, name, "fallback", nf.Str("reason")); continue; }
                         failure = nf.Str("reason");
                     }
@@ -323,6 +377,7 @@ namespace Ncx.Sw
                 case "hole": return ReplayHole(nf, def);
                 case "sheetMetal": return ReplaySheetMetalDefaults(nf, def);
                 case "baseFlange": return ReplayBaseFlange(nf, def);
+                case "convertToSheetMetal": return ReplayConvertToSheetMetal(nf, def);
                 case "edgeFlange": return ReplayEdgeFlange(nf, def);
                 case "flatPattern": return ReplayFlatPattern(nf);
                 case "sweep": return ReplaySweep(nf, def, false);

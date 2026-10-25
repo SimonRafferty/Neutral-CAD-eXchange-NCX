@@ -66,30 +66,36 @@ namespace Ncx.AddIn
                    (verification != null && verification.Any(v => !CleanVerification.Contains(v.Str("result") ?? "")));
         }
 
+        static string Doc(string id) { return id != null && id.StartsWith("doc:") ? id.Substring(4) : id; }
+
+        /// <summary>The report window: only the items and checks that need attention (the saved file has them all).</summary>
         public static void Show(IWin32Window owner, string title, Report report, List<JObj> verification, string reportPath)
         {
             using (var f = new Form { Text = title, Width = 900, Height = 560, StartPosition = FormStartPosition.CenterParent, ShowInTaskbar = false })
             {
+                // only what needs attention: the counts say how much carried cleanly, the file lists everything
                 var summary = report.ToJson().Obj("summary");
+                var badChecks = (verification ?? new List<JObj>()).Where(v => !CleanVerification.Contains(v.Str("result") ?? "")).ToList();
                 var top = new Label
                 {
                     Dock = DockStyle.Top, Height = 44, Padding = new Padding(6),
                     Text = string.Join("   ", summary.Select(kv => kv.Key + ": " + kv.Value)) +
-                           (verification == null ? "" : "\nVerification: " + string.Join(", ", verification.Select(v => v.Str("document") + " " + v.Str("result"))))
+                           (verification == null ? "" : badChecks.Count == 0 ? "\nVerification: every check matched"
+                               : "\nVerification did not match for: " + string.Join(", ", badChecks.Select(v => Doc(v.Str("document")) + " (" + v.Str("result") + ")")))
                 };
                 var list = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, GridLines = true };
                 list.Columns.Add("Document", 160);
                 list.Columns.Add("Feature", 200);
                 list.Columns.Add("Status", 90);
                 list.Columns.Add("Reason", 420);
-                foreach (var it in report.Items)
+                foreach (var it in report.Items.Where(i => !CleanStatus.Contains(i.Str("status") ?? "")))
                 {
-                    var row = new ListViewItem(new[] { it.Str("document"), it.Str("feature"), it.Str("status"), it.Str("reason") ?? "" });
+                    var row = new ListViewItem(new[] { Doc(it.Str("document")), it.Str("feature"), it.Str("status"), it.Str("reason") ?? "" });
                     Color c;
                     if (Colours.TryGetValue(it.Str("status") ?? "", out c)) row.BackColor = c;
                     list.Items.Add(row);
                 }
-                var bottom = new Label { Dock = DockStyle.Bottom, Height = 24, Padding = new Padding(6), Text = "Full report: " + reportPath };
+                var bottom = new Label { Dock = DockStyle.Bottom, Height = 24, Padding = new Padding(6), Text = "Only what needs attention is listed; the full report is " + reportPath };
                 f.Controls.Add(list);
                 f.Controls.Add(bottom);
                 f.Controls.Add(top);

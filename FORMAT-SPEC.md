@@ -225,6 +225,9 @@ other systems may use them where they understand them, and otherwise ignore them
 **Features:** `{id, type, name, native{app,type}, suppressed{config: bool}, status, note?, reason?, def}`.
 - `status` is `mapped`, `approximate` (with `note`) or `opaque` (with `reason`).
 - An unmappable feature is kept as `opaque`, so the history and the report stay complete.
+- `noGeometry: true` on an `opaque` feature: it adds nothing to the model's bodies (another add-in's reference data,
+  such as a 3D scan the part is modelled over). An importer skips it and reports a note; it has no `result`, and
+  features after it do not depend on it geometrically.
 - Type-specific definitions in schema 0.1: `sketch`, `insertPart`, `extrude`/`cut`, `fillet`/`chamfer`.
   The other known types are `plane axis point coordinateSystem revolve revolveCut hole
   linearPattern circularPattern sketchPattern mirror shell draft sweep loft combine split
@@ -237,12 +240,22 @@ other systems may use them where they understand them, and otherwise ignore them
 - Sheet metal: `sheetMetal` carries the part's sheet-metal defaults (thickness, bend radius,
   K-factor, relief); `baseFlange` and `edgeFlange` are the flanges; `flatPattern` is a marker for
   the flat pattern a base flange creates.
+- `convertToSheetMetal`: a sheet of `thickness` wrapped over faces of the solid before it, starting from
+  `fixedFace` (a face of that solid) and bent with inner radius `bendRadius` at each of `bendEdges` (edges of that
+  solid, as descriptors in the state before the feature). By default (`reverse` false) the sheet lies inside the
+  solid, its outer faces on the solid's faces; `reverse` puts it outside. `keepBody` keeps the solid as well. The
+  part's `sheetMetal` defaults (K-factor, relief) follow it. Exporters attach the feature's `result`; an importer
+  builds it natively (SolidWorks: Convert to Sheet Metal; elsewhere: the equivalent sheet with its bends, or the
+  sheet-metal model made from the result) and uses the result to check its rebuild and the thickness sense.
 
 **Feature definitions** (all lengths mm, angles deg, directions in the model frame). A definition, or a field, not
 described here is as the SolidWorks exporter writes it: `sw/Ncx.Sw/Export*.cs` is the reference for it. An importer
 that meets a field it does not understand reports the feature `approximate` rather than guessing.
 - `plane`: `references` (up to three, each `{ref, constraint, options?, value, flip}`; `value` is mm, or degrees
   for `angle`), and the resulting `origin` and `normal`, so a system can also build the plane directly.
+  `references` is empty when they could not be carried (a plane placed on another add-in's reference data, such as
+  a 3D scan): the plane is built at `origin`/`normal` and reported `approximate`. A sketch whose `plane` is
+  `{kind: "frame"}` is placed the same way, on a plane at its frame.
 - `axis`: `axisType`, `references`, and the resulting `line` `{start, end}`.
 - `point`: `pointType`, `references`, `alongCurve` and `distance` (mm, or a fraction for `percentage`), and the
   resulting `point`.
@@ -260,7 +273,19 @@ that meets a field it does not understand reports the feature `approximate` rath
   swapped); or `vertex` (`vertex`, `distances`, and `legs`: one `{direction, distance}` per edge at the vertex, the
   direction a unit vector from the vertex along that edge).
 - `extrude` / `cut` with selected contours: `contours`, a list of contours, each the ids of the profile sketch's
-  segments around it. Without `contours` the whole sketch is the profile.
+  segments around it. Without `contours` (and `regions`) the whole sketch is the profile.
+  - **`regions`**: areas of the sketch picked by clicking inside them (bounded by parts of crossing segments, or
+    with islands): each `{point, area, clearance}`, a point well inside the region in sketch coordinates (mm),
+    the region's area (mm²) and the point's distance from the region's boundary (mm). An importer selects the
+    region of its rebuilt sketch that contains the point, and checks that its area matches (relative 1e-3).
+    `contours` and `regions` may both be present; the profile is all of them. Revolves use them the same way.
+  - One sketch used by several features (each with its own contours or regions) is referenced by every one of
+    them: SolidWorks lists it under each as `Sketch1<2>`, `Sketch1<3>`...; the payload names the sketch once.
+- `cut` in a sheet-metal body: `normalCut` (true: the cut runs normal to the sheet's faces wherever it crosses
+  the sheet, bends included, as a hole punched or lasered in the flat; false or absent: straight along the sketch
+  normal). `cut` and `extrude` in a sheet-metal body: `linkToThickness` (true: the depth is the sheet's thickness
+  and follows it). A straight cut through
+  a bend removes slightly different material (measured: 0.33 mm³ on four 2 mm holes across a 3 mm bend).
 - `rib`: `profile` (an open sketch), `twoSided`, `thickness`, `reverseThickness` (the side of a
   one-sided rib), `flipMaterial` (which way from the sketch it fills), `extrusion` (0 parallel to the
   sketch plane, 1 normal to it), optional `draft {angle, outward, fromWall}`.
@@ -471,6 +496,28 @@ with the rest of the history.
   full knot vector), `controlPoints` (sketch coordinates, mm) and, for a rational spline, `weights`. A system whose
   spline through the same fit points comes out differently builds the curve from `nurbs`.
 - `constraints` use a closed list of types; others keep their native name with `supported: false`.
+- **`converted`** (Convert Entities / Project / Use): `entities: [own, source]`, the sketch's own segment and the
+  entity it was made from: another sketch's segment (often an inserted layout sketch's, see §5) or a model edge.
+  The own segment follows its source. An importer makes a real link where its system has one (SolidWorks' Convert
+  Entities, Fusion's Project, Onshape's Use); otherwise it keeps the segment on its source with relations that
+  have the same effect: collinear (a line) or coradial (an arc or circle) with the source, and each end point
+  coincident with the source's nearest end. A flex probe on the source's sketch shows the link works.
+- **`offset`** (Offset Entities): `entities: [a, b]`, an offset segment and its source in the same sketch. The two
+  stay concentric (arcs, circles) or parallel (lines); the offset distance is one of the sketch's `dimensions`.
+- **`patterned`** (a sketch pattern's copies): `entities`, two or more segments of the same sketch that are copies of
+  one another; they stay equal (and parallel, for lines) when the seed changes.
+- A **sketch entity of another document** (`{kind: "sketchEntity", by: "id", document, feature, id}`) is an
+  entity of a sketch an `insertPart` brought in: `feature` and `id` name the entity in the source document. The
+  derived part's copy of the sketch has the same geometry, so an importer finds the entity there by its
+  coordinates (the source entity's coordinates through the source sketch's frame). This is how a derived part's
+  sketches relate to, dimension from and convert entities of the layout sketch they are drawn on.
+  The referenced entity may lie off the sketch's plane (a layout point on the mid plane, the sketch on a sheet's
+  face): the relation then holds its projection onto the sketch plane, as a point projected along the sketch's
+  normal (Fusion: project it into the sketch; Onshape: use it).
+- Two points of one sketch at the same position are two entities when the payload lists them so (a standalone
+  point on a line's end, tied by a `coincident` relation): an importer keeps them apart and must not merge points
+  by position. Shapes some systems draw as one tool (slots, polygons) arrive as their plain segments and the
+  relations that hold them (equal caps, sides tangent to them, corners on the polygon's circle).
 - `dimensions` keep the native full name (`D1@SK_Outline`), so spreadsheet-driven dimension
   writes keep working, and a `param` link where a parameter drives them.
 - Sketch names are kept verbatim.
@@ -648,6 +695,11 @@ within 0.01 mm.
   planes win a tie.
 - Without `component`, the reference is the assembly's own `originPlane` or `origin`. Layout-style
   assemblies mate every component's base planes to the assembly's planes this way.
+- `suppressed` (optional) `{config: bool}`, as for features: a mate suppressed in the source holds nothing
+  there. An importer makes it and suppresses it (or leaves it out and says so); the components stay at
+  their `transform`.
+- A mate whose source has an end with no geometry (its part deleted) is left out of the file by the
+  exporter, with a note: it holds nothing.
 - Mechanical mates:
   - `gear`: two refs, `params {ratio: [a, b], reverse}`.
   - `screw`: two refs, `params {pitch (mm per turn), reverse}`.

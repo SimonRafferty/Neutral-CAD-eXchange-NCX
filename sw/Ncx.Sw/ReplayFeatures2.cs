@@ -60,17 +60,70 @@ namespace Ncx.Sw
             var thin = def.Obj("thin");
             int tt;
             if (thin == null || !ThinTypes.TryGetValue(thin.Str("type") ?? "", out tt)) tt = 0;
-            var feat = FM.FeatureRevolve2(single, true, thin != null, cut, reverse, false, t1, 0,   // a thin feature is still a solid
+            Func<IFeature> revolve = () => (IFeature)FM.FeatureRevolve2(single, true, thin != null, cut, reverse, false, t1, 0,   // a thin feature is still a solid
                                           U.Rad(def.Num("angle", 360)), U.Rad(def.Num("angle2")), false, false, 0, 0,
                                           tt, U.M(thin?.Num("thickness") ?? 0), U.M(thin?.Num("thickness2") ?? 0),
                                           def.Bool("merge", true), false, true);
+            var feat = revolve();
+            if (FeatureCount() == n0 && (def.Arr("regions").Count > 0 || def.Arr("contours").Count > 0))
+            {
+                // selected regions or contours: some revolves want them unmarked, not with mark 4
+                doc.ClearSelection2(true);
+                if (SelectProfile(def, 0) == null && SelectRef(def.Obj("axis"), true, 16) == null) feat = revolve();
+            }
             return Created(n0, feat, nf, cut ? "revolve cut" : "revolve");
+        }
+
+        /// <summary>A reference plane fixed at a position (origin mm, normal), for a plane or sketch whose own references
+        /// were not carried (FORMAT-SPEC 4, sketch plane kind "frame"; a plane with no references): three points of a 3D
+        /// sketch named "&lt;name&gt; points" and a plane through them, named &lt;name&gt;. It no longer follows what placed
+        /// it in the source. Null if SolidWorks refuses.</summary>
+        IFeature PlaneAt(double[] originMm, double[] normal, string name)
+        {
+            var z = V.Unit(normal);
+            var helper = Math.Abs(z[0]) > 0.9 ? new[] { 0.0, 1, 0 } : new[] { 1.0, 0, 0 };
+            var x = V.Unit(V.Cross(helper, z));
+            var y = V.Cross(z, x);
+            var o = originMm.Select(U.M).ToArray();
+            const double L = 0.01;   // 10 mm apart
+            var pts = new[] { o, new[] { o[0] + L * x[0], o[1] + L * x[1], o[2] + L * x[2] }, new[] { o[0] + L * y[0], o[1] + L * y[1], o[2] + L * y[2] } };
+            var sm = (ISketchManager)doc.SketchManager;
+            doc.ClearSelection2(true);
+            sm.Insert3DSketch(true);
+            var sk = sm.ActiveSketch;
+            if (sk == null) return null;
+            dynamic dsm = sm;
+            bool addToDb = dsm.AddToDB;
+            dsm.AddToDB = true;   // no snapping to existing geometry
+            var made = new List<ISketchPoint>();
+            try { foreach (var p in pts) made.Add((ISketchPoint)sm.CreatePoint(p[0], p[1], p[2])); }
+            finally { dsm.AddToDB = addToDb; sm.Insert3DSketch(true); }
+            Name((IFeature)sk, name + " points");
+            doc.ClearSelection2(true);
+            for (int i = 0; i < 3; i++)
+                if (made[i] == null || !made[i].Select4(i > 0, Mark(i))) return null;
+            int n0 = FeatureCount();
+            var plane = (IFeature)FM.InsertRefPlane(4, 0, 4, 0, 4, 0);   // swRefPlaneReferenceConstraint_Coincident x3
+            doc.ClearSelection2(true);
+            if (plane == null || FeatureCount() == n0) return null;
+            Name(plane, name);
+            return plane;
         }
 
         string ReplayPlane(JObj nf, JObj def)
         {
             doc.ClearSelection2(true);
             var refs = def.Arr("references").Cast<JObj>().ToList();
+            if (refs.Count == 0 && def.Vec("origin") != null && def.Vec("normal") != null)
+            {
+                // references not carried: the plane where the source had it (FORMAT-SPEC 4, plane)
+                var fixedPlane = PlaneAt(def.Vec("origin"), def.Vec("normal"), nf.Str("name"));
+                if (fixedPlane == null) return "plane at its recorded position could not be made";
+                features[nf.Str("id")] = fixedPlane;
+                nf["status"] = "approximate";
+                nf["note"] = (nf.Str("note") == null ? "" : nf.Str("note") + "; ") + "built at its recorded position (its references were not carried)";
+                return null;
+            }
             if (refs.Count == 0 || refs.Count > 3) return "plane needs 1-3 references";
             var c = new int[3];
             var v = new double[3];
@@ -206,6 +259,38 @@ namespace Ncx.Sw
             return Created(n0, feat, nf, "mirror");
         }
 
+        /// <summary>Select a face at a point on it, as a click there would (the Hole Wizard places its first hole at the
+        /// picked point). The point is the face's nearest to `near` (m): `near` itself, or, when a hole is already
+        /// there (the holes are often drilled where an earlier cut made them), 0.5 mm beyond that hole's edge - within
+        /// the 5 mm the hole points are later snapped back over. Picked by a ray along the face's normal, so the view
+        /// cannot put another face in front (SelectByID2 picks along the screen ray).</summary>
+        bool PickFace(IFace2 face, double[] near)
+        {
+            var q = V.P3(face.GetClosestPointOn(near[0], near[1], near[2]));
+            var away = V.Sub(q, near);
+            if (V.Norm(away) > 1e-7)
+            {
+                var nudged = V.Add(q, V.Scale(V.Unit(away), 0.0005));
+                if (V.Dist(V.P3(face.GetClosestPointOn(nudged[0], nudged[1], nudged[2])), nudged) < 1e-7) q = nudged;
+            }
+            double[] n = null;
+            var surf = (ISurface)face.GetSurface();
+            if (surf.IsPlane()) n = V.Unit((double[])face.Normal);
+            if (n == null || V.Norm(n) < 0.5)
+                return doc.Extension.SelectByID2("", "FACE", q[0], q[1], q[2], false, 0, null, 0);
+            // from just outside the face along its normal (and from the other side if the normal points into the body)
+            foreach (double side in new[] { 1.0, -1.0 })
+            {
+                doc.ClearSelection2(true);
+                var from = V.Add(q, V.Scale(n, 0.0005 * side));
+                if (!doc.Extension.SelectByRay(from[0], from[1], from[2], -n[0] * side, -n[1] * side, -n[2] * side, 1e-5, 2, false, 0, 0)) continue;   // swSelFACES
+                var picked = ((ISelectionMgr)doc.SelectionManager).GetSelectedObject6(1, -1) as IFace2;
+                if (picked != null && Math.Abs(picked.GetArea() - face.GetArea()) < 1e-9) return true;
+            }
+            doc.ClearSelection2(true);
+            return false;
+        }
+
         string ReplayHole(JObj nf, JObj def)
         {
             var w = def.Obj("wizard");
@@ -217,7 +302,7 @@ namespace Ncx.Sw
             if (res.Str("result") != "resolved") return "hole face " + res.Str("result");
             doc.ClearSelection2(true);
             var p0 = pts[0];
-            if (!doc.Extension.SelectByID2("", "FACE", p0[0], p0[1], p0[2], false, 0, null, 0)) return "could not pick the hole face";
+            if (!PickFace((IFace2)faces[0], p0)) return "could not pick the hole face";
             int n0 = FeatureCount();
             var feat = FM.HoleWizard5(Neutral.GeneralHoleType((int)w.Num("holeType")), (int)w.Num("standard"), (int)w.Num("fastenerType"), w.Str("size"),
                                       (short)w.Num("endCondition"), 0, U.M(w.Num("depth")), 0,

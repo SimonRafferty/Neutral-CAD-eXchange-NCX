@@ -78,33 +78,91 @@ namespace Ncx.Sw
             return null;
         }
 
-        /// <summary>Selected contours of the profile sketch: each as the ids of the sketch segments around it.</summary>
-        List<object> Contours(object[] contours, string sketchName, out string why)
+        /// <summary>The selected part of the profile sketch (FORMAT-SPEC 4, extrude): closed contours as the ids of the
+        /// sketch segments around each (`contours`), and regions (an area between crossing or nested segments, picked
+        /// by clicking in it) as a point well inside each with its area (`regions`). Returns why it could not be
+        /// carried, or null.</summary>
+        /// <summary>The point (mm) well inside a sketch region's face, and its distance from the region's edges.
+        /// From the face's triangulation where SolidWorks gives one (as face samples are chosen); a region's face
+        /// often has none, so else from a grid over its parameter range, keeping the inside point furthest from
+        /// the edges.</summary>
+        static List<double[]> RegionPoint(IFace2 face, out double clearance)
         {
-            why = null;
-            SketchIds ids;
-            if (contours == null) { why = "no contour list"; return null; }
-            if (!sketchMaps.TryGetValue(sketchName, out ids)) { why = "sketch " + sketchName + " not exported"; return null; }
-            var res = new List<object>();
-            foreach (var c in contours)
+            clearance = 0;
+            try
             {
+                var pts = Host.FaceSamples(face, 1, out clearance);
+                if (pts.Count > 0) return pts;
+            }
+            catch (Exception) { }   // no triangulation (a DBNull from GetTessTriangles, through a dynamic cast)
+            var uv = face.GetUVBounds() as double[];
+            var surf = face.GetSurface() as ISurface;
+            var edges = ((object[])face.GetEdges() ?? new object[0]).Cast<IEdge>().ToList();
+            if (uv == null || surf == null) return new List<double[]>();
+            const int N = 24;
+            double[] best = null;
+            for (int i = 1; i < N; i++)
+                for (int j = 1; j < N; j++)
+                {
+                    double u = uv[0] + (uv[1] - uv[0]) * i / N, v = uv[2] + (uv[3] - uv[2]) * j / N;
+                    var ev = surf.Evaluate(u, v, 0, 0) as double[];
+                    if (ev == null) continue;
+                    var pMm = U.Mm(new[] { ev[0], ev[1], ev[2] });
+                    if (Host.DistanceMm(face, pMm) > 1e-6) continue;   // outside the region (its parameter box is larger)
+                    double c = edges.Count == 0 ? 1.0 : edges.Min(e => Host.DistanceMm(e, pMm));
+                    if (c > clearance) { clearance = c; best = pMm; }
+                }
+            return best == null ? new List<double[]>() : new List<double[]> { best };
+        }
+
+        int unreadableContours;   // set by SelectedProfile: selections the API returned as nothing
+
+        string SelectedProfile(JObj def, object[] items, IFeature sketchFeature)
+        {
+            unreadableContours = 0;
+            SketchIds ids;
+            // a sketch several features use is listed under each as "<name><2>"...
+            string sketchName = System.Text.RegularExpressions.Regex.Replace(sketchFeature.Name, @"<\d+>$", "");
+            if (items == null) return "no contour list";
+            if (!sketchMaps.TryGetValue(sketchName, out ids)) return "sketch " + sketchName + " not exported";
+            var contours = new List<object>();
+            var regions = new List<object>();
+            SketchFrame frame = null;
+            foreach (var c in items)
+            {
+                var rg = c as ISketchRegion;
+                if (rg != null)
+                {
+                    // the region's own face: its most interior point (as face samples are chosen, FORMAT-SPEC 5) in
+                    // sketch coordinates, its area, and how far that point is from the region's edges
+                    var face = (rg.GetFirstLoop() as ILoop2)?.GetFace() as IFace2;
+                    if (face == null) return "a sketch region has no face";
+                    double clearance;
+                    var pts = RegionPoint(face, out clearance);
+                    if (pts.Count == 0) return "no point found inside a sketch region";
+                    if (frame == null) frame = new SketchFrame(sw, (ISketch)sketchFeature.GetSpecificFeature2());
+                    var q = frame.ToSketch(pts[0].Select(U.M).ToArray());
+                    regions.Add(new JObj { { "point", new[] { U.R(U.Mm(q[0])), U.R(U.Mm(q[1])) } }, { "area", face.GetArea() * 1e6 },
+                                           { "clearance", clearance } });
+                    continue;
+                }
+                if (c == null) { unreadableContours++; continue; }   // SolidWorks lists it but returns nothing for it
                 var ct = c as ISketchContour;
-                if (ct == null) { why = (c is ISketchRegion ? "a sketch region" : "an unknown contour object") + " is not carried"; return null; }
+                if (ct == null) return "an unknown contour object is not carried";
                 var segs = new List<object>();
                 foreach (var s in (object[])ct.GetSketchSegments() ?? new object[0])   // GetEdges gives model edges
                 {
                     string id = ids.Of(s);
                     if (id == null)
-                    {
-                        why = "a contour item (" + (s is ISketchSegment ? "segment " + SketchIds.Key(s) : s is IEdge ? "model edge" :
-                              s is IEntity ? "entity" : s == null ? "null" : "unknown") + ") is not in the exported sketch";
-                        return null;
-                    }
+                        return "a contour item (" + (s is ISketchSegment ? "segment " + SketchIds.Key(s) : s is IEdge ? "model edge" :
+                               s is IEntity ? "entity" : s == null ? "null" : "unknown") + ") is not in the exported sketch";
                     segs.Add(id);
                 }
-                res.Add(segs);
+                contours.Add(segs);
             }
-            return res;
+            if (contours.Count > 0) def["contours"] = contours;
+            if (regions.Count > 0) def["regions"] = regions;
+            return null;
         }
 
         void ExportExtrude(IFeature f, JObj nf)
@@ -121,15 +179,22 @@ namespace Ncx.Sw
                 if (nf.Str("status") == "opaque") return;
                 if (d.GetContoursCount() > 0)
                 {
-                    string cwhy;
-                    var contours = Contours((object[])d.Contours, ((IFeature)f.GetFirstSubFeature()).Name, out cwhy);
-                    if (contours == null) Approx(nf, "selected contours not carried (" + cwhy + "); whole sketch used");
-                    else def["contours"] = contours;
+                    string cwhy = SelectedProfile(def, (object[])d.Contours, (IFeature)f.GetFirstSubFeature());
+                    if (cwhy != null) Approx(nf, "selected contours not carried (" + cwhy + "); whole sketch used");
+                    else if (unreadableContours > 0)
+                    {
+                        // built from the rest; the result it carries shows whether that is the same
+                        Approx(nf, unreadableContours + " selected contour(s) not readable through SolidWorks' API: built from the others");
+                        needsResult.Add(nf);
+                    }
                 }
                 def["reverse"] = d.ReverseDirection;
                 def["end"] = End(d, true, nf);
                 if (d.BothDirections) def["end2"] = End(d, false, nf);
                 if (!boss && d.FlipSideToCut) def["flipSide"] = true;
+                // sheet metal: a cut normal to the sheet across bends; a cut's or boss's depth tied to the thickness
+                if (!boss && d.NormalCut) def["normalCut"] = true;
+                if (d.LinkToThickness) def["linkToThickness"] = true;
                 if (boss) def["merge"] = d.Merge;
                 var start = Start(d, nf);
                 if (start != null) def["start"] = start;

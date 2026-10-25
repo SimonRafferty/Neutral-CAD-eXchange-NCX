@@ -23,7 +23,11 @@ namespace Ncx.Sw
             public readonly Dictionary<string, ISketchSegment> Segs = new Dictionary<string, ISketchSegment>();
             public readonly Dictionary<string, ISketchPoint> Points = new Dictionary<string, ISketchPoint>();
             public readonly Dictionary<string, double[]> Target = new Dictionary<string, double[]>();   // point id -> target sketch xy (m)
+            // point id -> the segment it is an end of and which end (0 start, 1 end, 2 centre): found again through
+            // the segment, as another point may lie at the same spot
+            public readonly Dictionary<string, Tuple<string, int>> EndOf = new Dictionary<string, Tuple<string, int>>();
             public bool Mirrored;   // the replayed sketch's normal is opposite the source's: directions flip
+            public SketchFrame Source;   // the source sketch's frame (model m): where its regions' points lie
         }
 
         string step;   // the call in progress, so a COM fault can be reported precisely
@@ -62,7 +66,17 @@ namespace Ncx.Sw
             {
                 var plane = def.Obj("plane");
                 step = "select plane " + plane.Str("kind");
-                string why = SelectRef(plane, false, 0);
+                string why;
+                if (plane.Str("kind") == "frame")
+                {
+                    // the frame alone places the sketch (FORMAT-SPEC 4, Sketch): a plane at the frame
+                    var fr0 = def.Obj("frame");
+                    var fp = fr0 == null ? null : PlaneAt(fr0.Vec("origin"), fr0.Vec("z"), "Plane-" + nf.Str("name"));
+                    if (fp == null) return "sketch plane: a plane at the sketch's frame could not be made";
+                    why = fp.Select2(false, 0) ? null : "could not select the plane at the sketch's frame";
+                    if (nf.Str("status") == "mapped") nf["status"] = "approximate";
+                }
+                else why = SelectRef(plane, false, 0);
                 if (why != null) return "sketch plane: " + why;
                 step = "open sketch";
                 sm.InsertSketch(true);
@@ -80,7 +94,7 @@ namespace Ncx.Sw
             Func<double[], double[]> map = p => tgt.ToSketch(src.ToModel(U.M(p[0]), U.M(p[1])));
 
             var notes = new List<string>();
-            var sm2 = new SketchMap { Mirrored = mirrored };
+            var sm2 = new SketchMap { Mirrored = mirrored, Source = src };
             // AddToDB/DisplayWhenAdded fault when called through the typed interface out of process
             // (RPC_E_SERVERFAULT, SolidWorks 2018 and 2026); late binding works in and out of process
             dynamic dsm = sm;
@@ -206,6 +220,11 @@ namespace Ncx.Sw
                     if (seg == null) { notes.Add("could not create " + e.Str("id")); continue; }
                     if (e.Bool("construction")) seg.ConstructionGeometry = true;
                     sm2.Segs[e.Str("id")] = seg;
+                    string[] roles = { "startPoint", "endPoint", "centerPoint" };
+                    if (e.Str("type") == "line" || e.Str("type") == "arc" || e.Str("type") == "circle")
+                        for (int r = 0; r < roles.Length; r++)
+                            if (e.Str(roles[r]) != null && !sm2.EndOf.ContainsKey(e.Str(roles[r])))
+                                sm2.EndOf[e.Str(roles[r])] = Tuple.Create(e.Str("id"), r);
                 }
                 foreach (var kv in pointPos.Where(kv => !owned.Contains(kv.Key)))
                 {
@@ -239,9 +258,45 @@ namespace Ncx.Sw
                 step = "refresh points";
                 RefreshPoints(sk, sm2);
 
+                Trace(nf.Str("name") + " relations");
+                // geometry wins: a relation that would move the drawn geometry from where the source has it is undone
+                guard = sm2;
+                guardMoved.Clear();   // relations that moved the geometry (reported)
                 foreach (JObj c in def.Arr("constraints"))
                 {
                     step = "relation " + c.Str("type");
+                    if (c.Str("type") == "offset")
+                    {
+                        // Offset Entities: the offset follows its source - concentric arcs, parallel lines; the
+                        // offset distance is one of the sketch's dimensions
+                        var oo = c.Arr("entities").Select(x => Resolve(sm2, x)).ToArray();
+                        string kindOf = oo.Length == 2 && oo.All(o => o is ISketchArc) ? "concentric" : oo.Length == 2 && oo.All(o => o is ISketchLine) ? "parallel" : null;
+                        int b0 = rm.GetRelationsCount(0);
+                        if (kindOf == null || oo.Any(o => o == null)) notes.Add("offset entity: its source was not found");
+                        else if (!AddConstraintBySelection(oo, kindOf) || rm.GetRelationsCount(0) <= b0) notes.Add("offset entity: " + kindOf + " with its source rejected");
+                        continue;
+                    }
+                    if (c.Str("type") == "patterned")
+                    {
+                        // a sketch pattern's copies follow the seed: equal (and parallel for lines)
+                        var pp = c.Arr("entities").Select(x => Resolve(sm2, x)).ToArray();
+                        if (pp.Any(o => o == null)) { notes.Add("patterned entity missing"); continue; }
+                        // parallel only where the copies are (a linear pattern); a circular one turns them
+                        bool lines = pp.All(o => o is ISketchLine) && AllParallel(pp.Cast<ISketchLine>().ToList());
+                        foreach (var rel in lines ? new[] { "equal", "parallel" } : new[] { "equal" })
+                        {
+                            int b1 = rm.GetRelationsCount(0);
+                            if (!AddConstraintBySelection(pp, rel) || rm.GetRelationsCount(0) <= b1) notes.Add("patterned entities: " + rel + " rejected");
+                        }
+                        continue;
+                    }
+                    if (c.Str("type") == "converted")
+                    {
+                        var co = c.Arr("entities").Select(x => Resolve(sm2, x)).ToArray();
+                        if (co.Length != 2 || co.Any(o => o == null)) { notes.Add("converted entity: its source was not found"); continue; }
+                        notes.AddRange(ReplayConverted(co[0], co[1]));
+                        continue;
+                    }
                     int t;
                     if (c.Bool("supported", true) == false || !RelationTypes.TryGetValue(c.Str("type"), out t))
                     {
@@ -250,14 +305,27 @@ namespace Ncx.Sw
                     }
                     var objs = c.Arr("entities").Select(x => Resolve(sm2, x)).ToArray();
                     if (objs.Any(o => o == null)) { notes.Add("relation " + c.Str("type") + ": entity missing"); continue; }
+                    // two of the sketch's own points SolidWorks already joined into one (drawn at the same spot):
+                    // coincident as they are. Only the sketch's own: ids are unique within a sketch, so a point of
+                    // another sketch (the origin, a layout point) can have the same id
+                    if (c.Str("type") == "coincident" && c.Arr("entities").All(x => x is string) && objs.All(o => o is ISketchPoint)
+                        && objs.Select(o => PointKey((ISketchPoint)o)).Distinct().Count() == 1)
+                        continue;
                     // AddRelation faults (RPC_E_SERVERFAULT) when given entity arrays from C# out of process and
                     // when given the origin's point; selecting the entities and adding the constraint, as a user
                     // would, works everywhere
                     int before = rm.GetRelationsCount(0);
+                    // which entities, for the report (an id of this sketch, or the kind of outside reference)
+                    guardLabel = c.Str("type") + " (" + string.Join(", ", c.Arr("entities").Select(x => x as string ?? ((JObj)x).Str("kind"))) + ")";
                     if (!AddConstraintBySelection(objs, c.Str("type")) || rm.GetRelationsCount(0) <= before)
-                        notes.Add("relation " + c.Str("type") + " rejected");
+                        notes.Add("relation " + guardLabel + " rejected");
+                    guardLabel = null;
                 }
 
+                guard = null;
+                if (guardMoved.Count > 0)
+                    notes.Add("relation(s) " + string.Join(", ", guardMoved) + " moved the drawn geometry away from the source's");
+                Trace(nf.Str("name") + " dimensions");
                 foreach (JObj dm in def.Arr("dimensions"))
                 {
                     step = "dimension " + dm.Str("name");
@@ -267,9 +335,11 @@ namespace Ncx.Sw
             }
             finally
             {
+                guard = null;
                 if (!step.StartsWith("close")) step = "close (after " + step + ")";
                 dsm.AddToDB = addToDb;
                 dsm.DisplayWhenAdded = display;
+                Trace(nf.Str("name") + " closing");
                 sm.InsertSketch(true);
             }
             var feat = (IFeature)sk;
@@ -286,6 +356,7 @@ namespace Ncx.Sw
             Name(feat, nf.Str("name"));
             features[nf.Str("id")] = feat;
             sketchMaps[nf.Str("id")] = sm2;
+            if (def.Bool("hidden")) Hide(feat);
             if (notes.Count > 0) nf["note"] = (nf.Str("note") == null ? "" : nf.Str("note") + "; ") + string.Join("; ", notes);
             if (notes.Count > 0 && nf.Str("status") == "mapped") nf["status"] = "approximate";
             return null;
@@ -314,9 +385,32 @@ namespace Ncx.Sw
                 if (!SelectSketchObject(o, append)) { doc.ClearSelection2(true); return false; }
                 append = true;
             }
+            double drift0 = guard == null ? 0 : Drift(guard);
             doc.SketchAddConstraints(id);
             doc.ClearSelection2(true);
+            // a relation that moves the drawn geometry from where the source has it is reported (undoing it from
+            // inside an edited sketch stalled SolidWorks 2026)
+            double drift = guard == null ? 0 : Drift(guard);
+            if (drift > drift0 + 1e-6) guardMoved.Add((guardLabel ?? type) + " by " + U.R(U.Mm(drift - drift0)) + " mm");
             return true;
+        }
+
+        SketchMap guard;   // while relations are added: the sketch whose drawn geometry must stay put
+        string guardLabel;   // the relation being added, with its entities (for the report)
+        readonly List<string> guardMoved = new List<string>();   // relations that moved it, with how far
+
+        /// <summary>How far the sketch's points are from where the source has them (m, the largest).</summary>
+        static double Drift(SketchMap m)
+        {
+            double worst = 0;
+            foreach (var kv in m.Points)
+            {
+                double[] t;
+                if (!m.Target.TryGetValue(kv.Key, out t)) continue;
+                try { worst = Math.Max(worst, Math.Sqrt(Math.Pow(kv.Value.X - t[0], 2) + Math.Pow(kv.Value.Y - t[1], 2))); }
+                catch (System.Runtime.InteropServices.COMException) { }
+            }
+            return worst;
         }
 
         /// <summary>Select a sketch segment/point, or a model edge/face/vertex (an external reference).</summary>
@@ -333,12 +427,43 @@ namespace Ncx.Sw
         static void RefreshPoints(ISketch sk, SketchMap m)
         {
             var pts = ((object[])sk.GetSketchPoints2() ?? new object[0]).Cast<ISketchPoint>().ToList();
+            // a segment's ends are found through the segment: a separate point (a standalone point on a line's end,
+            // only tied to it by a relation) may lie at the same spot and must stay a different point
+            var ends = new HashSet<string>();
+            foreach (var kv in m.EndOf)
+            {
+                var p = SegmentEnd(m, kv.Value);
+                if (p == null) continue;
+                m.Points[kv.Key] = p;
+                ends.Add(PointKey(p));
+            }
             foreach (var kv in m.Target)
             {
-                var hit = pts.FirstOrDefault(p => Math.Abs(p.X - kv.Value[0]) < 1e-9 && Math.Abs(p.Y - kv.Value[1]) < 1e-9);
+                if (m.EndOf.ContainsKey(kv.Key) && m.Points.ContainsKey(kv.Key)) continue;
+                var at = pts.Where(p => Math.Abs(p.X - kv.Value[0]) < 1e-9 && Math.Abs(p.Y - kv.Value[1]) < 1e-9).ToList();
+                var hit = at.FirstOrDefault(p => !ends.Contains(PointKey(p))) ?? at.FirstOrDefault();
                 if (hit != null) m.Points[kv.Key] = hit;
             }
         }
+
+        static ISketchPoint SegmentEnd(SketchMap m, Tuple<string, int> end)
+        {
+            ISketchSegment seg;
+            if (!m.Segs.TryGetValue(end.Item1, out seg)) return null;
+            try
+            {
+                var arc = seg as ISketchArc;
+                if (arc != null)
+                    return (ISketchPoint)(end.Item2 == 0 ? arc.GetStartPoint2() : end.Item2 == 1 ? arc.GetEndPoint2() : arc.GetCenterPoint2());
+                var line = seg as ISketchLine;
+                if (line != null && end.Item2 < 2)
+                    return (ISketchPoint)(end.Item2 == 0 ? line.GetStartPoint2() : line.GetEndPoint2());
+            }
+            catch (System.Runtime.InteropServices.COMException) { }
+            return null;
+        }
+
+        static string PointKey(ISketchPoint p) => string.Join(",", (int[])p.GetID());
 
         /// <summary>Spline handles the user set (tangent direction/magnitude, curvature), on the rebuilt spline. The
         /// direction is an angle in the sketch's axes, so it is mapped through the same source-to-target transform
@@ -374,6 +499,136 @@ namespace Ncx.Sw
             return null;
         }
 
+        /// <summary>An entity of a sketch an Insert Part brought in (FORMAT-SPEC 5: a sketch entity of another
+        /// `document`): found in this part's inserted copy of that sketch by geometry, the source entity's own
+        /// coordinates taken through the source sketch's frame into the copy's. Null if not found.</summary>
+        object ResolveTransferred(JObj r)
+        {
+            IFeature tf;
+            if (!transferredItems.TryGetValue(r.Str("document") + "|" + r.Str("feature"), out tf)) return null;
+            var copy = tf.GetSpecificFeature2() as ISketch;
+            var srcDoc = Model.Arr("documents").Cast<JObj>().FirstOrDefault(d => d.Str("id") == r.Str("document"));
+            var def = srcDoc?.Arr("features").Cast<JObj>().FirstOrDefault(f => f.Str("id") == r.Str("feature"))?.Obj("def");
+            var ent = def?.Arr("entities").Cast<JObj>().FirstOrDefault(e => e.Str("id") == r.Str("id"));
+            var fr = def?.Obj("frame");
+            if (copy == null || ent == null || fr == null) return null;
+            var src = new SketchFrame(fr.Vec("origin").Select(U.M).ToArray(), fr.Vec("x"), fr.Vec("z"));
+            var tgt = new SketchFrame(sw, copy);
+            Func<string, double[]> at = k => tgt.ToSketch(src.ToModel(U.M(ent.Vec(k)[0]), U.M(ent.Vec(k)[1])));
+            Func<ISketchPoint, double[], bool> near = (sp, q) => sp != null && Math.Abs(sp.X - q[0]) < 1e-7 && Math.Abs(sp.Y - q[1]) < 1e-7;
+            var segs = ((object[])copy.GetSketchSegments() ?? new object[0]).OfType<ISketchSegment>().ToList();
+            switch (ent.Str("type"))
+            {
+                case "point":
+                {
+                    var q = at("p");
+                    return ((object[])copy.GetSketchPoints2() ?? new object[0]).OfType<ISketchPoint>().FirstOrDefault(sp => near(sp, q));
+                }
+                case "line":
+                {
+                    var a = at("start");
+                    var b = at("end");
+                    return segs.OfType<ISketchLine>().FirstOrDefault(l =>
+                    {
+                        var p1 = (ISketchPoint)l.GetStartPoint2();
+                        var p2 = (ISketchPoint)l.GetEndPoint2();
+                        return (near(p1, a) && near(p2, b)) || (near(p1, b) && near(p2, a));
+                    });
+                }
+                case "arc":
+                case "circle":
+                {
+                    var c = at("center");
+                    double rad = U.M(ent.Num("radius"));
+                    bool circle = ent.Str("type") == "circle";
+                    var s0 = circle ? null : at("start");
+                    return segs.OfType<ISketchArc>().FirstOrDefault(x => near((ISketchPoint)x.GetCenterPoint2(), c) && Math.Abs(x.GetRadius() - rad) < 1e-7 &&
+                        (circle || near((ISketchPoint)x.GetStartPoint2(), s0) || near((ISketchPoint)x.GetEndPoint2(), s0)));
+                }
+            }
+            return null;
+        }
+
+        /// <summary>Convert Entities (FORMAT-SPEC 4, relation "converted"): the own entity follows its source. Rebuilt as
+        /// the relations that keep it on the source: collinear (a line) or coradial (an arc or circle), and its end
+        /// points coincident with the source's nearest ones. Returns notes for what could not be added.</summary>
+        List<string> ReplayConverted(object own, object source)
+        {
+            var notes = new List<string>();
+            var rm = (ISketchRelationManager)((ISketch)((ISketchSegment)own).GetSketch()).RelationManager;
+            Func<string, object[], bool> add = (type, o) =>
+            {
+                int before = rm.GetRelationsCount(0);
+                return AddConstraintBySelection(o, type) && rm.GetRelationsCount(0) > before;
+            };
+            bool isLine = own is ISketchLine;
+            // the ends (a circle has none): each own end on the source end nearest to it, in model space - only where
+            // the drawn end is there. The source is the edge as the finished part has it, which a later feature may
+            // have split (an edge flange's own profile, converted from the edge it stands on, keeps the flange's
+            // stretch while the recorded edge is what is left beside it): geometry wins
+            var ownEnds = Ends(own);
+            var srcEnds = Ends(source);
+            var ends = new List<object[]>();
+            if (ownEnds.Count == 2 && srcEnds.Count == 2)
+            {
+                bool swap = V.Dist(Model3(ownEnds[0]), Model3(srcEnds[0])) + V.Dist(Model3(ownEnds[1]), Model3(srcEnds[1])) >
+                            V.Dist(Model3(ownEnds[0]), Model3(srcEnds[1])) + V.Dist(Model3(ownEnds[1]), Model3(srcEnds[0]));
+                for (int i = 0; i < 2; i++)
+                {
+                    var src = srcEnds[swap ? 1 - i : i];
+                    if (V.Dist(Model3(ownEnds[i]), Model3(src)) < 1e-6) ends.Add(new[] { ownEnds[i], src });
+                }
+            }
+            if (!add(isLine ? "collinear" : "coradial", new[] { own, source }))
+                notes.Add("converted entity: " + (isLine ? "collinear" : "coradial") + " with its source rejected");
+            foreach (var pair in ends)
+                if (!add("coincident", pair))
+                    notes.Add("converted entity: an end on its source rejected");
+            return notes;
+        }
+
+        /// <summary>A line's or arc's two end points (sketch points, or an edge's vertices); empty for a circle.</summary>
+        static List<object> Ends(object o)
+        {
+            if (o is ISketchLine) return new List<object> { ((ISketchLine)o).GetStartPoint2(), ((ISketchLine)o).GetEndPoint2() };
+            var arc = o as ISketchArc;
+            if (arc != null && arc.IsCircle() == 0) return new List<object> { arc.GetStartPoint2(), arc.GetEndPoint2() };
+            var e = o as IEdge;
+            if (e != null && e.GetStartVertex() != null && e.GetEndVertex() != null && !ReferenceEquals(e.GetStartVertex(), e.GetEndVertex()))
+                return new List<object> { e.GetStartVertex(), e.GetEndVertex() };
+            return new List<object>();
+        }
+
+        /// <summary>A sketch point or vertex in model coordinates (m).</summary>
+        double[] Model3(object o)
+        {
+            var v = o as IVertex;
+            if (v != null) return V.P3(v.GetPoint());
+            var sp = (ISketchPoint)o;
+            return new SketchFrame(sw, (ISketch)sp.GetSketch()).ToModel(sp.X, sp.Y);
+        }
+
+        /// <summary>Are the lines parallel as drawn?</summary>
+        static bool AllParallel(List<ISketchLine> lines)
+        {
+            Func<ISketchLine, double[]> dir = l =>
+            {
+                var a = (ISketchPoint)l.GetStartPoint2();
+                var b = (ISketchPoint)l.GetEndPoint2();
+                return V.Unit(new[] { b.X - a.X, b.Y - a.Y, 0 });
+            };
+            var d0 = dir(lines[0]);
+            return lines.All(l => Math.Abs(Math.Abs(V.Dot(dir(l), d0)) - 1) < 1e-9);
+        }
+
+        /// <summary>Hide a sketch (as it was in the source).</summary>
+        void Hide(IFeature sketch)
+        {
+            doc.ClearSelection2(true);
+            if (sketch.Select2(false, 0)) doc.BlankSketch();
+            doc.ClearSelection2(true);
+        }
+
         object Resolve(SketchMap m, object entity)
         {
             var s = entity as string;
@@ -403,6 +658,7 @@ namespace Ncx.Sw
                 }
                 case "sketchEntity":
                 {
+                    if (r.Str("document") != null && r.Str("document") != docId) return ResolveTransferred(r);
                     SketchMap other;
                     return sketchMaps.TryGetValue(r.Str("feature"), out other) ? Resolve(other, r.Str("id")) : null;
                 }
@@ -443,21 +699,45 @@ namespace Ncx.Sw
                 dd = (IDisplayDimension)(alongX ? doc.AddHorizontalDimension2(at[0], at[1], at[2])
                                                 : doc.AddVerticalDimension2(at[0], at[1], at[2]));
             }
-            if (dd == null) dd = (IDisplayDimension)doc.AddDimension2(at[0], at[1], at[2]);
+            // diameter and radius explicitly too: AddDimension2 makes a radius on an arc and a diameter on a circle,
+            // whatever the source had (a diameter on an arc replayed as a radius of the diameter's value doubles it)
+            if (kind == "diameter") dd = (IDisplayDimension)doc.AddDiameterDimension2(at[0], at[1], at[2]);
+            else if (kind == "radius") dd = (IDisplayDimension)doc.AddRadialDimension2(at[0], at[1], at[2]);
+            if (dd == null)
+            {
+                // a refused explicit kind drops the selection: select the entities again for the general call
+                doc.ClearSelection2(true);
+                bool again = false;
+                foreach (var x in dm.Arr("entities"))
+                {
+                    var o = Resolve(m, x);
+                    if (o == null || !SelectSketchObject(o, again)) break;
+                    again = true;
+                }
+                dd = (IDisplayDimension)doc.AddDimension2(at[0], at[1], at[2]);
+            }
             doc.ClearSelection2(true);
             if (dd == null) return "dimension " + dm.Str("name") + " could not be added";
             var dim = (IDimension)dd.GetDimension2(0);
+            if (!string.IsNullOrEmpty(dm.Str("name")) && dim.Name != dm.Str("name")) dim.Name = dm.Str("name");
             // a reference dimension - but never one an equation drives (files exported before 0.1.1 marked those
             // as driven: SolidWorks reports an equation's target as driven)
-            if (!dm.Bool("driving", true) && !EquationTarget(dm.Str("fullName"))) dim.DrivenState = 1;   // swDimensionDriven
-            else
+            if (!dm.Bool("driving", true) && !EquationTarget(dm.Str("fullName"))) { dim.DrivenState = 1; return null; }   // swDimensionDriven
+            // Geometry wins: every entity already sits where the source solved it, so the new dimension measures the
+            // recorded value. If it does not, SolidWorks measured something else (the other side of an angle, a radius
+            // for a diameter): setting the value would move the geometry, so it is left as measured
+            bool angle = dm.Str("kind") == "angle";
+            double want = angle ? U.Rad(dm.Num("value")) : U.M(dm.Num("value"));
+            double have = dim.SystemValue;
+            if (Math.Abs(have - want) <= Math.Max(1e-9, 1e-7 * Math.Abs(want)))
             {
-                double v = dm.Str("kind") == "angle" ? U.Rad(dm.Num("value")) : U.M(dm.Num("value"));
-                int st = dim.SetSystemValue3(v, 2, null);   // swSetValue_InAllConfigurations
-                if (st != 0) return "dimension " + dm.Str("name") + ": value not accepted (status " + st + ")";
+                int st = dim.SetSystemValue3(want, 2, null);   // swSetValue_InAllConfigurations (removes rounding)
+                return st == 0 ? null : "dimension " + dm.Str("name") + ": value not accepted (status " + st + ")";
             }
-            if (!string.IsNullOrEmpty(dm.Str("name")) && dim.Name != dm.Str("name")) dim.Name = dm.Str("name");
-            return null;
+            if (Math.Abs(2 * have - want) <= 1e-9 || Math.Abs(have - 2 * want) <= 1e-9)
+                return "dimension " + dm.Str("name") + " made as a " + (kind == "diameter" ? "radius" : "diameter") + " (same geometry)";
+            return "dimension " + dm.Str("name") + " measures " + (angle ? U.Deg(have).ToString("G6") + " deg" : U.Mm(have).ToString("G6") + " mm") +
+                   " where the source had " + dm.Num("value").ToString("G6") + ": left as measured, geometry kept";
         }
     }
 }

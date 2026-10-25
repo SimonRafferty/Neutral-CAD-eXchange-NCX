@@ -14,7 +14,7 @@ namespace Ncx.Sw
 {
     public partial class Exporter
     {
-        public const string Version = "0.5.2";
+        public const string Version = "0.5.3";
         readonly ISldWorks sw;
         public readonly Report Report = new Report();
 
@@ -55,6 +55,8 @@ namespace Ncx.Sw
             documents.Clear();
             docIdByPath.Clear();
             docsById.Clear();
+            var openBefore = new HashSet<string>(VisibleDocuments().Select(x => x.GetTitle()));
+            quiet = new QuietUpdates(sw);
             try
             {
                 string rootId = ExportDoc(root);
@@ -76,7 +78,28 @@ namespace Ncx.Sw
             {
                 foreach (var d in openedHere) sw.CloseDoc(d.GetTitle());
                 openedHere.Clear();
+                quiet.Dispose();
+                quiet = null;
+                // SolidWorks as it was: the exported model and whatever the user had open stay, anything else the
+                // export opened (a layout, a scratch part) is closed
+                foreach (var d in VisibleDocuments())
+                    if (!openBefore.Contains(d.GetTitle()) && d.GetTitle() != root.GetTitle())
+                        try { sw.CloseDoc(d.GetTitle()); } catch (System.Runtime.InteropServices.COMException) { }
             }
+        }
+
+        QuietUpdates quiet;   // screen updates off during an export (every rollback otherwise redraws)
+
+        /// <summary>The documents open in their own window (not components loaded by an assembly).</summary>
+        List<IModelDoc2> VisibleDocuments()
+        {
+            var res = new List<IModelDoc2>();
+            foreach (var o in (object[])sw.GetDocuments() ?? new object[0])
+            {
+                var d = o as IModelDoc2;
+                try { if (d != null && d.Visible) res.Add(d); } catch (System.Runtime.InteropServices.COMException) { }
+            }
+            return res;
         }
 
         /// <summary>Export a document after the documents it depends on; returns its id.</summary>
@@ -90,6 +113,7 @@ namespace Ncx.Sw
             for (int k = 2; docIdByPath.ContainsValue(id); k++) id = "doc:" + name + "-" + k;
             docIdByPath[path] = id;
             docsById[id] = d;
+            quiet?.Add(d);
             JObj json;
             if (d.GetType() == 2)   // swDocASSEMBLY
                 json = ExportAssembly(d, id);
@@ -161,6 +185,8 @@ namespace Ncx.Sw
             featureIds.Clear();
             originPlanes.Clear();
             sketchMaps.Clear();
+            modelPoints.Clear();
+            modelNormals.Clear();
             transferred.Clear();
             exportedFeatures.Clear();
             opaqueSeen = false;
@@ -178,6 +204,11 @@ namespace Ncx.Sw
                     // a Hole Wizard's position sketch is its sub-feature: carried as a sketch just before the hole
                     var position = f.GetTypeName2() == "HoleWzd" ? HolePositionSketch(f) : null;
                     if (position != null) all.Add(position);
+                    // an edge flange's profile sketch is often only its sub-feature (edited from the flange's
+                    // PropertyManager): carried as a sketch just before the flange, like a hole's position sketch
+                    if (f.GetTypeName2() == "EdgeFlange")
+                        for (var sub = (IFeature)f.GetFirstSubFeature(); sub != null; sub = (IFeature)sub.GetNextSubFeature())
+                            if (sub.GetTypeName2() == "ProfileFeature" && all.All(x => x.Name != sub.Name)) all.Add(sub);
                     all.Add(f);
                     // cosmetic threads live only under the feature whose edge they are on
                     for (var sub = (IFeature)f.GetFirstSubFeature(); sub != null; sub = (IFeature)sub.GetNextSubFeature())
@@ -363,6 +394,9 @@ namespace Ncx.Sw
                     case "SMBaseFlange":
                         ExportBaseFlange(f, nf);
                         break;
+                    case "SolidToSheetMetal":
+                        ExportConvertToSheetMetal(f, nf);
+                        break;
                     case "EdgeFlange":
                         ExportEdgeFlange(f, nf);
                         DeferBendGeometry(f, nf);
@@ -436,6 +470,13 @@ namespace Ncx.Sw
                     case "FlatPattern":
                         nf["type"] = "flatPattern";   // made by the base flange; replay renames it
                         break;
+                    case "MacroFeature" when f.GetFaceCount() == 0:
+                        // another add-in's feature that adds no faces to the model: reference data such as a 3D scan
+                        // (x3DA) that the real geometry is modelled over. Nothing to rebuild; what follows does not
+                        // depend on it geometrically, so it must not make every later feature carry its result
+                        Opaque(nf, "reference data from another add-in (" + MacroProgId(f) + "): no geometry, not carried");
+                        nf["noGeometry"] = true;
+                        break;
                     default:
                         Opaque(nf, "feature type " + type + " is not mapped yet");
                         break;
@@ -461,6 +502,12 @@ namespace Ncx.Sw
             }
             Report.Add(docId, f.Name, nf.Str("status"), nf.Str("reason") ?? nf.Str("note"));
             return nf;
+        }
+
+        static string MacroProgId(IFeature f)
+        {
+            try { return ((IMacroFeatureData)f.GetDefinition())?.GetProgId() ?? "macro feature"; }
+            catch (Exception e) when (e is System.Runtime.InteropServices.COMException || e is InvalidCastException) { return "macro feature"; }
         }
 
         void Rollback(IFeatureManager fm, IFeature f)
@@ -562,12 +609,13 @@ namespace Ncx.Sw
         {
             string id;
             JObj tr;
-            // a transferred sketch used by a feature is listed as "<name><2>"
+            // a sketch used by several features (a transferred sketch, or one sketch whose regions several features
+            // use) is listed under each of them as "<name><2>", "<name><3>"...
             string bare = System.Text.RegularExpressions.Regex.Replace(f.Name, @"<\d+>$", "");
             if (transferred.TryGetValue(f.Name, out tr) || transferred.TryGetValue(bare, out tr)) return tr;
             if (originPlanes.TryGetValue(f.Name, out var plane))
                 return new JObj { { "kind", "originPlane" }, { "by", "id" }, { "plane", plane } };
-            if (featureIds.TryGetValue(f.Name, out id))
+            if (featureIds.TryGetValue(f.Name, out id) || featureIds.TryGetValue(bare, out id))
                 return new JObj { { "kind", "feature" }, { "by", "id" }, { "id", id } };
             return null;
         }

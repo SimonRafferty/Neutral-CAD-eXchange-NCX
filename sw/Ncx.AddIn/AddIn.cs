@@ -205,6 +205,68 @@ namespace Ncx.AddIn
             }
         }
 
+        // ---------------------------------------------------------------------------- automation
+        /// <summary>For test scripts (no UI): run an export or import inside SOLIDWORKS, as the menu commands do,
+        /// and return its report as JSON. A script reaches it through ISldWorks.GetAddInObject("{3bfa0246-...}"):
+        /// one call crosses the process boundary, the work runs here (out-of-process API calls are 10-50 times
+        /// slower). Job: {"op":"export","source":path,"target":path,"flex":"auto|off|N"} or
+        /// {"op":"import","source":path,"outDir":path}.</summary>
+        public string RunJob(string jobJson)
+        {
+            StreamWriter log = null;
+            try
+            {
+                var job = (JObj)Json.Parse(jobJson);
+                // a timing log, one line per step (feature), to find what is slow: the job's "log", else
+                // ncx-job.log in the temp folder
+                string logPath = job.Str("log") ?? Path.Combine(Path.GetTempPath(), "ncx-job.log");
+                log = new StreamWriter(logPath, false) { AutoFlush = true };
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                double last = 0;
+                Func<string, bool> step = s =>
+                {
+                    double now = clock.Elapsed.TotalSeconds;
+                    log.WriteLine(now.ToString("F1") + "\t+" + (now - last).ToString("F2") + "\t" + s);
+                    last = now;
+                    return true;   // never cancels
+                };
+                if (job.Str("op") == "export")
+                {
+                    string src = job.Str("source");
+                    var d = (IModelDoc2)sw.GetOpenDocumentByName(src);
+                    if (d == null)
+                    {
+                        int err = 0, warn = 0;
+                        d = (IModelDoc2)sw.OpenDoc6(src, src.EndsWith(".SLDASM", StringComparison.OrdinalIgnoreCase) ? 2 : 1, 1, "", ref err, ref warn);
+                        if (d == null) return Json.Write(new JObj { { "ok", false }, { "error", "could not open " + src + " (error " + err + ")" } });
+                    }
+                    var exp = new Exporter(sw) { Progress = step };
+                    string flex = job.Str("flex") ?? "auto";
+                    exp.FlexProbes = flex == "auto" ? -1 : flex == "off" ? 0 : int.Parse(flex);
+                    var t0 = DateTime.Now;
+                    var res = Container.Export(sw, d, job.Str("target"), exp);   // the model stays open, as the menu leaves it
+                    return Json.Write(new JObj { { "ok", true }, { "seconds", (DateTime.Now - t0).TotalSeconds }, { "report", res["report"] } });
+                }
+                if (job.Str("op") == "import")
+                {
+                    JObj readReport;
+                    var model = Container.ReadModel(job.Str("source"), out readReport);
+                    if (model == null) return Json.Write(new JObj { { "ok", false }, { "error", "no NCX payload: " + readReport.Str("status") } });
+                    var rep = new Replayer(sw) { ContainerPath = job.Str("source"), Progress = step };
+                    var t0 = DateTime.Now;
+                    var saved = rep.ReplayModel(model, job.Str("outDir"));
+                    return Json.Write(new JObj { { "ok", true }, { "seconds", (DateTime.Now - t0).TotalSeconds }, { "saved", saved },
+                                                 { "report", rep.Report.ToJson() }, { "verification", rep.Verification } });
+                }
+                return Json.Write(new JObj { { "ok", false }, { "error", "unknown op " + job.Str("op") } });
+            }
+            catch (Exception e)
+            {
+                return Json.Write(new JObj { { "ok", false }, { "error", e.Message }, { "at", e.StackTrace } });
+            }
+            finally { log?.Dispose(); }
+        }
+
         // the report window only when something needs attention; a clean run just says so in the status bar
         void Finished(string title, Report report, List<JObj> verification, string reportPath)
         {

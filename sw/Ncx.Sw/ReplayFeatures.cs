@@ -19,12 +19,14 @@ namespace Ncx.Sw
             { "oneDirection", 0 }, { "oppositeDirection", 1 }, { "midPlane", 2 }, { "twoDirection", 3 }
         };
 
-        /// <summary>Select the profile: the whole sketch, or only its selected contours (mark 4), each found as
-        /// the rebuilt contour bounded by the same sketch segments.</summary>
-        string SelectProfile(JObj def)
+        /// <summary>Select the profile: the whole sketch, or only its selected contours and regions (mark 4). A
+        /// contour is found as the rebuilt contour bounded by the same sketch segments; a region as the rebuilt
+        /// sketch's region that contains the recorded point and has the recorded area (FORMAT-SPEC 4, extrude).</summary>
+        string SelectProfile(JObj def, int mark = 4)
         {
             var contours = def.Arr("contours");
-            if (contours.Count == 0) return SelectRef(def.Obj("profile"), false, 0);
+            var regions = def.Arr("regions");
+            if (contours.Count == 0 && regions.Count == 0) return SelectRef(def.Obj("profile"), false, 0);
             string skId = def.Obj("profile")?.Str("id");
             SketchMap m;
             IFeature skf;
@@ -54,17 +56,88 @@ namespace Ncx.Sw
                     if (have.SetEquals(wanted)) { hit = c; break; }
                 }
                 if (hit == null) return "selected contour (" + string.Join(",", wanted) + ") not found in the rebuilt sketch";
-                if (!hit.Select2(append, Mark(4))) return "could not select a contour";
+                if (!hit.Select2(append, Mark(mark))) return "could not select a contour";
                 append = true;
+            }
+            if (regions.Count > 0)
+            {
+                if (m.Source == null) return "profile sketch has no frame for its regions";
+                var builtRegions = ((object[])((ISketch)skf.GetSpecificFeature2()).GetSketchRegions() ?? new object[0]).OfType<ISketchRegion>()
+                    .Select(g => new { g, face = (g.GetFirstLoop() as ILoop2)?.GetFace() as IFace2 }).Where(x => x.face != null).ToList();
+                foreach (JObj r in regions)
+                {
+                    var p = r.Vec("point");
+                    double area = r.Num("area");
+                    var pm = m.Source.ToModel(U.M(p[0]), U.M(p[1]));
+                    // the region the point lies in (on its face), with the same area: the area tells two regions
+                    // apart if the point were ever on a boundary between them
+                    var hit = builtRegions.FirstOrDefault(x =>
+                    {
+                        var q = x.face.GetClosestPointOn(pm[0], pm[1], pm[2]);
+                        return q != null && U.Mm(V.Dist(V.P3(q), pm)) < 1e-4 &&
+                               Math.Abs(x.face.GetArea() * 1e6 - area) <= Math.Max(1e-3 * area, 1e-3);
+                    });
+                    if (hit == null)
+                        return "selected region at (" + U.R(p[0]) + ", " + U.R(p[1]) + ") with area " + U.R(area) + " mm2 not found in the rebuilt sketch";
+                    if (!hit.g.Select2(append, Mark(mark))) return "could not select a region";
+                    append = true;
+                }
             }
             return null;
         }
 
+        /// <summary>An extrude or cut. A selected contour can run through segments the user turned into construction
+        /// geometry after making the feature (SolidWorks keeps the selection, and the feature still builds), but a
+        /// construction segment belongs to no contour of a rebuilt sketch: those segments are normal geometry while
+        /// the feature is made, and construction again after, as in the source.</summary>
         string ReplayExtrude(JObj nf, JObj def, bool cut)
+        {
+            var skf = ProfileSketchFeature(def);
+            var temp = skf == null ? new List<ISketchSegment>() : ConstructionInContours(def);
+            if (temp.Count > 0) SetConstruction(skf, temp, false);
+            try { return ReplayExtrudeCore(nf, def, cut); }
+            finally { if (temp.Count > 0) SetConstruction(skf, temp, true); }
+        }
+
+        IFeature ProfileSketchFeature(JObj def)
+        {
+            IFeature skf;
+            string skId = def.Obj("profile")?.Str("id");
+            return skId != null && features.TryGetValue(skId, out skf) ? skf : null;
+        }
+
+        /// <summary>The construction segments of the profile sketch that a selected contour runs through.</summary>
+        List<ISketchSegment> ConstructionInContours(JObj def)
+        {
+            var res = new List<ISketchSegment>();
+            SketchMap m;
+            string skId = def.Obj("profile")?.Str("id");
+            if (skId == null || !sketchMaps.TryGetValue(skId, out m)) return res;
+            foreach (List<object> contour in def.Arr("contours"))
+                foreach (string id in contour.Cast<string>())
+                {
+                    ISketchSegment seg;
+                    if (m.Segs.TryGetValue(id, out seg) && seg.ConstructionGeometry && !res.Contains(seg)) res.Add(seg);
+                }
+            return res;
+        }
+
+        void SetConstruction(IFeature skf, List<ISketchSegment> segs, bool construction)
+        {
+            doc.ClearSelection2(true);
+            skf.Select2(false, 0);
+            doc.EditSketch();
+            foreach (var seg in segs) seg.ConstructionGeometry = construction;
+            ((ISketchManager)doc.SketchManager).InsertSketch(true);
+            doc.ClearSelection2(true);
+        }
+
+        string ReplayExtrudeCore(JObj nf, JObj def, bool cut)
         {
             doc.ClearSelection2(true);
             string why = SelectProfile(def);
             if (why != null) return "profile: " + why;
+            Trace("profile selected");
             var start = def.Obj("start");
             int t0 = 0;
             double startOffset = 0;
@@ -96,7 +169,9 @@ namespace Ncx.Sw
             double a1 = U.Rad(e1.Num("draft")), a2 = e2 == null ? 0 : U.Rad(e2.Num("draft"));
             bool o1 = e1.Bool("draftOutward"), o2 = e2 != null && e2.Bool("draftOutward");
             bool r1 = e1.Bool("offsetReverse"), r2 = e2 != null && e2.Bool("offsetReverse");
+            Trace("creating");
             int n0 = FeatureCount();
+            string last0 = LastFeature()?.Name;
             IFeature feat;
             bool reverse = def.Bool("reverse") != ProfileMirrored(def.Obj("profile"));
             var thin = def.Obj("thin");
@@ -116,15 +191,45 @@ namespace Ncx.Sw
             }
             else if (cut)
                 feat = FM.FeatureCut4(e2 == null, def.Bool("flipSide"), reverse, t1, t2, d1, d2, dr1, dr2, o1, o2, a1, a2,
-                                      r1, r2, false, false, false, false, true, false, true, false, t0, startOffset, flipStart, false);
+                                      r1, r2, false, false, def.Bool("normalCut"), false, true, false, true, false, t0, startOffset, flipStart, false);
             else
                 feat = FM.FeatureExtrusion3(e2 == null, false, reverse, t1, t2, d1, d2, dr1, dr2, o1, o2, a1, a2,
                                             r1, r2, false, false, def.Bool("merge", true), false, true, t0, startOffset, flipStart);
             doc.ClearSelection2(true);
-            if (FeatureCount() == n0) return (cut ? "cut" : "extrude") + " was not created";
+            // made: returned, or the tree grew, or it ends in a new feature (a sheet-metal cut can leave the count as it
+            // was, SolidWorks 2026 on a through-all normal cut)
+            bool made = feat != null || FeatureCount() != n0 || LastFeature()?.Name != last0;
+            if (!made && cut && def.Bool("normalCut"))
+            {
+                // SolidWorks refuses a normal cut for some profiles it accepts straight: made straight, and the
+                // geometry checks say whether that is the same cut
+                var straight = (JObj)Json.Parse(Json.Write(def, false));
+                straight.Remove("normalCut");
+                string why2 = ReplayExtrudeCore(nf, straight, true);
+                if (why2 == null) Approx(nf, "made as a straight cut (SolidWorks refused it normal to the sheet)");
+                return why2;
+            }
+            if (!made) return (cut ? "cut" : "extrude") + " was not created";
             feat = feat ?? LastFeature();
             Name(feat, nf.Str("name"));
             features[nf.Str("id")] = feat;
+            if (def.Bool("linkToThickness"))
+            {
+                // the depth follows the sheet's thickness (a creation option the extrude and cut calls do not take)
+                // SolidWorks applies it only with the feature's selections accessed (2026 ignores it silently
+                // otherwise, 2018 faults); the depth is already the thickness, so a refusal costs only the link
+                bool linked = false;
+                try
+                {
+                    var data = (IExtrudeFeatureData2)feat.GetDefinition();
+                    data.AccessSelections(doc, null);
+                    data.LinkToThickness = true;
+                    linked = feat.ModifyDefinition(data, doc, null) && ((IExtrudeFeatureData2)feat.GetDefinition()).LinkToThickness;
+                    if (!linked) data.ReleaseSelectionAccess();
+                }
+                catch (System.Runtime.InteropServices.COMException) { }
+                if (!linked) Approx(nf, "depth not linked to the sheet thickness (SolidWorks refused it): made at the thickness");
+            }
             return null;
         }
 

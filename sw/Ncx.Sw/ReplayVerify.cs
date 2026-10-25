@@ -6,6 +6,7 @@
 // Each adds one entry to Verification; none of them changes the rebuilt model.
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using SolidWorks.Interop.sldworks;
 
@@ -160,14 +161,26 @@ namespace Ncx.Sw
                 return;
             }
             // an assembly's B-rep holds each part under its name; a part file's B-rep is its root part
-            IModelDoc2 reference;
-            if (!refDocs.TryGetValue(d.Str("name"), out reference) && d.Str("id") == Model.Str("root"))
-                refDocs.TryGetValue(RootRef, out reference);
+            // (saved one part per product when the file was read; opened only for this comparison)
+            string refPath;
+            if (!refParts.TryGetValue(d.Str("name"), out refPath) && d.Str("id") == Model.Str("root")) refPath = rootRefPath;
+            if (refPath == null || !File.Exists(refPath)) return;   // no B-rep in the file for this part (nothing to compare with)
+            var open = (IModelDoc2)sw.GetOpenDocumentByName(refPath);
+            int err = 0, warn = 0;
+            var reference = open ?? (IModelDoc2)sw.OpenDoc6(refPath, 1, 1 | 2, "", ref err, ref warn);   // silent, read-only
             var refPart = reference as IPartDoc;
-            if (refPart == null) return;   // no B-rep in the file for this part (nothing to compare with)
-            var refBodies = ((object[])refPart.GetBodies2(0, false) ?? new object[0]).Cast<IBody2>().ToList();
-            var bodies = ((object[])part.GetBodies2(0, false) ?? new object[0]).Cast<IBody2>().ToList();
-            var rep = Host.FaceCompare(refBodies, bodies);
+            if (refPart == null) return;
+            JObj rep;
+            try
+            {
+                var refBodies = ((object[])refPart.GetBodies2(0, false) ?? new object[0]).Cast<IBody2>().ToList();
+                var bodies = ((object[])part.GetBodies2(0, false) ?? new object[0]).Cast<IBody2>().ToList();
+                rep = Host.FaceCompare(refBodies, bodies);
+            }
+            finally
+            {
+                if (open == null) sw.CloseDoc(reference.GetTitle());
+            }
             rep.Remove("status");
             rep["document"] = docId + " (faces)";
             rep["check"] = "faces";

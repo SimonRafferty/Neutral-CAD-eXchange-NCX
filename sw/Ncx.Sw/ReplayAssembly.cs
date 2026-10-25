@@ -32,14 +32,30 @@ namespace Ncx.Sw
             int n0 = FeatureCount();
             part.InsertPart2(src, options);
             if (FeatureCount() == n0) return "insert part was not created";
-            // the transferred items carry the source title as suffix, as in the source document
+            IFeature stock = null;   // the new Insert Part: the last one
+            for (var f = (IFeature)doc.FirstFeature(); f != null; f = (IFeature)f.GetNextFeature())
+                if (f.GetTypeName2() == "Stock") stock = f;
+            if (stock != null) { Name(stock, nf.Str("name")); features[nf.Str("id")] = stock; }
+            // the transferred items carry the source title as suffix: here the rebuilt file's title, which need not be
+            // the title the source document had (a file renamed after the insert keeps the old suffix). Found by name
+            // first, else as the Insert Part's sub-feature "<source item>-<anything>", and given the source's name.
+            var srcNames = new Dictionary<string, string>();   // source feature id -> name
+            var srcDoc = Model.Arr("documents").Cast<JObj>().FirstOrDefault(d => d.Str("id") == def.Str("source"));
+            foreach (JObj sf in srcDoc?.Arr("features") ?? new List<object>()) srcNames[sf.Str("id")] = sf.Str("name");
+            var subs = new List<IFeature>();
+            for (var s = (IFeature)stock?.GetFirstSubFeature(); s != null; s = (IFeature)s.GetNextSubFeature()) subs.Add(s);
             foreach (JObj it in def.Arr("items"))
             {
                 var f = (IFeature)part.FeatureByName(it.Str("name"));
+                string srcName;
+                if (f == null && srcNames.TryGetValue(it.Str("source") ?? "", out srcName))
+                {
+                    f = subs.FirstOrDefault(s => s.Name.StartsWith(srcName + "-"));
+                    if (f != null) Name(f, it.Str("name"));
+                }
                 if (f != null) transferredItems[def.Str("source") + "|" + it.Str("source")] = f;
+                if (f != null && it.Bool("hidden") && f.GetTypeName2() == "ProfileFeature") Hide(f);
             }
-            for (var f = (IFeature)doc.FirstFeature(); f != null; f = (IFeature)f.GetNextFeature())
-                if (f.GetTypeName2() == "Stock") { Name(f, nf.Str("name")); features[nf.Str("id")] = f; }
             int missing = def.Arr("items").Count - transferredItems.Count(kv => kv.Key.StartsWith(def.Str("source") + "|"));
             return missing > 0 ? missing + " transferred item(s) not found by name" : null;
         }
@@ -67,7 +83,7 @@ namespace Ncx.Sw
             ModelDoc2 result;
             ((IPartDoc)src).MirrorPart2(false, options == 0 ? 1 : options, out result);
             var made = result as IModelDoc2;
-            if (made != null) created.Add(made);
+            if (made != null) { created.Add(made); quiet?.Add(made); }
             return made;
         }
 
@@ -94,6 +110,7 @@ namespace Ncx.Sw
             var adoc = (IModelDoc2)sw.NewDocument(template, 0, 0, 0);
             if (adoc == null) throw new InvalidOperationException("cannot create an assembly from " + template);
             created.Add(adoc);
+            quiet?.Add(adoc);
             var asm = (IAssemblyDoc)adoc;
             var mu = (IMathUtility)sw.GetMathUtility();
             var comps = new Dictionary<string, IComponent2>();
@@ -145,13 +162,22 @@ namespace Ncx.Sw
                 Report.Add(docId, pf.Str("name"), why == null ? "rebuilt" : "failed", why);
             }
             foreach (JObj f in d.Arr("features").Cast<JObj>().Where(f => f.Str("status") == "opaque"))
-                Report.Add(docId, f.Str("name"), "fallback", f.Str("reason"));
+                Report.Add(docId, f.Str("name"), f.Bool("noGeometry") ? "note" : "fallback", f.Str("reason"));
 
+            var placed = d.Arr("components").Cast<JObj>().Where(c => c.Vec("transform") != null && c.Str("id") != null)
+                          .GroupBy(c => c.Str("id")).ToDictionary(g => g.Key, g => g.First());
             foreach (JObj m in d.Arr("mates"))
             {
                 if (m.Str("status") == "opaque") { Report.Add(docId, m.Str("name"), "fallback", m.Str("reason")); continue; }
                 string note = null;
-                string why = ReplayMate(adoc, asm, comps, m, ref note);
+                if (m.Obj("suppressed")?.Bool("cfg:active") == true)
+                {
+                    string sw2 = SuppressedMate(adoc, asm, comps, placed, m, ref note);
+                    Report.Add(docId, m.Str("name"), sw2 != null ? "approximate" : note != null ? "approximate" : "rebuilt",
+                               sw2 != null ? "suppressed mate not made (" + sw2 + ")" : note);
+                    continue;
+                }
+                string why = PlacedMate(adoc, asm, comps, placed, m, ref note);
                 if (why != null && CouplingMates.Contains(m.Str("type")))
                 {
                     // something simpler (FORMAT-SPEC 5, "Mates with no counterpart"): the parts stay where they are
@@ -175,6 +201,103 @@ namespace Ncx.Sw
             ReplayAppearances(adoc, d, comps);
             VerifyAssembly(d, adoc, comps, fingerprint);
             return adoc;
+        }
+
+        /// <summary>A mate that keeps every component where the source has it. Which side a face normal or a distance is
+        /// taken from can be read differently by the target, so a mate made with the source's alignment and flip flags
+        /// may turn a part over. The source's components sit where its mates hold them, so a mate made right moves
+        /// nothing: one that moves a component is made again with its flags turned, and the variant that leaves every
+        /// component in place is kept (geometry wins).</summary>
+        string PlacedMate(IModelDoc2 adoc, IAssemblyDoc asm, Dictionary<string, IComponent2> comps, Dictionary<string, JObj> placed,
+                          JObj m, ref string note)
+        {
+            var before = OffPlacement(adoc, comps, placed);   // already elsewhere (an earlier mate): not this one's doing
+            string why = ReplayMate(adoc, asm, comps, m, ref note);
+            if (why != null) return why;
+            Func<string> movedNow = () => OffPlacement(adoc, comps, placed).FirstOrDefault(n => !before.Contains(n));
+            string moved = movedNow();
+            if (moved == null) return null;
+            var variants = new List<JObj>();
+            Func<bool, bool, JObj> variant = (flip, turnAlign) =>
+            {
+                var v = (JObj)Json.Parse(Json.Write(m, false));
+                if (flip) v["flipped"] = !m.Bool("flipped");
+                if (turnAlign) v["alignment"] = m.Str("alignment") == "antiAligned" ? "aligned" : "antiAligned";
+                return v;
+            };
+            bool canAlign = m.Str("alignment") == "aligned" || m.Str("alignment") == "antiAligned";
+            variants.Add(variant(true, false));
+            if (canAlign) { variants.Add(variant(false, true)); variants.Add(variant(true, true)); }
+            foreach (var v in variants)
+            {
+                if (!DeleteMate(adoc, m.Str("name"))) return null;   // cannot try others: keep it as made
+                string n2 = null;
+                if (ReplayMate(adoc, asm, comps, v, ref n2) != null) continue;
+                if (movedNow() == null)
+                {
+                    note = n2 ?? note;
+                    return null;
+                }
+            }
+            // none keeps the placement: back to the source's flags
+            DeleteMate(adoc, m.Str("name"));
+            string n3 = null;
+            why = ReplayMate(adoc, asm, comps, m, ref n3);
+            if (why == null) note = (n3 == null ? "" : n3 + "; ") + "moves " + moved + " from where the source has it";
+            return why;
+        }
+
+        /// <summary>A mate suppressed in the source: made, then suppressed. While it existed it may have moved
+        /// components; they go back to where the source has them (the mate holds nothing once suppressed).</summary>
+        string SuppressedMate(IModelDoc2 adoc, IAssemblyDoc asm, Dictionary<string, IComponent2> comps, Dictionary<string, JObj> placed,
+                              JObj m, ref string note)
+        {
+            string why = ReplayMate(adoc, asm, comps, m, ref note);
+            if (why != null) return why;
+            var mate = LastMate(adoc);
+            if (mate == null || mate.Name != m.Str("name")) return "made, but not found to suppress";
+            mate.SetSuppression2(0, 1, null);   // swSuppressFeature, swThisConfiguration
+            var mu = (IMathUtility)sw.GetMathUtility();
+            var byName = comps.Values.ToDictionary(c => c.Name2, c => c);
+            var idOf = comps.ToDictionary(kv => kv.Value.Name2, kv => kv.Key);
+            foreach (var name in OffPlacement(adoc, comps, placed))
+                byName[name].Transform2 = (MathTransform)mu.CreateTransform(ToArray(placed[idOf[name]].Vec("transform")));
+            adoc.EditRebuild3();
+            return null;
+        }
+
+        /// <summary>The components not at their recorded placement (0.01 mm, 1e-5 in rotation), after a rebuild.</summary>
+        static HashSet<string> OffPlacement(IModelDoc2 adoc, Dictionary<string, IComponent2> comps, Dictionary<string, JObj> placed)
+        {
+            var off = new HashSet<string>();
+            adoc.EditRebuild3();
+            foreach (var kv in comps)
+            {
+                JObj c;
+                if (!placed.TryGetValue(kv.Key, out c)) continue;
+                double[] want = ToArray(c.Vec("transform"));
+                double[] have;
+                try { have = (double[])kv.Value.Transform2?.ArrayData; }
+                catch (System.Runtime.InteropServices.COMException) { continue; }
+                if (have == null) continue;
+                bool moved = false;
+                for (int i = 0; i < 9 && !moved; i++) moved = Math.Abs(have[i] - want[i]) > 1e-5;
+                for (int i = 9; i < 12 && !moved; i++) moved = Math.Abs(have[i] - want[i]) > 1e-5;   // metres
+                if (moved) off.Add(kv.Value.Name2);
+            }
+            return off;
+        }
+
+        /// <summary>Delete the mate of this name (the one just made).</summary>
+        static bool DeleteMate(IModelDoc2 adoc, string name)
+        {
+            var mate = LastMate(adoc);
+            if (mate == null || mate.Name != name) return false;
+            adoc.ClearSelection2(true);
+            if (!mate.Select2(false, 0)) return false;
+            bool ok = adoc.Extension.DeleteSelection2(0);
+            adoc.ClearSelection2(true);
+            return ok && (LastMate(adoc)?.Name != name);
         }
 
         string ReplayMate(IModelDoc2 adoc, IAssemblyDoc asm, Dictionary<string, IComponent2> comps, JObj m, ref string note)
@@ -216,12 +339,30 @@ namespace Ncx.Sw
                 return SelectAssemblyDatum(adoc, r.Obj("ref"), append, sd);
             IComponent2 comp;
             if (!comps.TryGetValue(r.Str("component"), out comp)) return "component " + r.Str("component") + " missing";
-            // a nested component: follow the path down through the sub-assemblies
+            // a nested component: follow the path down through the sub-assemblies, each step by the component
+            // rebuilt for that source instance (its name here may differ from the source's)
+            string level = ComponentDocument(docId, r.Str("component"));
             foreach (string cid in r.Arr("path").Cast<string>())
             {
                 string name = cid.StartsWith("c:") ? cid.Substring(2) : cid;
-                var child = ((object[])comp.GetChildren() ?? new object[0]).Cast<IComponent2>()
-                    .FirstOrDefault(k => k.Name2 == name || k.Name2.EndsWith("/" + name));
+                Dictionary<string, string> names;
+                string built;
+                if (level != null && builtNames.TryGetValue(level, out names) && names.TryGetValue(cid, out built)) name = built;
+                level = level == null ? null : ComponentDocument(level, cid);
+                var children = ((object[])comp.GetChildren() ?? new object[0]).Cast<IComponent2>().ToList();
+                var child = children.FirstOrDefault(k => k.Name2 == name || k.Name2.EndsWith("/" + name));
+                if (child == null)
+                {
+                    // the rebuilt sub-assembly numbers its instances from 1 ("Cheek-1"), the source may not ("Cheek-2"
+                    // when instance 1 was deleted): the same part's instances, in their numbering order
+                    var m = System.Text.RegularExpressions.Regex.Match(name, @"^(.*)-(\d+)$");
+                    if (m.Success)
+                    {
+                        Func<IComponent2, string> leaf = k => k.Name2.Split('/').Last();
+                        var same = children.Where(k => System.Text.RegularExpressions.Regex.Replace(leaf(k), @"-\d+$", "") == m.Groups[1].Value).ToList();
+                        if (same.Count == 1) child = same[0];   // the only instance of that part: unambiguous
+                    }
+                }
                 if (child == null) return "nested component " + name + " missing under " + comp.Name2;
                 comp = child;
             }
@@ -481,6 +622,16 @@ namespace Ncx.Sw
 
         // assembly-level features rebuilt so far (planes), by payload id
         readonly Dictionary<string, IFeature> assemblyFeatures = new Dictionary<string, IFeature>();
+        // assembly document id -> source component id -> the name its rebuilt component has (SolidWorks may refuse a
+        // rename, and numbers instances from 1: "IGUS-2" of the source can be "IGUS-1" here)
+        readonly Dictionary<string, Dictionary<string, string>> builtNames = new Dictionary<string, Dictionary<string, string>>();
+
+        /// <summary>The document a component of an assembly document places, from the payload.</summary>
+        string ComponentDocument(string asmDocId, string componentId)
+        {
+            var ad = Model?.Arr("documents").Cast<JObj>().FirstOrDefault(x => x.Str("id") == asmDocId);
+            return ad?.Arr("components").Cast<JObj>().FirstOrDefault(c => c.Str("id") == componentId)?.Str("document");
+        }
 
         /// <summary>A reference plane of the assembly, from assembly references, checked against the recorded plane.</summary>
         string ReplayAssemblyPlane(IModelDoc2 adoc, Dictionary<string, IComponent2> comps, JObj nf)
@@ -559,6 +710,29 @@ namespace Ncx.Sw
             }
             var comp = (IComponent2)asm.AddComponent5(path, 0, "", false, "", 0, 0, 0);
             if (comp == null) { Report.Add(docId, c.Str("name"), "failed", "component could not be added"); return; }
+            // SolidWorks numbers a document's instances itself and ignores a rename: a source numbered with a gap
+            // ("IGUS-2" with no "-1", the first deleted) gets its number back the way it arose - stand-ins take the
+            // missing numbers and are deleted again
+            Func<string, int> number = n =>
+            {
+                var mm = System.Text.RegularExpressions.Regex.Match(n ?? "", @"-(\d+)$");
+                return mm.Success ? int.Parse(mm.Groups[1].Value) : 0;
+            };
+            var standIns = new List<IComponent2>();
+            while (comp != null && number(comp.Name2) > 0 && number(c.Str("name")) > number(comp.Name2) && standIns.Count < 50)
+            {
+                standIns.Add(comp);
+                comp = (IComponent2)asm.AddComponent5(path, 0, "", false, "", 0, 0, 0);
+            }
+            if (standIns.Count > 0)
+            {
+                adoc.ClearSelection2(true);
+                bool sel = false;
+                foreach (var s in standIns) sel |= s.Select4(sel, null, false);
+                if (sel) adoc.Extension.DeleteSelection2(0);
+                adoc.ClearSelection2(true);
+            }
+            if (comp == null) { Report.Add(docId, c.Str("name"), "failed", "component could not be added"); return; }
             if (comp.Name2 != c.Str("name") && c.Str("name") != null)
                 try { comp.Name2 = c.Str("name"); }
                 catch (System.Runtime.InteropServices.COMException) { }
@@ -572,6 +746,9 @@ namespace Ncx.Sw
                 adoc.ClearSelection2(true);
             }
             comps[c.Str("id")] = comp;
+            Dictionary<string, string> names;
+            if (!builtNames.TryGetValue(docId, out names)) builtNames[docId] = names = new Dictionary<string, string>();
+            names[c.Str("id")] = comp.Name2.Split('/').Last();
             Report.Add(docId, c.Str("name"), "rebuilt");
         }
 
