@@ -645,6 +645,27 @@ def parse_expression(s):
         return False
 
 
+def check_region_boundaries(rep, doc, ft, fpath):
+    """A region's `boundary` (spec 4, regions) names segments of the feature's profile sketch, or carries a curve."""
+    d = ft.get("def") if isinstance(ft.get("def"), dict) else {}
+    regions = d.get("regions") or []
+    prof = d.get("profile") if isinstance(d.get("profile"), dict) else {}
+    sk = next((f for f in doc.get("features", []) if prof.get("kind") == "feature" and f.get("id") == prof.get("id")), None)
+    if sk is None:
+        return
+    seg_ids = {e.get("id") for e in (sk.get("def") or {}).get("entities", []) if e.get("type") != "point"}
+    for ri, r in enumerate(regions):
+        for li, loop in enumerate(r.get("boundary") or []):
+            for item in loop:
+                if isinstance(item, str):
+                    if item not in seg_ids:
+                        rep.error(L, "M-REGION", "4", f"region boundary names '{item}', not a segment of sketch "
+                                  f"'{sk.get('name')}'", f"{fpath}/def/regions/{ri}/boundary/{li}")
+                elif not (isinstance(item, dict) and ("line" in item or "arc" in item)):
+                    rep.error(L, "M-REGION", "4", "region boundary item must be a segment id, {line} or {arc}",
+                              f"{fpath}/def/regions/{ri}/boundary/{li}")
+
+
 def level3(rep, model, core):
     L = 3
     rep.levels[L] = {"name": "consistency", "ran": True}
@@ -684,6 +705,7 @@ def level3(rep, model, core):
         for fi, ft in enumerate(doc.get("features", [])):
             fpath = f"{dpath}/features/{fi}"
             name = ft.get("name")
+            check_region_boundaries(rep, doc, ft, fpath)
             if name in names:
                 rep.warn(L, "M-NAME", "6.2", f"feature name '{name}' is used twice in {did}: importers verify the "
                          "structure by name", fpath + "/name")

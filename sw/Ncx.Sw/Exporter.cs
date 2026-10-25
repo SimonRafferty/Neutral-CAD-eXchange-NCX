@@ -14,7 +14,7 @@ namespace Ncx.Sw
 {
     public partial class Exporter
     {
-        public const string Version = "0.5.4";
+        public const string Version = "0.6.0";
         readonly ISldWorks sw;
         public readonly Report Report = new Report();
 
@@ -68,6 +68,8 @@ namespace Ncx.Sw
                                               { "api", int.Parse(sw.RevisionNumber().Split('.')[0]) },
                                               { "exporter", "ncx-sw " + Version } } },
                     { "units", new JObj { { "length", "mm" }, { "angle", "deg" }, { "mass", "kg" } } },
+                    // SolidWorks shows +Y as up (its Top plane is XZ): an importer may show the model that way up
+                    { "orientation", new JObj { { "up", "y" } } },
                     { "root", rootId },
                     { "documents", documents },
                     { "fingerprint", Host.DocFingerprint(root) }

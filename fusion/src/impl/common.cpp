@@ -2,6 +2,7 @@
 
 #include <shlobj.h>
 
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <sstream>
@@ -149,46 +150,153 @@ void trackDocument(const Ptr<Document>& d)
 std::vector<Ptr<Document>> trackedDocuments() { return registry(); }
 
 namespace {
+using Clock = std::chrono::steady_clock;
+// The dialog is updated and Fusion's events pumped at most this often (each update repaints the dialog and runs
+// Fusion's event loop; updating on every step made imports visibly slower), and at least this often in long phases.
+constexpr double kPumpSeconds = 0.25;
 struct ProgressState
 {
     Ptr<ProgressDialog> dlg;
-    int value = 0;
+    int value = 0, max = 1;
     int cancelAfter = -1;
+    int noCancel = 0;              // ProgressNoCancel depth
+    int pumps = 0;                 // adsk::doEvents calls (measurement)
+    bool cancelPending = false;    // Cancel pressed inside a ProgressNoCancel
+    // measurement
+    Clock::time_point t0, last, phaseStart, lastPump;
+    std::string lastMessage, phase;
+    std::vector<json> gaps;                 // every gap between two steps: {seconds, before, after}
+    std::map<std::string, double> phases;   // seconds per phase
 } progress;
+
+double since(Clock::time_point t) { return std::chrono::duration<double>(Clock::now() - t).count(); }
+
+void recordStep(const std::string& message)
+{
+    double g = since(progress.last);
+    progress.gaps.push_back(json{{"seconds", g}, {"before", progress.lastMessage}, {"after", message}, {"phase", progress.phase}});
+    progress.last = Clock::now();
+    progress.lastMessage = message;
+}
 } // namespace
+
+void progressPhase(const std::string& phase)
+{
+    if (!progress.phase.empty()) progress.phases[progress.phase] += since(progress.phaseStart);
+    progress.phase = phase;
+    progress.phaseStart = Clock::now();
+}
+
+json progressTimeline()
+{
+    std::vector<json> g = progress.gaps;
+    // the time from the last step to now counts as a gap too (the end of the import)
+    g.push_back(json{{"seconds", since(progress.last)}, {"before", progress.lastMessage}, {"after", "(end)"}, {"phase", progress.phase}});
+    std::sort(g.begin(), g.end(), [](const json& a, const json& b) { return a["seconds"].get<double>() > b["seconds"].get<double>(); });
+    if (g.size() > 15) g.resize(15);
+    std::map<std::string, double> ph = progress.phases;
+    if (!progress.phase.empty()) ph[progress.phase] += since(progress.phaseStart);
+    return json{{"steps", progress.value}, {"updates", progress.gaps.size()}, {"doEvents", progress.pumps}, {"seconds", since(progress.t0)}, {"longestGaps", g}, {"phases", ph}};
+}
 
 void progressBegin(const std::string& title, int steps, bool show)
 {
     progress.value = 0;
+    progress.max = std::max(1, steps);
+    progress.cancelPending = false;
+    progress.pumps = 0;
     progress.dlg = nullptr;
+    progress.t0 = progress.last = progress.phaseStart = progress.lastPump = Clock::now();
+    progress.lastMessage = "(start)";
+    progress.phase.clear();
+    progress.gaps.clear();
+    progress.phases.clear();
     if (!show) return;
     Ptr<UserInterface> ui = Application::get()->userInterface();
     if (!ui) return;
     progress.dlg = ui->createProgressDialog();
+    if (!progress.dlg) return;
     progress.dlg->isCancelButtonShown(true);
-    progress.dlg->show(title, "%p%", 0, std::max(1, steps), 0);
+    progress.dlg->cancelButtonText("Cancel");
+    progress.dlg->show(title, "Starting...", 0, progress.max, 0);
+    adsk::doEvents();   // paint the dialog before the first long call
 }
+
+void progressSetTotal(int steps)
+{
+    progress.max = std::max(progress.value + 1, steps);
+    if (progress.dlg) progress.dlg->maximumValue(progress.max);
+}
+
+namespace {
+// The dialog's message is a format string (%p, %v, %m): a '%' in a document or feature name is shown as U+FF05.
+std::string dialogText(const std::string& m)
+{
+    std::string r;
+    for (char c : m)
+        if (c == '%') r += "\xEF\xBC\x85";
+        else r += c;
+    return r + "\n%p%";
+}
+
+// Fusion's events: the dialog repaints, Cancel is seen, Fusion's window stays responsive. Called on every step
+// and on ticks; throws Cancelled when the user pressed Cancel.
+void pump(const std::string& message)
+{
+    recordStep(message);   // the gaps measured are between two updates the user sees
+    progress.lastPump = Clock::now();
+    progress.pumps++;
+    adsk::doEvents();
+    if (progress.dlg && progress.dlg->wasCancelled()) progress.cancelPending = true;
+    if (progress.cancelPending && progress.noCancel == 0)
+    {
+        progress.cancelPending = false;
+        throw Cancelled{message};
+    }
+}
+} // namespace
 
 void progressStep(const std::string& message)
 {
     progress.value++;
+    progress.lastMessage = message;
     if (progress.cancelAfter >= 0 && progress.value > progress.cancelAfter)
     {
         progress.cancelAfter = -1;
-        throw Cancelled{message};
+        progress.cancelPending = true;   // as if Cancel were pressed now
     }
-    if (!progress.dlg) return;
-    progress.dlg->message(message);
-    progress.dlg->progressValue(progress.value);
-    adsk::doEvents();
-    if (progress.dlg->wasCancelled()) throw Cancelled{message};
+    // a step within kPumpSeconds of the last update only counts; a pending cancel is honoured at once
+    if (since(progress.lastPump) < kPumpSeconds && !(progress.cancelPending && progress.noCancel == 0)) return;
+    if (progress.dlg)
+    {
+        if (progress.value >= progress.max)
+        {
+            progress.max = progress.value + std::max(10, progress.max / 10);   // an estimate that ran short
+            progress.dlg->maximumValue(progress.max);
+        }
+        progress.dlg->message(dialogText(message));
+        progress.dlg->progressValue(progress.value);
+    }
+    pump(message);
 }
+
+void progressTick(const std::string& message)
+{
+    if (since(progress.lastPump) < kPumpSeconds) return;
+    std::string m = message.empty() ? progress.lastMessage : message;
+    if (progress.dlg && !message.empty()) progress.dlg->message(dialogText(m));
+    pump(m);
+}
+
+ProgressNoCancel::ProgressNoCancel() { progress.noCancel++; }
+ProgressNoCancel::~ProgressNoCancel() { progress.noCancel--; }
 
 void progressEnd()
 {
     if (progress.dlg) progress.dlg->hide();
     progress.dlg = nullptr;
     progress.cancelAfter = -1;
+    progress.cancelPending = false;
 }
 
 void progressCancelAfter(int afterSteps) { progress.cancelAfter = afterSteps; }

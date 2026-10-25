@@ -129,6 +129,7 @@ private:
     std::string replayAxis(json& nf, const json& def);
     std::string replayPoint(json& nf, const json& def);
     Ptr<ObjectCollection> profilesFor(const json& def, std::string& why);
+    int regionRetry_ = 0;   // profilesFor's retries: 1 projected curves made construction, 2 model edges in the plane projected
 
     // features2.cpp
     std::string seedsFor(const json& def, Ptr<ObjectCollection>& out, bool& bodiesMode);
@@ -158,6 +159,7 @@ private:
     std::string replayFacePoint(json& nf, const json& def, const Ptr<BRepFace>& face);
     std::string replayThinRevolve(json& nf, const json& def);
     std::string replaySheetMetal(json& nf, const json& def);   // sheetmetal.cpp
+    std::string replayConvertToSheetMetal(json& nf, const json& def);
     std::string replayBaseFlange(json& nf, const json& def);
     std::string replayEdgeFlange(json& nf, const json& def);
     std::string replayHem(json& nf, const json& def);
@@ -187,6 +189,8 @@ std::string featureName(const Ptr<Base>& obj);
 
 // importer.cpp helpers shared with the assembly import
 const json* findDoc(const json& model, const std::string& id);
+json& jointFrames();   // joints.cpp: the frames of the joints made by this import (developer check)
+void holdOccurrence(const Ptr<Occurrence>& o, bool fixed, bool topLevel);   // assembly.cpp
 json expectedFingerprint(const json& doc);
 Ptr<Design> newDesign(Ptr<Document>& doc);
 std::vector<Ptr<BRepBody>> componentBodies(const Ptr<Component>& c, bool solidOnly);

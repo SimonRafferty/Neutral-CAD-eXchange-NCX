@@ -737,6 +737,23 @@ namespace Ncx.Sw
                 try { comp.Name2 = c.Str("name"); }
                 catch (System.Runtime.InteropServices.COMException) { }
             comp.Transform2 = (MathTransform)mu.CreateTransform(ToArray(c.Vec("transform")));
+            if (c.Bool("flexible"))
+            {
+                // a sub-assembly solved as flexible in the source (FORMAT-SPEC 5, components)
+                // Solving is read-only: set through the selected component's properties (fully resolved, flexible, shown)
+                bool flex = false;
+                string why = null;
+                try
+                {
+                    adoc.ClearSelection2(true);
+                    if (!comp.Select4(false, null, false)) why = "not selectable";
+                    else flex = asm.CompConfigProperties5(2, 1, true, true, comp.ReferencedConfiguration, false, false);
+                    adoc.ClearSelection2(true);
+                }
+                catch (Exception e) { why = e.Message; }
+                if (!flex || comp.Solving != 1)
+                    Report.Add(docId, c.Str("name"), "approximate", "could not be made flexible (" + (why ?? (flex ? "solving " + comp.Solving : "refused")) + "): solved rigid");
+            }
             if (c.Bool("fixed") != comp.IsFixed())
             {
                 adoc.ClearSelection2(true);

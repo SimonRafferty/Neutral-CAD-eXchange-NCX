@@ -22,7 +22,7 @@ If you have received an NCX file and your CAD system has no NCX add-in, you can 
 
 | CAD system | add-in | download | state |
 |---|---|---|---|
-| SolidWorks | `sw/` | [0.5.4](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/v0.5.4) | import and export; of a 59-model test corpus, 58 rebuild exactly in 2018 and 2026 (one hexagon sketch arrives under-defined, reported); also tested on a real production assembly (19 parts and sub-assemblies) |
+| SolidWorks | `sw/` | [0.6.0](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/v0.6.0) | import and export; of a 61-model test corpus, 60 rebuild exactly in 2018 and 2026 (one hexagon sketch arrives under-defined, reported); also tested on a real production assembly (19 parts and sub-assemblies) |
 | Autodesk Fusion | `fusion/` | [0.1.0](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/fusion-v0.1.0) | import and export, written by an AI agent from this repo alone (no SolidWorks): of the 59 test files, 26 rebuild exactly and 33 approximately (sheet-metal cut lists, jogs and other features Fusion lacks are built as functional equivalents), none fall back to plain geometry (the source here; the 0.1.0 installer is the earlier round: 25 and 31 of 56) |
 | Onshape | | | planned |
 | *your CAD system* | | | see "Adding a CAD system" below |
@@ -48,8 +48,8 @@ Every import reports, feature by feature, anything that did not carry exactly an
 
 ## Installing the SolidWorks add-in
 
-1. Download the installer: **[NCX-Translator-Setup-0.5.4.exe](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/v0.5.4/NCX-Translator-Setup-0.5.4.exe)**
-   ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/v0.5.4)).
+1. Download the installer: **[NCX-Translator-Setup-0.6.0.exe](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/v0.6.0/NCX-Translator-Setup-0.6.0.exe)**
+   ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/v0.6.0)).
 2. Close SolidWorks, run the downloaded file and follow the steps. It works with SolidWorks 2018 and every later
    version, and asks for administrator permission once.
    If Windows says "Windows protected your PC", click **More info**, then **Run anyway** (the installer is not

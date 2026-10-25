@@ -51,10 +51,11 @@ json resolveRef(const std::vector<Ptr<BRepBody>>& bodies, const json& ref, std::
                 double tolerance = 0.001);
 
 // Reference faces of a body, described once (used for the face-by-face check after a rebuild).
-json describeFaces(const Ptr<BRepBody>& b);
+json describeFaces(const Ptr<BRepBody>& b, const std::string& progressMessage = "");
 // Face-by-face check (FORMAT-SPEC 6.3): referenceBodies = [{fingerprint, faces: [descriptor...]}] (from
 // describeFaces), against the rebuilt bodies, which must be in the same frame.
-json faceCompare(const json& referenceBodies, const std::vector<Ptr<BRepBody>>& rebuilt, double tolerance = 0.001);
+json faceCompare(const json& referenceBodies, const std::vector<Ptr<BRepBody>>& rebuilt, double tolerance = 0.001,
+                 const std::string& progressMessage = "");
 
 // Row-major 4x4 (mm) <-> Matrix3D (cm)
 Ptr<Matrix3D> matrixFromRowMajorMm(const json& m);

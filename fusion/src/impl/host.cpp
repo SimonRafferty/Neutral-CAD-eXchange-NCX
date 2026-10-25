@@ -68,6 +68,7 @@ std::array<double, 6> transformBox(const std::array<double, 6>& b, const Ptr<Mat
 // Closest point on a B-rep entity (face/edge) to a point, both mm.
 bool closest(const Ptr<Base>& entity, const V3& pMm, V3& out, double& d)
 {
+    progressTick();   // the heartbeat of every long geometric loop: Fusion stays responsive, Cancel is seen
     Ptr<Matrix3D> xf;
     Ptr<Base> e = inContext(entity, xf);
     V3 p = xf ? applyMm(xf, pMm) : pMm;
@@ -109,14 +110,52 @@ std::vector<V3> interiorPoints(const Ptr<BRepFace>& f, size_t limit)
         cand.push_back({area, mul(m, 10.0)});   // to mm
     }
     std::stable_sort(cand.begin(), cand.end(), [](auto& x, auto& y) { return x.first > y.first; });
+    // a planar face's facets lie on it: their centroids need no projection (one measurement each otherwise)
+    bool planar = Ptr<Plane>(f->geometry()) != nullptr;
     for (size_t i = 0; i < cand.size() && pts.size() < limit; i++)
     {
+        if (planar)
+        {
+            pts.push_back(cand[i].second);
+            continue;
+        }
         V3 q;
         double d;
         if (closest(f, cand[i].second, q, d)) pts.push_back(q);
     }
     return pts;
 }
+
+namespace {
+// An edge as a polyline (mm, the edge's own frame), for cheap distance estimates.
+std::vector<V3> edgePolyline(const Ptr<BRepEdge>& e, int n)
+{
+    std::vector<V3> res;
+    Ptr<CurveEvaluator3D> ev = e->evaluator();
+    double s = 0, t = 0;
+    if (!ev || !ev->getParameterExtents(s, t)) return res;
+    for (int k = 0; k <= n; k++)
+    {
+        Ptr<Point3D> p;
+        if (ev->getPointAtParameter(s + (t - s) * k / n, p) && p) res.push_back(ptMm(p));
+    }
+    return res;
+}
+
+double polylineDistance(const std::vector<V3>& pl, const V3& p)
+{
+    double best = 1e300;
+    if (pl.size() == 1) return dist(pl[0], p);
+    for (size_t i = 1; i < pl.size(); i++)
+    {
+        V3 a = pl[i - 1], d = sub(pl[i], a);
+        double l2 = dot(d, d);
+        double u = l2 > 0 ? std::clamp(dot(sub(p, a), d) / l2, 0.0, 1.0) : 0.0;
+        best = std::min(best, dist(add(a, mul(d, u)), p));
+    }
+    return best;
+}
+} // namespace
 
 std::vector<V3> faceSamples(const Ptr<BRepFace>& f, size_t k, double& clearance)
 {
@@ -125,16 +164,35 @@ std::vector<V3> faceSamples(const Ptr<BRepFace>& f, size_t k, double& clearance)
     if (inside.empty()) return inside;
     std::vector<Ptr<BRepEdge>> edges;
     for (size_t i = 0; i < f->edges()->count(); i++) edges.push_back(f->edges()->item(i));
-    auto clear = [&](const V3& p) {
+    // The distance to the boundary of every candidate, estimated on polylines of the edges (an exact measurement
+    // per candidate and edge took seconds on faces with many edges), then measured exactly for the chosen point
+    // against the edges nearest to it.
+    std::vector<std::vector<V3>> polys;
+    for (auto& e : edges) polys.push_back(edgePolyline(e, 32));
+    auto estimate = [&](const V3& p, std::vector<std::pair<double, size_t>>* order) {
         if (edges.empty()) return 1.0;
         double m = 1e300;
-        for (auto& e : edges) m = std::min(m, distanceMm(e, p));
+        for (size_t i = 0; i < polys.size(); i++)
+        {
+            double d = polys[i].empty() ? distanceMm(edges[i], p) : polylineDistance(polys[i], p);
+            if (order) order->push_back({d, i});
+            m = std::min(m, d);
+        }
         return m;
     };
     std::vector<std::pair<double, V3>> scored;
-    for (auto& p : inside) scored.push_back({clear(p), p});
+    for (auto& p : inside) scored.push_back({estimate(p, nullptr), p});
     std::stable_sort(scored.begin(), scored.end(), [](auto& a, auto& b) { return a.first > b.first; });
     clearance = scored[0].first;
+    if (!edges.empty())
+    {
+        std::vector<std::pair<double, size_t>> order;
+        estimate(scored[0].second, &order);
+        std::sort(order.begin(), order.end());
+        double m = 1e300;
+        for (size_t i = 0; i < order.size() && i < 4; i++) m = std::min(m, distanceMm(edges[order[i].second], scored[0].second));
+        clearance = std::min(m, clearance);
+    }
     std::vector<V3> chosen{scored[0].second};
     std::vector<V3> pool;
     for (size_t i = 0; i < std::max<size_t>(1, scored.size() / 2); i++) pool.push_back(scored[i].second);
@@ -421,6 +479,7 @@ double edgeLengthMm(const Ptr<BRepEdge>& e) { return cm2mm(e->length()); }
 std::array<double, 6> boxMm(const Ptr<Base>& entity)
 {
     if (Ptr<BRepFace> f = entity) return boxOf(f->boundingBox());
+    if (Ptr<BRepBody> b = entity) return boxOf(b->boundingBox());
     if (Ptr<BRepEdge> e = entity)
     {
         std::vector<double> fr;
@@ -642,14 +701,19 @@ json resolveRef(const std::vector<Ptr<BRepBody>>& bodies, const json& ref, std::
 }
 
 // ------------------------------------------------------------------------------------------- face by face
-json describeFaces(const Ptr<BRepBody>& b)
+json describeFaces(const Ptr<BRepBody>& b, const std::string& progressMessage)
 {
     json faces = json::array();
-    for (size_t i = 0; i < b->faces()->count(); i++) faces.push_back(descriptor(b->faces()->item(i)));
+    size_t n = b->faces()->count();
+    for (size_t i = 0; i < n; i++)
+    {
+        if (!progressMessage.empty()) progressTick(progressMessage + ", face " + std::to_string(i + 1) + " of " + std::to_string(n));
+        faces.push_back(descriptor(b->faces()->item(i)));
+    }
     return faces;
 }
 
-json faceCompare(const json& reference, const std::vector<Ptr<BRepBody>>& rebuilt, double tolerance)
+json faceCompare(const json& reference, const std::vector<Ptr<BRepBody>>& rebuilt, double tolerance, const std::string& progressMessage)
 {
     Target tgt(rebuilt, "face");
     std::vector<std::array<double, 6>> boxes;
@@ -657,6 +721,8 @@ json faceCompare(const json& reference, const std::vector<Ptr<BRepBody>>& rebuil
     std::vector<std::vector<std::string>> nb;
     for (size_t i = 0; i < tgt.ents.size(); i++)
     {
+        if (!progressMessage.empty())
+            progressTick(progressMessage + ": measuring rebuilt face " + std::to_string(i + 1) + " of " + std::to_string(tgt.ents.size()));
         Ptr<BRepFace> f = tgt.ents[i];
         boxes.push_back(boxMm(f));
         json p;
@@ -697,6 +763,7 @@ json faceCompare(const json& reference, const std::vector<Ptr<BRepBody>>& rebuil
         std::string scope = pairOf[bi] < 0 ? "" : "face:" + std::to_string(pairOf[bi]) + ":";
         for (auto& desc : reference[bi]["faces"])
         {
+            if (!progressMessage.empty()) progressTick(progressMessage + ": comparing face " + std::to_string(n + 1));
             const json& geom = desc["geom"];
             std::array<double, 6> rb{};
             for (int k = 0; k < 6; k++) rb[k] = geom["bbox"][k].get<double>();
@@ -726,6 +793,7 @@ json faceCompare(const json& reference, const std::vector<Ptr<BRepBody>>& rebuil
     }
     json targets = json::array();
     for (auto& x : info) targets.push_back(json{{"id", x["id"]}, {"area", x["area"]}});
+    if (!progressMessage.empty()) progressTick(progressMessage + ": matching " + std::to_string(n) + " faces");
     return coreFaceCompare(json{{"tolerance", tolerance}, {"faces", faces}, {"targets", targets}});
 }
 

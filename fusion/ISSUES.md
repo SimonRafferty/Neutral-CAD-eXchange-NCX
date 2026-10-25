@@ -324,3 +324,77 @@ Mates use `{config: bool}` "as for features", but assemblies have no configurati
 `{"cfg:active": true}`. Proposal: the spec names `cfg:active` as the key of an assembly without configurations (the
 Fusion exporter now writes suppressed joints this way too). The Fusion importer accepts the active configuration's
 id, `cfg:active`, or a single key.
+
+## Round 6
+
+Against NCX 0.5.4 (59 samples unchanged) and a real assembly exported with SolidWorks add-in 0.5.4 (a folding step,
+19 documents; the owner's own design, not published).
+
+### 30. `contours`: how several contours combine (spec gap)
+
+FORMAT-SPEC 4 says a contour is "the ids of the profile sketch's segments around it" but not how several combine,
+and none of the 59 samples has more than one. The real assembly has: a nut whose boss lists `[["s3"], ["s2"]]`, two
+concentric circles, and is a ring (its volume matches only so); a link's boss lists two corner circles as contours
+beside regions that leave those circles' quarters out (so a contour is everything it encloses, whatever other curves
+cross it); a rung's cut lists a 1 mm circle overlapping a 6 x 5 rectangle at its corner (the part matches when they are
+united). Proposal for the spec: "The profile of several contours is the area each encloses (other curves of the sketch
+crossing it do not split it); a contour wholly inside another listed contour is a hole in it (an island inside that
+hole is material again); contours that cross are united."
+
+### 31. `regions` may be bounded by model edges (spec gap)
+
+A region of a sketch on a face is bounded by the face's edges too, not only by sketch curves: the rung's
+`Cut-Extrude4` region (100, -20.833), area 150 mm², clearance 2.0, is closed on one side by the sheet's edge at x = 102,
+which is no sketch entity. Conversely a region can be cut by curves that are not sketch geometry in the source (an
+importer's own projections). Proposal: "A region is bounded by the sketch's curves and by the model edges lying in the
+sketch plane"; optionally the exporter writes, per region, the ids of the segments around it (`boundary`), with
+`edge` descriptors for model edges, so an importer can rebuild it without the point-and-area search.
+
+### 32. Start offset: which way (spec gap)
+
+`start: {type: "offset", distance, reverse}` does not say along what. Measured on the real dome-head screw's socket cut:
+the offset runs along the sketch normal, `reverse` against it, independent of the extrusion's direction (the cut
+then matches). Proposal: say so in FORMAT-SPEC 4, `extrude`/`cut`.
+
+### 33. `convertToSheetMetal`: the sheet's fixed face on the result (proposal)
+
+Fusion cannot make a sheet from a solid block (its `BRepBody.convertToSheetMetal` only converts a body that already is
+a sheet), so the importer takes the result and converts that, which needs the fixed face on the result: found by the
+`fixedFace` descriptor (the sheet's outer face lies on the solid's face when `reverse` is false), else as the largest
+planar face on that plane. With `reverse` true the sheet lies outside and the descriptor's samples are not on it.
+Proposal: the exporter adds `sheetFixedFace`, the descriptor of the fixed face on the result body. Optional.
+
+### 34. Which way is up (proposal)
+
+SolidWorks is Y-up (its Top plane is XZ); Fusion's default modelling orientation can be Z-up (`GeneralPreferences.
+defaultModelingOrientation`, measured: Z-up on this machine), so a SolidWorks model opens lying on its back. The payload
+does not say which axis the source treats as up. Proposal, an optional root field:
+
+    "orientation": {"up": "y"}
+
+Suggested spec wording (FORMAT-SPEC 4, root): "`orientation.up`: the axis of the model frame that the source system
+shows as up (`x`, `y` or `z`, optionally signed `-y`...). Informative: an importer may turn its view (or place the
+model under one transform) so that this axis is up, but the model's coordinates stay in the file's frame."
+Until it exists the Fusion importer assumes `y` when `generator.app` is SOLIDWORKS, and turns the camera (Y up on
+screen) when Fusion is set to Z-up; the coordinates, the checks and the export are unchanged.
+
+### 35. Rigid or flexible sub-assemblies (proposal)
+
+In SolidWorks a sub-assembly is rigid in its parent unless it is set to "solve as flexible"; either way its own mates
+hold its parts. The payload does not say which. Proposal, an optional field on a component entry of an assembly:
+
+    {"id": "c:Left_Step Assy-1", "document": "doc:Left_Step Assy", ..., "flexible": true}
+
+Suggested spec wording (FORMAT-SPEC 5, components): "`flexible` (optional, default false): the sub-assembly this
+component places is solved as flexible in this assembly: its own mates may move with the assembly's motion. Without it
+the sub-assembly is rigid here: its parts keep their places relative to each other, its mates still define them."
+The Fusion importer treats every sub-assembly as rigid until then: its mates become joints in it, and its components are
+grounded to it (Ground to Parent).
+
+### 36. Sketch visibility: `hidden` is written but not specified (spec gap)
+
+The SolidWorks exporter writes `hidden: true` on a sketch's `def` and on each `insertPart` item (the transferred
+sketch's visibility in the inserting part), but FORMAT-SPEC does not mention either. Suggested wording (FORMAT-SPEC 4,
+`sketch` and `insertPart`): "`hidden` (optional, default false): the sketch is hidden in the source; an importer hides
+it too. On an `insertPart` item, how the inserting part shows that transferred sketch." The Fusion importer honours
+both, and hides a transferred sketch whose item has no `hidden` (transferred sketches are reference geometry).

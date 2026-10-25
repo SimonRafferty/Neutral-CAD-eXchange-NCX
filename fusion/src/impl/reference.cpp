@@ -116,7 +116,8 @@ int findNoticeBody(const std::vector<Ptr<BRepBody>>& bodies, const json& payload
     return cands.size() == 1 ? cands[0] : -1;
 }
 
-Reference loadReference(const fs::path& stepPath, const json& model, const NoticeId& noticeId, bool describeAll)
+Reference loadReference(const fs::path& stepPath, const json& model, const NoticeId& noticeId, bool describeAll,
+                        const std::set<std::string>& only)
 {
     Reference ref;
     Ptr<Application> app = Application::get();
@@ -128,6 +129,8 @@ Reference loadReference(const fs::path& stepPath, const json& model, const Notic
         return ref;
     }
     opt->isViewFit(false);
+    // one call into Fusion's STEP reader: no progress can be shown while it runs
+    progressStep("reading the file's geometry (Fusion's STEP import)");
     Ptr<Document> doc = im->importToNewDocument(opt);
     trackDocument(doc);
     if (!doc)
@@ -142,9 +145,11 @@ Reference loadReference(const fs::path& stepPath, const json& model, const Notic
         ref.error = "the STEP import made no design";
         return ref;
     }
+    // a cancel from here on closes the scratch document (the importer closes every document it tracked)
     Ptr<Component> root = des->rootComponent();
     Ptr<OccurrenceList> occs = root->allOccurrences();
     ref.assembly = occs && occs->count() > 0;
+    size_t nOcc = occs ? occs->count() : 0;
 
     // the root's own bodies: a part file (the notice is one of them)
     std::vector<Ptr<BRepBody>> rootBodies = bodiesOf(root);
@@ -153,6 +158,7 @@ Reference loadReference(const fs::path& stepPath, const json& model, const Notic
         if (d.value("id", "") == model.value("root", "")) rootName = d.value("name", "");
     if (!rootBodies.empty())
     {
+        progressStep("measuring the file's geometry: " + rootName);
         std::string how;
         int notice = findNoticeBody(rootBodies, payloadBodyFps(payloadDoc(model, rootName)), noticeId, nullptr, &how);
         RefComponent rc;
@@ -161,11 +167,12 @@ Reference loadReference(const fs::path& stepPath, const json& model, const Notic
         {
             // fingerprints cover solid bodies only (as the payload's do)
             if (static_cast<int>(i) == notice || !rootBodies[i]->isSolid()) continue;
+            progressTick("measuring the file's geometry: " + rootName + ", body " + std::to_string(i + 1) + " of " + std::to_string(rootBodies.size()));
             json fp = bodyFingerprint(rootBodies[i]);
             ref.fingerprint["bodies"].push_back(fp);
             rc.temp.push_back(TemporaryBRepManager::get()->copy(rootBodies[i]));
             json b{{"fingerprint", fp}};
-            if (describeAll) b["faces"] = describeFaces(rootBodies[i]);
+            if (describeAll) b["faces"] = describeFaces(rootBodies[i], "measuring the file's geometry: " + rootName);
             rc.bodies.push_back(b);
         }
         rc.described = describeAll;
@@ -185,11 +192,13 @@ Reference loadReference(const fs::path& stepPath, const json& model, const Notic
         }
         std::vector<Ptr<BRepBody>> bs = bodiesOf(c);
         if (bs.empty()) continue;
+        progressTick("measuring the file's geometry: occurrence " + std::to_string(i + 1) + " of " + std::to_string(nOcc) + " (" + name + ")");
         Ptr<Matrix3D> xf = o->transform2();
         for (auto& b : bs)
             if (b->isSolid()) ref.fingerprint["bodies"].push_back(bodyFingerprint(b, xf));
         if (!ref.components.count(name))
         {
+            progressStep("measuring the file's geometry: " + name);
             setMeasureContext(o);   // native faces of a component under an occurrence measure only through it
             RefComponent rc;
             rc.name = name;
@@ -198,7 +207,7 @@ Reference loadReference(const fs::path& stepPath, const json& model, const Notic
                 if (!b->isSolid()) continue;
                 rc.temp.push_back(TemporaryBRepManager::get()->copy(b));
                 json bj{{"fingerprint", bodyFingerprint(b)}};
-                if (describeAll) bj["faces"] = describeFaces(b);
+                if (describeAll && (only.empty() || only.count(name))) bj["faces"] = describeFaces(b, "measuring the file's geometry: " + name);
                 rc.bodies.push_back(bj);
             }
             rc.described = describeAll;
@@ -218,6 +227,7 @@ std::string importPlain(const fs::path& stepPath, const Ptr<Component>& target, 
     Ptr<STEPImportOptions> opt = im->createSTEPImportOptions(stepPath.u8string());
     if (!opt) return "STEP reader: " + lastError();
     opt->isViewFit(false);
+    progressStep("importing the file's plain geometry (Fusion's STEP import)");
     Ptr<ObjectCollection> made = im->importToTarget2(opt, target);
     if (!made) return "STEP import failed: " + lastError();
     // delete the notice (a component in an assembly file, a body in a part file)

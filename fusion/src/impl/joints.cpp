@@ -114,7 +114,22 @@ struct JointBuilder
             }
             std::vector<Ptr<BRepBody>> bodies;
             for (size_t i = 0; i < c->bRepBodies()->count(); i++) bodies.push_back(c->bRepBodies()->item(i));
-            setMeasureContext(s.leaf->nativeObject() ? s.leaf->nativeObject() : s.leaf);
+            // a mate's descriptor is in the referenced part's own frame (FORMAT-SPEC 5; checked against the mates'
+            // frames), and Fusion measures a component's faces where its occurrence puts them: the faces are
+            // measured through the leaf's full path (the proxy), whose transform is the part's place in the root.
+            // (Through the leaf's native occurrence, its place inside its sub-assembly was applied: nested references
+            // did not resolve, and their joints fell back to the component origin, a metre from the pins.)
+            // inside a sub-assembly the leaf is an occurrence of the sub-assembly's component, not a root path:
+            // measured through the sub-assembly's occurrence in the root
+            Ptr<Occurrence> ctx = s.leaf;
+            Ptr<Component> rootComp = asmComp->parentDesign()->rootComponent();
+            if (asmComp != rootComp && !s.leaf->assemblyContext())
+            {
+                Ptr<OccurrenceList> subs = rootComp->allOccurrencesByComponent(asmComp);
+                if (subs && subs->count() > 0)
+                    if (Ptr<Occurrence> p = s.leaf->createForAssemblyContext(subs->item(0))) ctx = p;
+            }
+            setMeasureContext(ctx);
             std::vector<Ptr<Base>> hit;
             json res = resolveRef(bodies, s.ref, hit);
             setMeasureContext(nullptr);
@@ -188,6 +203,27 @@ struct JointBuilder
         return false;
     }
 
+    // The volume of a component of this assembly (mm^3): its document's bodies, or a sub-assembly's components'.
+    double docVolume(const std::string& docId, int depth = 0) const
+    {
+        if (depth > 20) return 0;
+        for (auto& d : model["documents"])
+        {
+            if (d.value("id", "") != docId) continue;
+            double v = 0;
+            for (auto& b : d.value("bodies", json::array()))
+                if (b.contains("fingerprint")) v += b["fingerprint"].value("volume", 0.0);
+            for (auto& c : d.value("components", json::array())) v += docVolume(c.value("document", ""), depth + 1);
+            return v;
+        }
+        return 0;
+    }
+    double unitVolume(const std::string& unit) const
+    {
+        auto it = docOfComp.find(asmId + "|" + unit);
+        return it == docOfComp.end() ? 0 : docVolume(it->second);
+    }
+
     // Suppressed in the assembly's active configuration. Assemblies list no configurations in schema 0.1, and the
     // SolidWorks exporter keys an assembly mate's state "cfg:active" (features use the configuration's id): the
     // active configuration's id, "cfg:active", or the only key there is, decide.
@@ -230,11 +266,37 @@ struct JointBuilder
         }
         std::map<size_t, std::string> covered;   // mate index -> how it was carried
         std::set<std::string> done;
-        // every moving unit: one joint, to the partner it shares most mates with (the assembly or a fixed one first)
-        for (auto& c : asmDoc.value("components", json::array()))
+        // Every pair of units that share mates gets its own joint (pairs with the assembly or a fixed component
+        // first). One joint per moving unit, to the partner it shared most mates with, left closed chains open: in
+        // a four-bar linkage the last link and the pins through two parts were joined to one side only, so they came
+        // apart when dragged (measured on a real folding step). Fusion solves the closed loops the joints make; all
+        // are as-built, at the file's placement, so they agree with each other.
+        //
+        // A connector (a bolt, nut, washer or pin: a part much smaller than every part it is mated to) adds only
+        // redundant loops, and Fusion's solver locks on them (measured on the folding step: with every fastener
+        // joined to both parts it passes through, and to the fasteners it touches, no joint could be driven). A
+        // connector gets one joint, to the partner it shares most mates with (the assembly or a fixed component
+        // first), and moves with that part.
+        std::map<std::string, std::set<std::string>> partnersOf;
+        for (auto& kv : byPair)
         {
-            std::string x = c.value("id", "");
-            if (fixed.count(x)) continue;
+            partnersOf[kv.first.first].insert(kv.first.second);
+            partnersOf[kv.first.second].insert(kv.first.first);
+        }
+        std::set<std::string> connectors;
+        for (auto& kv : partnersOf)
+        {
+            if (kv.first.empty() || kv.second.size() < 2) continue;
+            double v = unitVolume(kv.first), biggest = 0;
+            for (auto& o : kv.second)
+                if (!o.empty()) biggest = std::max(biggest, unitVolume(o));
+                else   // the assembly and its fixed components (one partner here): the largest fixed one
+                    for (auto& f : fixed) biggest = std::max(biggest, unitVolume(f));
+            if (v > 0 && biggest > 0 && v < 0.1 * biggest) connectors.insert(kv.first);
+        }
+        std::set<std::pair<std::string, std::string>> skip;
+        for (auto& x : connectors)
+        {
             std::pair<std::string, std::string> best;
             size_t bestN = 0;
             int bestPrio = -1;
@@ -250,11 +312,26 @@ struct JointBuilder
                     bestPrio = prio;
                 }
             }
-            if (bestN == 0) continue;
-            std::string partner = best.first == x ? best.second : best.first;
+            for (auto& kv : byPair)
+                if ((kv.first.first == x || kv.first.second == x) && kv.first != best) skip.insert(kv.first);
+        }
+        std::vector<std::pair<std::string, std::string>> pairs;
+        for (auto& kv : byPair)
+            if ((kv.first.first.empty() || kv.first.second.empty()) && !skip.count(kv.first)) pairs.push_back(kv.first);
+        for (auto& kv : byPair)
+            if (!kv.first.first.empty() && !kv.first.second.empty() && !skip.count(kv.first)) pairs.push_back(kv.first);
+        for (auto& pr : pairs)
+        {
+            // the moving side: the unit that is not the assembly; between two moving units, the first in the file
+            std::string x = pr.first.empty() ? pr.second : pr.first, partner = pr.first.empty() ? std::string() : pr.second;
+            if (x.empty()) continue;
+            progressTick(asmName + ": joint for " + x);
             std::string jname;
-            std::string kind = jointFor(x, partner, byPair[best], mates, sides, jname, jointOf);
-            for (size_t i : byPair[best]) covered[i] = kind;
+            std::map<std::string, Ptr<Base>> made;
+            std::string kind = jointFor(x, partner, byPair[pr], mates, sides, jname, made);
+            for (auto& kv : made)
+                if (!jointOf.count(kv.first)) jointOf[kv.first] = kv.second;   // the first joint of a unit drives its links
+            for (size_t i : byPair[pr]) covered[i] = kind;
             done.insert(x);
         }
         // mechanical mates: motion links between the joints made above
@@ -349,7 +426,23 @@ struct JointBuilder
         std::vector<V3> dn = distinct(normals);
         std::string motion;
         V3 axis{0, 0, 0};
-        if (types.count("lock") || (dn.size() >= 3 && !cyl)) motion = "rigid";
+        // two concentric mates on parallel axes apart (a part held on two pins) leave no rotation: rigid
+        // (measured on the folding step: such pairs had become revolute joints about one of the pins)
+        bool twoPins = false;
+        {
+            std::vector<std::pair<V3, V3>> lines;
+            for (size_t i : idx)
+                if ((mates[i].value("type", "") == "concentric" || mates[i].value("type", "") == "hinge") && mates[i].contains("frame"))
+                    lines.push_back({v3(mates[i]["frame"]["origin"]), unit(v3(mates[i]["frame"]["z"]))});
+            for (size_t a = 0; a < lines.size(); a++)
+                for (size_t b = a + 1; b < lines.size(); b++)
+                {
+                    V3 d = sub(lines[b].first, lines[a].first);
+                    V3 perp = sub(d, mul(lines[a].second, dot(d, lines[a].second)));
+                    if (std::fabs(std::fabs(dot(lines[a].second, lines[b].second)) - 1) < 1e-6 && norm(perp) > 1e-3) twoPins = true;
+                }
+        }
+        if (types.count("lock") || (dn.size() >= 3 && !cyl) || twoPins) motion = "rigid";
         else if (cyl)
         {
             cylinderAxis(*cyl, axis);
@@ -375,7 +468,7 @@ struct JointBuilder
         // grounded occurrence to joint to
         if (partner.empty() && motion == "rigid")
         {
-            ox->isGrounded(true);
+            holdOccurrence(ox, true, asmComp == asmComp->parentDesign()->rootComponent());
             jointOf[x] = ox;
             return (other ? "~" : "") + std::string("fixed to the assembly: the component is grounded") + approxWhy;
         }
@@ -409,10 +502,16 @@ struct JointBuilder
                                 planarByFace = (bool)g;
                             }
                     }
+        std::string geomNote;
         if (!g)
         {
             Ptr<ConstructionPoint> o = ox->component()->originConstructionPoint()->createForAssemblyContext(ox);
             g = JointGeometry::createByPoint(o);
+            if (motion == "revolute" || motion == "cylindrical")   // a slider or planar joint's origin does not matter
+            {
+                geomNote = " (at the component's origin: " + (cyl ? "its pin face was not found, " + why : std::string("no face for its axis")) + ")";
+                other = true;
+            }
         }
         if (!g) return "~joint geometry not available (" + why + "): the component stays where the file places it";
         Ptr<AsBuiltJoints> abj = asmComp->asBuiltJoints();
@@ -463,7 +562,27 @@ struct JointBuilder
         if (!j) return "~" + motion + " joint refused (" + lastError() + "): the component stays where the file places it";
         j->name(jname);
         jointOf[x] = j;
-        return (other ? "~" : "") + motion + " joint " + jname + approxWhy;
+        // the joint's frame as made, in this assembly's frame (mm), for the import's reply (developer check)
+        if (Ptr<JointGeometry> jg = j->geometry())
+        {
+            Ptr<Point3D> o = jg->origin();
+            // read back, the axis of a joint made on a face of a placed part is in that part's own frame (measured:
+            // a bolt turned 90 deg read its own -Y for the assembly's X); the origin is in the assembly's: the axis is
+            // turned by the part's placement for the check
+            Ptr<Vector3D> z = jg->primaryAxisVector()->copy();
+            Ptr<Base> e1 = jg->entityOne();
+            Ptr<Occurrence> ctx;
+            if (Ptr<BRepFace> f = e1) ctx = f->assemblyContext();
+            if (ctx) z->transformBy(ctx->transform2());
+            jointFrames().push_back(json{{"assembly", asmName}, {"joint", jname}, {"motion", motion},
+                                         {"origin", json::array({cm2mm(o->x()), cm2mm(o->y()), cm2mm(o->z())})},
+                                         {"axis", json::array({z->x(), z->y(), z->z()})}, {"byFace", (bool)cyl || planarByFace},
+                                         {"second", json::array({jg->secondaryAxisVector()->x(), jg->secondaryAxisVector()->y(), jg->secondaryAxisVector()->z()})},
+                                         {"third", json::array({jg->thirdAxisVector()->x(), jg->thirdAxisVector()->y(), jg->thirdAxisVector()->z()})}});
+        }
+        if (!j->occurrenceOne() || !j->geometry())
+            geomNote += " (Fusion reports the joint without its occurrences or geometry when read back)";
+        return (other ? "~" : "") + motion + " joint " + jname + approxWhy + geomNote;
     }
 
     std::string motionLink(const json& mate, const std::vector<MateSide>& ss, std::map<std::string, Ptr<Base>>& jointOf)
@@ -530,6 +649,12 @@ struct JointBuilder
         return t + " coupling as motion link " + mate.value("name", "");
     }
 };
+
+json& jointFrames()
+{
+    static json frames = json::array();
+    return frames;
+}
 
 void buildJoints(const json& model, const json& asmDoc, const Ptr<Component>& asmComp, std::map<std::string, Ptr<Occurrence>>& occOf,
                  Report& report)

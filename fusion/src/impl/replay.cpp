@@ -69,6 +69,13 @@ std::string Replayer::replayPart(const json& doc, const Ptr<Component>& comp)
         {
             if (nf.value("status", "") == "opaque")
             {
+                if (!nf.contains("result") && nf.value("noGeometry", false))
+                {
+                    // another add-in's reference data that adds nothing to the bodies (FORMAT-SPEC 4): skipped
+                    markers.insert(nf.value("id", ""));
+                    report_.add(docName_, fname, "note", "skipped: it adds no geometry (" + nf.value("reason", "") + ")");
+                    continue;
+                }
                 if (!nf.contains("result"))
                 {
                     bool supp = nf.contains("suppressed") && nf["suppressed"].value(doc.value("activeConfiguration", ""), false);
@@ -87,7 +94,7 @@ std::string Replayer::replayPart(const json& doc, const Ptr<Component>& comp)
                 // by the result check it themselves
                 static const std::set<std::string> selfChecked{"edgeFlange", "hem", "sketchedBend", "breakCorner", "loftedBend", "rib",
                                                                "fillet", "structuralMember", "insertPart", "mirrorPart", "sketch",
-                                                               "sketch3d", "jog", "closedCorner", "miterFlange"};
+                                                               "sketch3d", "jog", "closedCorner", "miterFlange", "convertToSheetMetal"};
                 bool checkResult = nf.contains("result") && nf["result"].contains("bodies") && !selfChecked.count(nf.value("type", ""));
                 std::vector<json> before;
                 if (checkResult) before = solidFingerprints();
@@ -225,6 +232,7 @@ std::string Replayer::replayFeature(json& nf)
     if (t == "componentPattern" || t == "mirrorComponents")
         return replayMarker(nf, "its instances are placed where the file lists them (not a live Fusion pattern)");
     if (t == "sheetMetal") return replaySheetMetal(nf, def);
+    if (t == "convertToSheetMetal") return replayConvertToSheetMetal(nf, def);
     if (t == "baseFlange") return replayBaseFlange(nf, def);
     if (t == "edgeFlange") return replayEdgeFlange(nf, def);
     if (t == "hem") return replayHem(nf, def);

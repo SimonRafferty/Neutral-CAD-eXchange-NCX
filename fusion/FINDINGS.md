@@ -18,6 +18,9 @@ SolidWorks 2026. No SolidWorks was used.
 - Round 5 (2026-10-25): a fifth agent, from a fresh clone (NCX 0.5.3), against the 59 samples of
   `NCX-samples-0.5.3.zip` (the 56 re-exported with SolidWorks add-in 0.5.3, plus P47 slots, P48 polygons and the L11
   assembly). Section 12 says what changed; brief and spec feedback folded into `FORMAT-SPEC.md` and `docs/ADDING-A-CAD-SYSTEM.md` in NCX 0.5.4; issues 27-29.
+- Round 6 (2026-10-25): a sixth agent, from a fresh clone (NCX 0.5.4), on progress and responsiveness, and on a real
+  assembly (a folding step, 19 documents, exported with SolidWorks add-in 0.5.4; not published). Section 13; issues
+  30-36; its brief and spec feedback folded into NCX 0.6.0.
 
 Tested with Autodesk Fusion 2706.1.14 (Windows 10 x64); built with Visual Studio 2019 Build Tools (v142).
 
@@ -569,3 +572,183 @@ the compile fails (it went on to reload the old DLL before).
 
 Not done this round: the version is still 0.1.0 (no installer was built or released); export of sheet metal,
 holes, lofts and patterns as mapped features is unchanged (opaque with results).
+
+## 13. Round 6: progress, responsiveness, a real assembly
+
+### Progress and Cancel
+
+Before: `progressStep` pumped Fusion's events only when the dialog existed, and job-driven imports showed none, so a
+job import gave no sign of life at all (the real assembly: 213 s); steps were per feature only, so in the menu import
+the longest gaps were 94 s (the reference: Fusion's STEP import plus face descriptors) and 39 s (one sketch).
+
+Now (`common.cpp`, `importer.cpp`, `reference.cpp`, `assembly.cpp`, `host.cpp`, `joints.cpp`, `sketch.cpp`,
+`exporter.cpp`):
+- the dialog shows for every import and export, job-driven ones too (`"progress": false` hides it); the title names
+  the file, the message the document and the feature or phase;
+- updates and event pumping are throttled to one per 0.25 s (the owner found per-step updates visibly slower); a step
+  inside that window only counts; Cancel is checked at every pump;
+- ticks inside long phases: the reference (per occurrence, per face), every geometric measurement (`closest`), sketch
+  relations and dimensions, face checks, placement, joints, the whole-model check, flex, the fallback, export's walk;
+- Cancel closes every document the import created (scratch STEP documents too); in export a feature unsuppressed or
+  rolled back for reading is finished first (`ProgressNoCancel`), the timeline goes back to its end, no file is
+  written;
+- face descriptors of the file's geometry are ~8x faster: the distance of candidate sample points to the face's
+  boundary is estimated on edge polylines and measured exactly only for the chosen point; planar facet centroids are
+  not projected (the reference phase of the real assembly: 94 s -> 12 s);
+- the reply carries `progress`: steps, updates, `doEvents` calls, phase seconds, the 15 longest gaps.
+
+| import | before (round 5 code) | now |
+|---|---|---|
+| L04 | 3.4 s, longest gap 2.5 s | 2.0 s, 4 updates, longest gap 0.9 s |
+| L06 | 2.4 s, longest gap 1.2 s | 2.3 s, 4 updates, longest gap 0.8 s |
+| folding step | 213 s (job: no update at all; menu: gaps 94 s, 39 s) | 221 s, 503 updates, longest gap 8.6 s |
+
+The folding step now rebuilds far more (3 parts fall back instead of 11), which costs replay time (54 s -> 180 s; the
+Step Plate alone 57 s). The gaps over 2 s are single Fusion calls: one sketch constraint in the Step Plate's
+`Sketch7` (a sketch on a face with 37 symmetric relations, several to model edges: 4-9 s each), an extrusion
+(`Boss-Extrude17`, 3.7 s), a fillet (3.5 s). Fusion's STEP import of the 3.4 MB file is ~1 s.
+
+Cancel, tested as a user would (`tools/cancel_test.py`: Escape on the dialog during the folding step's import, at
+12 s and at 30 s): the import stopped within 0.4 s ("cancelled by the user at Left_Top Hanger Cheek: Fillet12;
+everything this import made was closed"), and no document was left open.
+
+Regression: the 59 samples give exactly section 8's classes (26 exact, 33 approximate, 0 fallback; every sample the
+same class).
+
+### The folding step (real assembly)
+
+| document | round 5 code | now |
+|---|---|---|
+| M8x20 Dome Head + Washer | fallback | rebuilt (approximate); mass match, 1 face ambiguous |
+| Chassis Attachment Plate | fallback | rebuilt (approximate); mass, faces, structure match |
+| Top Hanger Cheek | fallback | fallback (12 features fail; see below) |
+| Top Hanger Cheek Opposite | fallback | fallback (2 fail) |
+| Long Link | fallback | rebuilt; mass count_only; 3 small faces differ |
+| IGUS WFM-0810-04 | exact | exact |
+| M8 Nyloc + Washer | fallback | every feature rebuilt, volume 5.6e-5 high: fallback |
+| Short Link | fallback | rebuilt; mass, faces match |
+| Step Rung | fallback | rebuilt; mass, faces match |
+| Step Plate | fallback | rebuilt; mass count_only; 2 small faces ambiguous |
+| Nissan Window Regulator | fallback | rebuilt; mass count_only; 1 face ambiguous |
+| M8x20 Dome Head | fallback | rebuilt; mass, faces match |
+| layouts (2) | rebuilt | rebuilt (Insert Part copies) |
+| 5 sub-assemblies, top | placed | placed; whole model count_only (40 bodies, mass properties match) |
+
+Fixes (general, each found on this model):
+- `regions` were ignored (every region-selected extrude took the whole sketch): now the profile containing the point,
+  checked by area; when Fusion splits the source's region with curves the add-in projected, those are made
+  construction and it is tried again; when the region is larger, the model edges in the sketch plane are projected
+  (ISSUES 31);
+- several `contours`, or a contour another curve crosses (a hexagon in a circle): the profiles inside the contours, a
+  contour inside another a hole, crossing ones united (ISSUES 30);
+- profile loops of sketches on XZ-parallel planes: their geometry came back in sketch space and was converted again,
+  so nested circles no longer nested and rings were extruded as discs;
+- whole-sketch profiles: crossing parity per curve (curves need not run in loop order) and only the profiles bounded
+  by the payload's own curves (a projected bend edge had closed an extra region that a cut took);
+- `convertToSheetMetal`: the result, made a Fusion sheet-metal body from the fixed face with the rule's thickness and
+  bend radius (later edge flanges then build natively: the rung's `Edge-Flange1`);
+- start offset through-all against the normal (Fusion refuses it) and refused through-all cuts: blind past every body;
+- `noGeometry` opaque features: a note, not a failure;
+- a failing cut names the profile's and the bodies' boxes; a part that falls back reports which faces differ.
+
+Open on this model: Top Hanger Cheek's `Boss-Extrude7` and `Cut-Extrude11` regions (the model-edge projection finds a
+region 1.6 % too large, or none), and after them fillets and sketches on faces that differ; the Opposite's
+`Cut-Extrude10` region (0.75 % too large); the nut's 5.6e-5 volume difference (every feature rebuilt; one coplanar face
+ambiguous; not found); Long Link's 3 faces (the exporter notes "1 selected contour not readable through SolidWorks'
+API" on its `Cut-Extrude1`, and the normal cut is made straight).
+
+### Joints of the folding step (round 6, second task)
+
+The user dragged `Left_Step Assy` and it came away from the links. Probe `{"cmd":"probe","what":"joints"}` on that import:
+every joint healthy and made at the right level (top-level mates between parts of sub-assemblies became as-built joints
+between the top-level sub-assembly occurrences; mates inside a sub-assembly, joints in that component); only
+`Left_Top Hanger Assy` grounded. The cause was the rule "one joint per moving component, to the partner it shares most
+mates with": a closed chain stays open. `Left_Step Assy` was joined only to `Left_Long Link Assy`, `Left_Short Link Assy`
+only to the hanger, and every bolt to one part, so the four-bar linkage (hanger, long link, step, short link) had no
+joint between the step and the short link. Now every pair of mated components gets a joint (`Concentric9`, step to
+short link, cylindrical). Fasteners are joined to one part only: a part under a tenth of the volume of every part it is
+mated to. With every fastener joined to both parts it passes through, and to the fasteners it touches, Fusion's solver
+locked and no joint could be driven.
+
+Measured with the probes:
+- `jointmove` drives a joint's value. Driving `Distance8` (long link to hanger) moves the long link and its nuts, but
+  the step and the short link stay put: driving a value does not solve the closed loop.
+- `occdrag` moves an occurrence with `transform2`. That does not call the joint solver at all.
+- `Design.computeAll()` throws away every position not captured in a snapshot (it reverted every probe move until it
+  was removed from the probes).
+
+So whether Fusion's interactive drag carries the closed four-bar loop cannot be checked through the API. The user has
+to try it in Fusion. The L01-L11 assemblies keep their classes.
+
+### Grounding, Pin and joints in Fusion 2706 (round 6, third task)
+
+What the user saw in the browser (screenshot `fusion/results/fusion_window.png`, not committed): `Left_Top Hanger
+Assy:2` (the same occurrence the API reported, no :1/:2 mismatch) without a pin icon, and the seven `Left_M8x20 Dome
+Head + Washer` instances with an anchor icon. The probe, extended with `Occurrence.isGroundToParent`, showed those seven
+grounded to their parent (the root, so fixed in space) although the add-in never set it: their build occurrence
+(`addNewComponent`, the first part document) came out grounded to parent, and the instances made from it with
+`addExistingComponent` inherited it. Inside each sub-assembly nothing held the parts to the sub-assembly: the
+sub-assembly's fixed part had been given `isGrounded` (Pin) on a native occurrence inside a component, which does not
+fix it to its parent. So dragging a part moved it inside its sub-assembly, away from the top-level joints, which act on
+the sub-assembly occurrences.
+
+Fusion's current model (sources below):
+- the old **Ground** command is now **Pin** (fixes an occurrence in the design's space; API `Occurrence.isGrounded`,
+  "whether this occurrence is pinned"); **Ground to Parent** (2024, API `Occurrence.isGroundToParent`, anchor icon)
+  fixes a component to its parent component, so it moves with it;
+- components of a sub-assembly are not rigid in the parent by design; ground to parent, rigid groups or as-built rigid
+  joints hold them;
+- pinning a nested occurrence through the API was described by Autodesk as a bug (2017): proxies are the way to address
+  nested occurrences;
+- four-bar linkages with joints are dragged in Fusion; the closing joint is usually made cylindrical so it can seat
+  (the folding step's closing joint, `Concentric9`, is cylindrical).
+
+Fix (ec7c4af): at the top level a fixed component is pinned and every other one explicitly not pinned and not grounded
+to parent; in a sub-assembly the fixed component is grounded to parent and the others are neither. Layouts and partial
+rebuilds are moved into one hidden component, "NCX source parts (layouts, partial rebuilds)", pinned and hidden. On the
+folding step the probe then shows: the hanger assembly pinned; `Left_Top Hanger Cheek`, `Left_Long Link`,
+`Left_Short Link`, `Left_Step Plate` grounded to their sub-assemblies; no fastener grounded; the top level holds only
+the assembly's components and the hidden one. L02 (a sub-assembly) and L11 show the same pattern. One import of the
+folding step during this work failed with "unexpected structured exception in the implementation" after `Left_Step
+Rung`; the next, identical one did not (not reproduced).
+
+Upright view: Fusion here is Z-up (`GeneralPreferences.defaultModelingOrientation`); a SolidWorks file (Y-up) now
+opens with the camera turned so Y is up on screen, reported as a note; coordinates, checks and export unchanged
+(ISSUES 34). The ground grid stays Fusion's XY.
+
+Sources: [Ground to Parent (Autodesk blog)](https://autodesk.com/products/fusion-360/blog/introducing-ground-to-parent-a-new-assembly-tool-in-autodesk-fusion),
+[Occurrence.isGrounded](https://help.autodesk.com/cloudhelp/ENU/Fusion-360-API/files/Occurrence_isGrounded.htm),
+[Occurrence.isGroundToParent](https://help.autodesk.com/cloudhelp/ENU/Fusion-360-API/files/Occurrence_isGroundToParent.htm),
+[isGrounded on nested occurrences (forum)](https://forums.autodesk.com/t5/fusion-360-api-and-scripts/i-am-isgrounded/m-p/7169797),
+[Ground component? (forum)](https://forums.autodesk.com/t5/fusion-support-forum/design-ground-component/td-p/12953410),
+[joints broken / sub-assemblies not rigid by design (forum)](https://forums.autodesk.com/t5/fusion-support-forum/my-assembly-joints-are-broken-after-i-updated-fusion-360-now/m-p/8889452),
+[Four bar linkage (forum)](https://forums.autodesk.com/t5/fusion-design-validate-document/four-bar-linkage/m-p/6764318),
+[Motion link 4-bar tutorial](https://cad.grabcad.com/tutorials/motion-link-4-bar-mechanism-using-autodesk-fusion-360).
+
+### Joint frames and rigid sub-assemblies (round 6, fourth task)
+
+The user dragged the open import: links turned about a point a metre away, and the Step Plate came away from
+`Left_Step Assy`. The causes, measured:
+- **Joint frames.** A mate's face is described in the referenced part's own frame (checked: for every mate, the
+  descriptor's axis, placed by the part's transforms, lies on the mate's `frame` axis), and Fusion measures a
+  component's faces where an occurrence puts them. The joint builder measured through the leaf's native occurrence,
+  which is the part's place inside its sub-assembly. Nested references did not resolve, and their joints fell back
+  to the component origin with its Z axis. Now the faces are measured through the leaf's full path: through the
+  sub-assembly's occurrence in the root for a sub-assembly's own mates. A joint that still falls back to an origin is
+  reported.
+- **Reading a joint back.** `JointGeometry.primaryAxisVector` of a joint made on a face of a placed part comes back in
+  that part's own frame. A bolt turned 90 deg read its own -Y for the assembly's X; the origin comes back in the
+  assembly's frame. The check turns the axis by the part's placement. A sub-assembly's own as-built joints read from
+  its component (or through `createForAssemblyContext`) have no occurrences and no geometry. So the import records
+  every joint's frame as it is made (reply `jointFrames`).
+- **Result on the folding step** (`fusion/results/frames_table.py`, against the axial mate of each pair, assembly
+  frames): every revolute and cylindrical joint's axis within 1e-15 of its pin, and its origin on the pin's axis
+  (0.0000 mm). The origin sits along the axis at the middle of the cylinder face instead of the mate's face, by
+  0.7 to 7 mm, which does not change the motion. Pairs held on two parallel pins (the regulator, the hanger's
+  cheeks, the step plates) are now rigid joints, not revolute joints about one of the pins.
+- **Rigid sub-assemblies.** SolidWorks sub-assemblies are rigid unless set flexible, and their mates hold their parts
+  either way. The importer keeps every sub-assembly mate as a joint in the sub-assembly and grounds every component of
+  a rigid sub-assembly to it (Ground to Parent). The grounding is set before the joints: set after, Fusion refused it
+  on one step plate already joined. A rigid group was tried first and replaced by this, because ground to parent shows
+  in the browser and can be read back. ISSUES 35 proposes `flexible: true` on a component entry.
+- **Developer option.** `"onlyAssemblies": [names]` builds those sub-assemblies (and their parts) without the rest.

@@ -208,6 +208,11 @@ other systems may use them where they understand them, and otherwise ignore them
 
 **Top level:**
 - `format: "ncx"`, `schema`, `generator`, `units`;
+- `orientation` (optional): `{up}`, the axis of the model frame the source system shows as up (`x`, `y` or `z`,
+  optionally signed: `-z`). Informative: an importer may turn its view, or place the model under one transform, so
+  that this axis is up in its own convention, but the model's coordinates, references and checks stay in the file's
+  frame, and an exporter writing the model back keeps that frame. SolidWorks is Y-up (its Top plane is XZ); Fusion
+  and Onshape are usually Z-up. Without it, assume `y`;
 - `root` (a document id);
 - `documents`;
 - `fingerprint`.
@@ -219,6 +224,11 @@ other systems may use them where they understand them, and otherwise ignore them
   (with per-body fingerprints) and `properties`.
 - Assemblies add `components` (document, configuration, row-major 4×4 `transform` in mm, `fixed`)
   and `mates`.
+- A component that places a sub-assembly may say `flexible: true`: the sub-assembly is solved as flexible in this
+  assembly, so its own mates move with this assembly's motion. Without it the sub-assembly is rigid here: its parts
+  keep their places relative to each other and move as one piece. Either way the sub-assembly's own mates define
+  where its parts are: an importer keeps them (as joints, constraints or its system's equivalent) and, for a rigid
+  sub-assembly, also holds its parts to it (a rigid group, or each part grounded to its parent).
 - Every document reachable from `root` MUST be in the same payload. The layout part, its derived
   parts and the assembly travel together: one file.
 
@@ -279,6 +289,17 @@ that meets a field it does not understand reports the feature `approximate` rath
     the region's area (mm²) and the point's distance from the region's boundary (mm). An importer selects the
     region of its rebuilt sketch that contains the point, and checks that its area matches (relative 1e-3).
     `contours` and `regions` may both be present; the profile is all of them. Revolves use them the same way.
+  - Several **`contours`** combine by the area each encloses: other curves of the sketch crossing a contour do not
+    split it; a contour wholly inside another listed contour is a hole in it (an island inside that hole is material
+    again); contours that cross are united.
+  - A region is bounded by the sketch's curves and, for a sketch on a face, by that face's edges lying in the sketch
+    plane. A region may carry its **`boundary`**: per loop of the region, in loop order, the ids of the sketch
+    segments it runs along (each once for consecutive edges along one segment), and for a boundary piece on no sketch
+    segment its curve in sketch coordinates, `{line: [start, end]}` or `{arc: [centre, radius]}` (mm). An importer
+    that can build the region from its boundary does so, then checks the point and area.
+  - `start` (optional; absent: the sketch plane): `{type: "offset", distance, reverse}` starts the feature
+    `distance` mm along the sketch plane's normal (`frame.z`), or against it with `reverse`, whichever way the
+    feature itself runs; `{type: "surface" | "vertex", target}` starts it at that face or vertex.
   - One sketch used by several features (each with its own contours or regions) is referenced by every one of
     them: SolidWorks lists it under each as `Sketch1<2>`, `Sketch1<3>`...; the payload names the sketch once.
 - `cut` in a sheet-metal body: `normalCut` (true: the cut runs normal to the sheet's faces wherever it crosses
@@ -498,6 +519,7 @@ with the rest of the history.
   full knot vector), `controlPoints` (sketch coordinates, mm) and, for a rational spline, `weights`. A system whose
   spline through the same fit points comes out differently builds the curve from `nurbs`.
 - `constraints` use a closed list of types; others keep their native name with `supported: false`.
+- `hidden` (optional, default false): the sketch is hidden in the source; an importer hides it too.
 - **`converted`** (Convert Entities / Project / Use): `entities: [own, source]`, the sketch's own segment and the
   entity it was made from: another sketch's segment (often an inserted layout sketch's, see §5) or a model edge.
   The own segment follows its source. An importer makes a real link where its system has one (SolidWorks' Convert
@@ -541,7 +563,8 @@ with the rest of the history.
 
 **Inserted / derived parts:** `insertPart` with `source` (a document id), `sourceConfiguration`,
 `transfer` (what carries across), `transform`, and `items` (source item → derived name, e.g.
-`SK_Outline-Frame-Layout`). Features of the derived part refer to a transferred item as
+`SK_Outline-Frame-Layout`; an item's `hidden` says the derived part hides that transferred sketch, and an importer
+hides the copy too). Features of the derived part refer to a transferred item as
 `{kind: "transferred", by: "id", document, feature | plane, name, stock}`: `document` and `feature` (or an origin
 `plane`) identify the source item, `name` is its name in the derived part, and `stock` names the `insertPart`
 feature. A system without derived parts can rebuild the source's sketches in the part, with their dimensions

@@ -862,6 +862,10 @@ struct DocWriter
             else if (Ptr<ConstructionPlane> p = e) owner = p->component();
             else continue;   // occurrences, joints: the assembly's business
             if (owner != comp) continue;
+            // between two features: the timeline is at its end and every feature in its own suppression state,
+            // so a cancel here leaves the design as it was
+            progressStep(docName + ": reading " + t->name());
+            ProgressNoCancel finishThisFeature;
             std::string id = fid();
             std::string name = t->name();
             if (Ptr<Sketch> s = e) name = s->name();
@@ -1254,7 +1258,33 @@ std::string sanitizeId(const std::string& s)
 
 } // namespace
 
+json exportFileInner(const fs::path& out, const json& opts);
+
+// The export with progress and cancel: a cancelled export writes no file and leaves the design as it was (the
+// walk is only cancelled between two features, with the timeline at its end).
 json exportFile(const fs::path& out, const json& opts)
+{
+    if (opts.value("cancelAfter", -1) >= 0) progressCancelAfter(opts["cancelAfter"].get<int>());
+    progressBegin("Export NCX: " + out.filename().u8string(), 10, opts.value("progress", true));
+    json res;
+    try
+    {
+        res = exportFileInner(out, opts);
+    }
+    catch (const Cancelled& c)
+    {
+        setMeasureContext(nullptr);
+        if (Ptr<Design> des = Application::get()->activeProduct())
+            if (des->timeline()) des->timeline()->moveToEnd();
+        res = json{{"ok", true}, {"status", "cancelled"}, {"cancelledAt", c.where}, {"file", out.u8string()},
+                   {"notes", json::array({"cancelled by the user at " + c.where + "; no file was written"})}};
+    }
+    if (res.is_object()) res["progress"] = progressTimeline();
+    progressEnd();
+    return res;
+}
+
+json exportFileInner(const fs::path& out, const json& opts)
 {
     Ptr<Application> app = Application::get();
     Ptr<Design> des = app->activeProduct();
@@ -1289,6 +1319,7 @@ json exportFile(const fs::path& out, const json& opts)
     }
     bool assembly = !parts.empty();
     if (!assembly) parts.push_back(root);
+    progressSetTotal(static_cast<int>(des->timeline()->count() + (occs ? occs->count() : 0)) + 6);
     json userParams = json::array();
     for (size_t i = 0; i < des->userParameters()->count(); i++)
     {
@@ -1307,6 +1338,7 @@ json exportFile(const fs::path& out, const json& opts)
         setMeasureContext(ctx);
         w.docName = parts[pi] == root ? rootName : parts[pi]->name();
         w.docId = parts[pi] == root ? "doc:" + sanitizeId(w.docName) : docOf[parts[pi]->entityToken()];
+        progressStep(w.docName + ": reading its parameters");
         w.walk();
         json d = w.document();
         if (pi == 0) d["parameters"] = userParams;   // design-wide in Fusion: written with the first part
@@ -1367,6 +1399,7 @@ json exportFile(const fs::path& out, const json& opts)
         for (size_t i = 0; i < occs->count(); i++)
         {
             Ptr<Occurrence> o = occs->item(i);
+            progressStep(rootName + ": component " + o->name());
             if (!o->isLightBulbOn() || o->childOccurrences()->count() > 0) continue;
             a["components"].push_back(json{{"id", "c:" + sanitizeId(o->name())}, {"document", docOf[o->component()->entityToken()]},
                                            {"configuration", "Default"}, {"name", o->name()}, {"transform", rowMajorMm(o->transform2())},
@@ -1390,6 +1423,7 @@ json exportFile(const fs::path& out, const json& opts)
         for (size_t i = 0; i < root->joints()->count(); i++)
         {
             Ptr<Joint> j = root->joints()->item(i);
+            progressTick(rootName + ": joint " + j->name());
             V3 origin{0, 0, 0};
             Ptr<Base> g1 = j->geometryOrOriginOne();
             if (Ptr<JointGeometry> g = g1) origin = ptMm(g->origin());
@@ -1441,6 +1475,7 @@ json exportFile(const fs::path& out, const json& opts)
     int vs = ncx_model_validate(mj.c_str(), mj.size(), &rep);
     std::string vrep = rep ? rep : "";
     ncx_free(rep);
+    progressStep("writing the geometry (Fusion's STEP export)");
     fs::path stepTmp = tempDir() / ("export_" + std::to_string(GetTickCount64()) + ".step");
     Ptr<ExportManager> em = des->exportManager();
     Ptr<STEPExportOptions> so = em->createSTEPExportOptions(stepTmp.u8string(), root);
@@ -1448,6 +1483,7 @@ json exportFile(const fs::path& out, const json& opts)
     std::string step = readFile(stepTmp);
     std::error_code ec;
     fs::remove(stepTmp, ec);
+    progressStep("embedding the NCX payload");
     char* outStep = nullptr;
     size_t outLen = 0;
     char* wrep = nullptr;
@@ -1491,7 +1527,8 @@ json uiExport(const json& req)
     json res = exportFile(fs::u8path(path), req);
     if (!req.value("quiet", false))
     {
-        if (!res.value("ok", false)) ui->messageBox("NCX export failed: " + res.value("error", "?"), "NCX");
+        if (res.value("status", "") == "cancelled") ui->messageBox("NCX export cancelled; no file was written.", "NCX");
+        else if (!res.value("ok", false)) ui->messageBox("NCX export failed: " + res.value("error", "?"), "NCX");
         else
         {
             std::string msg = "NCX export: " + std::to_string(res.value("mapped", 0)) + " features carried";

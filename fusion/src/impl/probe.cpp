@@ -34,6 +34,76 @@ json walk(const Ptr<Component>& c)
     return j;
 }
 
+// The design a probe works on: the unsaved document whose root component is named `root` (never a saved one), else
+// the active design.
+Ptr<Design> probeDesign(const json& req)
+{
+    Ptr<Application> app = Application::get();
+    std::string root = req.value("root", "");
+    if (!root.empty())
+        for (size_t i = 0; i < app->documents()->count(); i++)
+        {
+            Ptr<Document> d = app->documents()->item(i);
+            if (!d || d->isSaved()) continue;
+            Ptr<Design> des = d->products()->itemByProductType("DesignProductType");
+            if (des && (des->rootComponent()->name() == root || d->name() == root)) return des;
+        }
+    return root.empty() ? Ptr<Design>(app->activeProduct()) : nullptr;
+}
+
+std::string jointTypeName(int t)
+{
+    switch (t)
+    {
+    case RigidJointType: return "rigid";
+    case RevoluteJointType: return "revolute";
+    case SliderJointType: return "slider";
+    case CylindricalJointType: return "cylindrical";
+    case PinSlotJointType: return "pinSlot";
+    case PlanarJointType: return "planar";
+    case BallJointType: return "ball";
+    default: return "?";
+    }
+}
+
+std::string healthName(int h)
+{
+    switch (h)
+    {
+    case HealthyFeatureHealthState: return "healthy";
+    case WarningFeatureHealthState: return "warning";
+    case ErrorFeatureHealthState: return "error";
+    case SuppressedFeatureHealthState: return "suppressed";
+    case RolledBackFeatureHealthState: return "rolledBack";
+    default: return "unknown";
+    }
+}
+
+std::string occPath(const Ptr<Occurrence>& o) { return o ? o->fullPathName() : std::string("(none)"); }
+
+// world transforms of every occurrence (root context), by path
+std::map<std::string, std::vector<double>> worldTransforms(const Ptr<Component>& root)
+{
+    std::map<std::string, std::vector<double>> m;
+    Ptr<OccurrenceList> occs = root->allOccurrences();
+    for (size_t i = 0; occs && i < occs->count(); i++) m[occs->item(i)->fullPathName()] = occs->item(i)->transform2()->asArray();
+    return m;
+}
+
+json movedBetween(const std::map<std::string, std::vector<double>>& a, const std::map<std::string, std::vector<double>>& b)
+{
+    json moved = json::array();
+    for (auto& kv : b)
+    {
+        auto it = a.find(kv.first);
+        if (it == a.end()) continue;
+        double d = 0;
+        for (size_t k = 0; k < 16; k++) d = std::max(d, std::fabs(kv.second[k] - it->second[k]) * (k == 3 || k == 7 || k == 11 ? 10.0 : 1.0));
+        if (d > 1e-6) moved.push_back(json{{"occurrence", kv.first}, {"change", d}});
+    }
+    return moved;
+}
+
 } // namespace
 
 json probe(const json& req)
@@ -152,6 +222,318 @@ json probe(const json& req)
         }
         res["elementsAfter"] = f ? f->patternElements()->count() : 0;
         if (req.value("close", true)) doc->close(false);
+        return res;
+    }
+    if (what == "joints")
+    {
+        // every joint and as-built joint of the design, by the component that holds it, and every occurrence
+        Ptr<Design> des = probeDesign(req);
+        if (!des) return json{{"ok", false}, {"error", "no such design"}};
+        json res{{"ok", true}, {"design", des->parentDocument()->name()}, {"joints", json::array()}, {"occurrences", json::array()}};
+        try
+        {
+        // the root and every component under it (Design.allComponents returned nothing here)
+        std::vector<Ptr<Component>> comps{des->rootComponent()};
+        {
+            std::set<std::string> seen{des->rootComponent()->entityToken()};
+            Ptr<OccurrenceList> all = des->rootComponent()->allOccurrences();
+            for (size_t i = 0; all && i < all->count(); i++)
+                if (seen.insert(all->item(i)->component()->entityToken()).second) comps.push_back(all->item(i)->component());
+        }
+        for (size_t c = 0; c < comps.size(); c++)
+        {
+            Ptr<Component> comp = comps[c];
+            res["trace"] = "component " + std::to_string(c) + (comp ? " " + comp->name() : std::string(" null"));
+            auto one = [&](const std::string& kind, const std::string& name, const Ptr<JointMotion>& jm, const Ptr<Occurrence>& o1,
+                           const Ptr<Occurrence>& o2, const Ptr<TimelineObject>& to, bool supp, bool bulb) {
+                json j{{"kind", kind}, {"name", name}, {"in", comp->name()}, {"type", jm ? jointTypeName(jm->jointType()) : "?"},
+                       {"one", occPath(o1)}, {"two", occPath(o2)}, {"suppressed", supp}, {"lightBulb", bulb},
+                       {"oneIsProxy", o1 && o1->assemblyContext() != nullptr}, {"twoIsProxy", o2 && o2->assemblyContext() != nullptr}};
+                if (to) j["health"] = healthName(to->healthState()), j["message"] = to->errorOrWarningMessage();
+                res["joints"].push_back(j);
+            };
+            for (size_t i = 0; i < comp->joints()->count(); i++)
+            {
+                Ptr<Joint> j = comp->joints()->item(i);
+                res["trace"] = comp->name() + " joint " + std::to_string(i);
+                one("joint", j->name(), j->jointMotion(), j->occurrenceOne(), j->occurrenceTwo(), j->timelineObject(), j->isSuppressed(), j->isLightBulbOn());
+            }
+            for (size_t i = 0; i < comp->asBuiltJoints()->count(); i++)
+            {
+                Ptr<AsBuiltJoint> j = comp->asBuiltJoints()->item(i);
+                // a sub-assembly's joint is read through its (first) top-level occurrence
+                if (comp != des->rootComponent())
+                {
+                    Ptr<OccurrenceList> oc = des->rootComponent()->allOccurrencesByComponent(comp);
+                    if (oc && oc->count() > 0)
+                        if (Ptr<AsBuiltJoint> pj = j->createForAssemblyContext(oc->item(0))) j = pj;
+                }
+                res["trace"] = comp->name() + " asBuilt " + std::to_string(i) + " " + j->name();
+                one("asBuilt", j->name(), j->jointMotion(), j->occurrenceOne(), j->occurrenceTwo(), j->timelineObject(), j->isSuppressed(), j->isLightBulbOn());
+                // its frame in the root: the joint geometry is in the component's frame; a sub-assembly's joint is
+                // placed by that sub-assembly's (first) top-level occurrence
+                if (Ptr<JointGeometry> g = j->geometry())
+                {
+                    Ptr<Matrix3D> xf = Matrix3D::create();
+                    if (comp != des->rootComponent() && !j->assemblyContext())
+                    {
+                        Ptr<OccurrenceList> oc = des->rootComponent()->allOccurrencesByComponent(comp);
+                        if (oc && oc->count() > 0) xf = oc->item(0)->transform2();
+                    }
+                    Ptr<Point3D> o = g->origin()->copy();
+                    o->transformBy(xf);
+                    Ptr<Vector3D> z = g->primaryAxisVector()->copy();   // the joint's Z: the axis of its motion
+                    z->transformBy(xf);
+                    Ptr<Vector3D> px = g->primaryAxisVector()->copy();
+                    px->transformBy(xf);
+                    json& last = res["joints"].back();
+                    last["origin"] = json::array({cm2mm(o->x()), cm2mm(o->y()), cm2mm(o->z())});
+                    last["axis"] = json::array({z->x(), z->y(), z->z()});
+                    last["geometryType"] = static_cast<int>(g->geometryType());
+                    last["xAxis"] = json::array({px->x(), px->y(), px->z()});
+                    if (Ptr<BRepFace> f = g->entityOne()) last["entityOneIsProxy"] = f->assemblyContext() != nullptr,
+                                                          last["entityOneContext"] = f->assemblyContext() ? f->assemblyContext()->fullPathName() : "";
+                }
+            }
+        }
+        Ptr<OccurrenceList> occs = des->rootComponent()->allOccurrences();
+        for (size_t i = 0; occs && i < occs->count(); i++)
+        {
+            Ptr<Occurrence> o = occs->item(i);
+            res["occurrences"].push_back(json{{"path", o->fullPathName()}, {"component", o->component()->name()}, {"grounded", o->isGrounded()}, {"groundToParent", o->isGroundToParent()}, {"name", o->name()},
+                                              {"proxy", o->assemblyContext() != nullptr}, {"visible", o->isLightBulbOn()}});
+        }
+        }
+        catch (...)
+        {
+            res["ok"] = false;
+            res["error"] = "exception at " + res.value("trace", std::string("?")) + ": " + lastError();
+        }
+        return res;
+    }
+    if (what == "sketchvis")
+    {
+        // every sketch of every component: its light bulb (the source's `hidden` is a light bulb off)
+        Ptr<Design> des = probeDesign(req);
+        if (!des) return json{{"ok", false}, {"error", "no such design"}};
+        std::vector<Ptr<Component>> comps{des->rootComponent()};
+        std::set<std::string> seen{des->rootComponent()->entityToken()};
+        Ptr<OccurrenceList> all = des->rootComponent()->allOccurrences();
+        for (size_t i = 0; all && i < all->count(); i++)
+            if (seen.insert(all->item(i)->component()->entityToken()).second) comps.push_back(all->item(i)->component());
+        json res{{"ok", true}, {"sketches", json::array()}};
+        for (auto& c : comps)
+            for (size_t i = 0; i < c->sketches()->count(); i++)
+                res["sketches"].push_back(json{{"component", c->name()}, {"sketch", c->sketches()->item(i)->name()},
+                                               {"lightBulb", c->sketches()->item(i)->isLightBulbOn()}});
+        return res;
+    }
+    if (what == "jointmove")
+    {
+        // drive one joint's motion value (revolute/cylindrical: rotation by `deg`; slider: `mm`) and list the
+        // occurrences that moved in the root context; then put it back
+        Ptr<Design> des = probeDesign(req);
+        if (!des) return json{{"ok", false}, {"error", "no such design"}};
+        std::string name = req.value("name", "");
+        Ptr<JointMotion> jm;
+        std::vector<Ptr<Component>> comps{des->rootComponent()};
+        {
+            Ptr<OccurrenceList> all = des->rootComponent()->allOccurrences();
+            for (size_t i = 0; all && i < all->count(); i++) comps.push_back(all->item(i)->component());
+        }
+        for (size_t c = 0; c < comps.size() && !jm; c++)
+        {
+            Ptr<Component> comp = comps[c];
+            for (size_t i = 0; i < comp->joints()->count() && !jm; i++)
+                if (comp->joints()->item(i)->name() == name) jm = comp->joints()->item(i)->jointMotion();
+            for (size_t i = 0; i < comp->asBuiltJoints()->count() && !jm; i++)
+                if (comp->asBuiltJoints()->item(i)->name() == name) jm = comp->asBuiltJoints()->item(i)->jointMotion();
+        }
+        if (!jm) return json{{"ok", false}, {"error", "no joint " + name}};
+        // joints to suppress for the test (each restored after)
+        std::vector<Ptr<AsBuiltJoint>> off;
+        for (auto& n : req.value("suppress", json::array()))
+            for (size_t c = 0; c < comps.size(); c++)
+                for (size_t i = 0; i < comps[c]->asBuiltJoints()->count(); i++)
+                    if (comps[c]->asBuiltJoints()->item(i)->name() == n.get<std::string>() && !comps[c]->asBuiltJoints()->item(i)->isSuppressed())
+                    {
+                        comps[c]->asBuiltJoints()->item(i)->isSuppressed(true);
+                        off.push_back(comps[c]->asBuiltJoints()->item(i));
+                    }
+        auto before = worldTransforms(des->rootComponent());
+        json res{{"ok", true}, {"joint", name}, {"type", jointTypeName(jm->jointType())}};
+        bool set = false;
+        double deg = req.value("deg", 10.0), mm = req.value("mm", 5.0);
+        if (Ptr<RevoluteJointMotion> r = jm)
+        {
+            res["was"] = rad2deg(r->rotationValue());
+            set = r->rotationValue(r->rotationValue() + deg2rad(deg));
+        }
+        else if (Ptr<CylindricalJointMotion> cy = jm)
+        {
+            res["was"] = rad2deg(cy->rotationValue());
+            set = cy->rotationValue(cy->rotationValue() + deg2rad(deg));
+        }
+        else if (Ptr<SliderJointMotion> sl = jm)
+        {
+            res["was"] = cm2mm(sl->slideValue());
+            set = sl->slideValue(sl->slideValue() + mm2cm(mm));
+        }
+        res["set"] = set;
+        if (!set) res["error"] = lastError();
+        if (req.value("compute", false)) des->computeAll();   // reverts positions not captured (measured)
+        auto after = worldTransforms(des->rootComponent());
+        res["moved"] = movedBetween(before, after);
+        if (req.value("restore", true))
+        {
+            if (Ptr<RevoluteJointMotion> r = jm) r->rotationValue(r->rotationValue() - deg2rad(deg));
+            else if (Ptr<CylindricalJointMotion> cy = jm) cy->rotationValue(cy->rotationValue() - deg2rad(deg));
+            else if (Ptr<SliderJointMotion> sl = jm) sl->slideValue(sl->slideValue() - mm2cm(mm));
+            for (auto& j : off) j->isSuppressed(false);
+        }
+        if (Ptr<RevoluteJointMotion> r = jm) res["now"] = rad2deg(r->rotationValue());
+        return res;
+    }
+    if (what == "drivetest")
+    {
+        // Does driving a joint's value move a component? Two boxes in two components, one grounded, joined by an
+        // as-built revolute joint (or, with "regular": true, a joint); optionally a position snapshot first.
+        Ptr<Document> doc = app->documents()->add(FusionDesignDocumentType);
+        trackDocument(doc);
+        Ptr<Design> des = doc->products()->itemByProductType("DesignProductType");
+        des->designType(ParametricDesignType);
+        Ptr<Component> root = des->rootComponent();
+        auto box = [&](double x) {
+            Ptr<Occurrence> o = root->occurrences()->addNewComponent(Matrix3D::create());
+            Ptr<Component> c = o->component();
+            Ptr<Sketch> sk = c->sketches()->add(c->xYConstructionPlane());
+            sk->sketchCurves()->sketchLines()->addTwoPointRectangle(Point3D::create(x, -0.5, 0), Point3D::create(x + 4, 0.5, 0));
+            Ptr<ExtrudeFeatureInput> ei = c->features()->extrudeFeatures()->createInput(sk->profiles()->item(0), NewBodyFeatureOperation);
+            ei->setDistanceExtent(false, ValueInput::createByReal(1));
+            c->features()->extrudeFeatures()->add(ei);
+            return o;
+        };
+        Ptr<Occurrence> a1 = box(0), a2 = box(4);
+        a1->isGrounded(true);
+        json res{{"ok", true}};
+        Ptr<ConstructionPoint> pt = a2->component()->originConstructionPoint()->createForAssemblyContext(a2);
+        Ptr<JointGeometry> g = JointGeometry::createByPoint(pt);
+        Ptr<JointMotion> jm;
+        if (req.value("nojoint", false)) {}
+        else if (req.value("regular", false))
+        {
+            Ptr<JointGeometry> g1 = JointGeometry::createByPoint(a1->component()->originConstructionPoint()->createForAssemblyContext(a1));
+            Ptr<JointInput> ji = root->joints()->createInput(g, g1);
+            ji->setAsRevoluteJointMotion(ZAxisJointDirection);
+            Ptr<Joint> j = root->joints()->add(ji);
+            res["made"] = (bool)j;
+            if (j) jm = j->jointMotion();
+        }
+        else
+        {
+            Ptr<AsBuiltJointInput> in = root->asBuiltJoints()->createInput(a2, a1, g);
+            in->setAsRevoluteJointMotion(ZAxisJointDirection);
+            Ptr<AsBuiltJoint> j = root->asBuiltJoints()->add(in);
+            res["made"] = (bool)j;
+            if (j) jm = j->jointMotion();
+        }
+        if (req.value("snapshot", false) && des->snapshots()->hasPendingSnapshot()) des->snapshots()->add();
+        auto boxOfOcc = [](const Ptr<Occurrence>& o) {
+            Ptr<BoundingBox3D> bb = o->bRepBodies()->item(0)->boundingBox();
+            return json::array({cm2mm(bb->minPoint()->x()), cm2mm(bb->minPoint()->y()), cm2mm(bb->maxPoint()->x()), cm2mm(bb->maxPoint()->y())});
+        };
+        res["box0"] = boxOfOcc(a2);
+        res["tx0"] = a2->transform2()->asArray();
+        auto before = worldTransforms(root);
+        Ptr<RevoluteJointMotion> r = jm;
+        res["set"] = r ? r->rotationValue(deg2rad(30)) : false;
+        res["value"] = r ? rad2deg(r->rotationValue()) : -1;
+        if (req.value("compute", false)) des->computeAll();   // reverts positions not captured (measured)
+        if (req.value("events", false)) adsk::doEvents();
+        res["moved"] = movedBetween(before, worldTransforms(root));
+        res["box1"] = boxOfOcc(a2);
+        res["tx1"] = a2->transform2()->asArray();
+        // and moving the occurrence itself (what a drag does to the occurrence)
+        Ptr<Matrix3D> m = a2->transform2();
+        m->translation(Vector3D::create(m->translation()->x(), m->translation()->y() + 1, m->translation()->z()));
+        auto b2 = worldTransforms(root);
+        res["transformSet"] = a2->transform2(m);
+        if (req.value("compute", false)) des->computeAll();   // reverts positions not captured (measured)
+        if (req.value("events", false)) adsk::doEvents();
+        res["movedByTransform"] = movedBetween(b2, worldTransforms(root));
+        res["nOcc"] = b2.size();
+        for (auto& kv : worldTransforms(root)) res["after"][kv.first] = kv.second;
+        for (auto& kv : before) res["before"][kv.first] = kv.second;
+        if (req.value("close", true)) doc->close(false);
+        return res;
+    }
+    if (what == "occdrag")
+    {
+        // what a drag does: rotate one top-level occurrence (`occurrence`, its full path) by `deg` about the axis of
+        // the as-built joint `axisJoint`, then list what moved (Fusion solves the joints when an occurrence is moved;
+        // no computeAll, which reverts positions not captured); `restore` puts it back
+        Ptr<Design> des = probeDesign(req);
+        if (!des) return json{{"ok", false}, {"error", "no such design"}};
+        Ptr<Component> root = des->rootComponent();
+        Ptr<Occurrence> occ;
+        Ptr<OccurrenceList> all = root->allOccurrences();
+        for (size_t i = 0; all && i < all->count(); i++)
+            if (all->item(i)->fullPathName() == req.value("occurrence", "")) occ = all->item(i);
+        if (!occ) return json{{"ok", false}, {"error", "no occurrence " + req.value("occurrence", "")}};
+        Ptr<AsBuiltJoint> aj;
+        for (size_t i = 0; i < root->asBuiltJoints()->count(); i++)
+            if (root->asBuiltJoints()->item(i)->name() == req.value("axisJoint", "")) aj = root->asBuiltJoints()->item(i);
+        if (!aj || !aj->geometry()) return json{{"ok", false}, {"error", "no as-built joint " + req.value("axisJoint", "")}};
+        Ptr<Point3D> o = aj->geometry()->origin();
+        Ptr<Vector3D> ax = aj->geometry()->primaryAxisVector();
+        Ptr<Matrix3D> rot = Matrix3D::create();
+        rot->setToRotation(deg2rad(req.value("deg", 5.0)), ax, o);
+        auto before = worldTransforms(root);
+        Ptr<Matrix3D> was = occ->transform2();
+        Ptr<Matrix3D> m = was->copy();
+        m->transformBy(rot);
+        json res{{"ok", true}, {"set", occ->transform2(m)}};
+        auto after = worldTransforms(root);
+        res["moved"] = movedBetween(before, after);
+        if (req.value("restore", true)) occ->transform2(was);
+        return res;
+    }
+    if (what == "offsettest")
+    {
+        // Fusion's start offset of an extrude: a 10 mm cube on z 0..10, a 2 mm square sketched on XY (z 0) cut
+        // through all with start offset +-3 mm in each direction; the removed volume tells where the cut ran
+        json res{{"ok", true}, {"runs", json::array()}};
+        for (int dir = 0; dir < 2; dir++)
+            for (int sg = -1; sg <= 1; sg += 2)
+            {
+                Ptr<Document> doc = app->documents()->add(FusionDesignDocumentType);
+                trackDocument(doc);
+                Ptr<Design> des = doc->products()->itemByProductType("DesignProductType");
+                des->designType(ParametricDesignType);
+                Ptr<Component> c = des->rootComponent();
+                Ptr<Sketch> sk = c->sketches()->add(c->xYConstructionPlane());
+                sk->sketchCurves()->sketchLines()->addTwoPointRectangle(Point3D::create(-0.5, -0.5, 0), Point3D::create(0.5, 0.5, 0));
+                Ptr<ExtrudeFeatureInput> ei = c->features()->extrudeFeatures()->createInput(sk->profiles()->item(0), NewBodyFeatureOperation);
+                ei->setDistanceExtent(false, ValueInput::createByReal(1));
+                c->features()->extrudeFeatures()->add(ei);
+                Ptr<Sketch> s2 = c->sketches()->add(c->xYConstructionPlane());
+                s2->sketchCurves()->sketchLines()->addTwoPointRectangle(Point3D::create(-0.1, -0.1, 0), Point3D::create(0.1, 0.1, 0));
+                Ptr<ExtrudeFeatureInput> ci = c->features()->extrudeFeatures()->createInput(s2->profiles()->item(0), CutFeatureOperation);
+                ci->setOneSideExtent(req.value("blind", false) ? Ptr<ExtentDefinition>(DistanceExtentDefinition::create(ValueInput::createByReal(0.4)))
+                                                                : Ptr<ExtentDefinition>(ThroughAllExtentDefinition::create()),
+                                     dir ? NegativeExtentDirection : PositiveExtentDirection);
+                ci->startExtent(OffsetStartDefinition::create(ValueInput::createByReal(0.3 * sg)));
+                Ptr<ExtrudeFeature> f = c->features()->extrudeFeatures()->add(ci);
+                json r{{"direction", dir ? "negative" : "positive"}, {"offset_mm", 3 * sg}, {"made", (bool)f}, {"error", f ? "" : lastError()}};
+                if (c->bRepBodies()->count())
+                {
+                    Ptr<BRepBody> b = c->bRepBodies()->item(0);
+                    r["removed_mm3"] = 1000.0 - b->volume() * 1000.0;
+                }
+                if (f && f->timelineObject()) r["health"] = f->timelineObject()->errorOrWarningMessage();
+                res["runs"].push_back(r);
+                doc->close(false);
+            }
         return res;
     }
     if (what == "movetest")

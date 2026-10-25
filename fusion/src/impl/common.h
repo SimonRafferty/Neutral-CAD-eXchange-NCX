@@ -85,17 +85,35 @@ void trackDocument(const Ptr<Document>& d);
 std::vector<Ptr<Document>> trackedDocuments();
 
 // Progress with a cancel that really stops (ADDING-A-CAD-SYSTEM step 5). progressBegin shows Fusion's progress
-// dialog (only for an interactive import); progressStep updates it, pumps events and throws Cancelled when the
-// user pressed Cancel. The importer catches it and closes everything it created.
+// dialog (for every import and export unless the job asks for none); progressStep counts a step, shows its message
+// ("<document>: <feature or phase>"), pumps Fusion's events in every mode (so Fusion never looks hung) and throws
+// Cancelled when the user pressed Cancel. Updates and pumps are throttled to one per 0.25 s (a step inside that
+// only counts). progressTick is for loops inside one step (faces, bodies, measurements): it updates the message
+// and pumps when 0.25 s have passed, without counting a step. The importer catches Cancelled and closes
+// everything it created; the exporter writes nothing.
 struct Cancelled
 {
     std::string where;
 };
 void progressBegin(const std::string& title, int steps, bool show);
+void progressSetTotal(int steps);   // the estimated number of steps, once it is known
 void progressStep(const std::string& message);
+void progressTick(const std::string& message = "");   // "" keeps the current message
 void progressEnd();
+// While one exists, a Cancel is remembered instead of thrown (code that must finish what it started, such as the
+// exporter's reading of a feature it unsuppressed); the next progressStep outside it throws.
+struct ProgressNoCancel
+{
+    ProgressNoCancel();
+    ~ProgressNoCancel();
+};
 // a request to cancel from a developer job (as if Cancel were pressed after `afterSteps` steps)
 void progressCancelAfter(int afterSteps);
+// Responsiveness measurement: the time between progress steps and per phase. progressPhase names the phase the
+// time from now on is charged to (until the next call); progressTimeline reports the steps, the longest gaps
+// between two steps (with the messages either side) and the seconds per phase since progressBegin.
+void progressPhase(const std::string& phase);
+json progressTimeline();
 
 // The notice body (FORMAT-SPEC 2.6): header form of a name, and the matching rule.
 std::string headerForm(const std::string& s);

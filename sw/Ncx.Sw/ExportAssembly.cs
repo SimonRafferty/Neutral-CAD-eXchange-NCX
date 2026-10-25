@@ -183,6 +183,8 @@ namespace Ncx.Sw
                     { "fixed", c.IsFixed() }
                 };
                 if (c.IsSuppressed()) jc["suppressed"] = new JObj { { "cfg:active", true } };
+                // a sub-assembly solved as flexible here: its own mates move with this assembly's motion
+                if (md.GetType() == 2 && c.Solving == 1) jc["flexible"] = true;   // swComponentFlexibleSolving
                 components.Add(jc);
             }
 

@@ -15,7 +15,8 @@ Ptr<ValueInput> degValue(double deg) { return ValueInput::createByReal(deg2rad(d
 // A closed loop of a profile as a polygon in sketch space (cm).
 std::vector<std::array<double, 2>> loopPolygon(const Ptr<Sketch>& sk, const Ptr<ProfileLoop>& loop)
 {
-    std::vector<std::array<double, 2>> poly;
+    std::vector<std::array<double, 2>> poly, raw;
+    bool offPlane = false;
     Ptr<ProfileCurves> pcs = loop->profileCurves();
     for (size_t i = 0; i < pcs->count(); i++)
     {
@@ -28,12 +29,16 @@ std::vector<std::array<double, 2>> loopPolygon(const Ptr<Sketch>& sk, const Ptr<
         {
             Ptr<Point3D> p;
             if (!ev->getPointAtParameter(s + (t - s) * k / 24.0, p)) continue;
-            // profile curve geometry is in model space: bring it into the sketch plane
+            // profile curve geometry taken as model space and brought into the sketch plane; when that leaves
+            // it off the plane, it already was in sketch space (measured on sketches on XZ-parallel planes: taken
+            // as model space, every point landed on one line and nested circles no longer nested)
             Ptr<Point3D> q = sk->modelToSketchSpace(p);
+            if (std::fabs(q->z()) > 1e-6) offPlane = true;
             poly.push_back({q->x(), q->y()});
+            raw.push_back({p->x(), p->y()});
         }
     }
-    return poly;
+    return offPlane ? raw : poly;
 }
 
 bool insidePoly(const std::vector<std::array<double, 2>>& poly, double x, double y)
@@ -67,6 +72,113 @@ Ptr<ProfileLoop> outerLoop(const Ptr<Profile>& p)
     for (size_t i = 0; i < ls->count(); i++)
         if (ls->item(i)->isOuter()) return ls->item(i);
     return ls->count() ? ls->item(0) : nullptr;
+}
+
+using Poly = std::vector<std::array<double, 2>>;
+
+// A point inside a region given by its loops (outer and inner polygons, any order): on the horizontal line through
+// the region where it is widest, the middle of the widest span between two crossings (even-odd over all loops).
+// The curves of a profile loop, each as its own polyline in sketch space (cm), ends included: a set of segments
+// whose crossing parity is right whatever direction each curve runs in.
+std::vector<Poly> loopCurves(const Ptr<Sketch>& sk, const Ptr<ProfileLoop>& loop)
+{
+    std::vector<Poly> res;
+    Ptr<ProfileCurves> pcs = loop->profileCurves();
+    for (size_t i = 0; i < pcs->count(); i++)
+    {
+        Ptr<Curve3D> g = pcs->item(i)->geometry();
+        if (!g) continue;
+        Ptr<CurveEvaluator3D> ev = g->evaluator();
+        double s = 0, t = 0;
+        if (!ev->getParameterExtents(s, t)) continue;
+        // the profile curve's geometry is taken as model space and brought into the sketch; when that leaves it
+        // off the sketch plane it already was in sketch space (measured: a sketch on the XZ plane)
+        Poly pl, raw;
+        bool offPlane = false;
+        for (int k = 0; k <= 32; k++)
+        {
+            Ptr<Point3D> p;
+            if (!ev->getPointAtParameter(s + (t - s) * k / 32.0, p)) continue;
+            Ptr<Point3D> q = sk->modelToSketchSpace(p);
+            if (std::fabs(q->z()) > 1e-6) offPlane = true;
+            pl.push_back({q->x(), q->y()});
+            raw.push_back({p->x(), p->y()});
+        }
+        res.push_back(offPlane ? raw : pl);
+    }
+    return res;
+}
+
+// A point inside a region given as polylines of all its boundary curves (any order and direction): on the
+// horizontal line where the region is widest, the middle of the widest span between two crossings.
+bool interiorPoint(const std::vector<Poly>& loops, double& x, double& y)
+{
+    double y0 = 1e300, y1 = -1e300;
+    for (auto& l : loops)
+        for (auto& q : l)
+        {
+            y0 = std::min(y0, q[1]);
+            y1 = std::max(y1, q[1]);
+        }
+    if (!(y1 > y0)) return false;
+    double bestW = 0;
+    for (int k = 1; k < 40; k++)
+    {
+        double yy = y0 + (y1 - y0) * (k + 0.37) / 40.5;   // off the sample rows
+        std::vector<double> xs;
+        for (auto& l : loops)
+            for (size_t i = 1; i < l.size(); i++)
+                if ((l[i][1] > yy) != (l[i - 1][1] > yy))
+                    xs.push_back(l[i][0] + (yy - l[i][1]) * (l[i - 1][0] - l[i][0]) / (l[i - 1][1] - l[i][1]));
+        std::sort(xs.begin(), xs.end());
+        for (size_t i = 0; i + 1 < xs.size(); i += 2)
+            if (xs[i + 1] - xs[i] > bestW)
+            {
+                bestW = xs[i + 1] - xs[i];
+                x = 0.5 * (xs[i] + xs[i + 1]);
+                y = yy;
+            }
+    }
+    return bestW > 0;
+}
+
+// Whether a point is enclosed by a closed contour given as unordered polylines (ray crossing parity).
+bool enclosedBy(const std::vector<Poly>& contour, double x, double y)
+{
+    bool in = false;
+    for (auto& pl : contour)
+        for (size_t i = 1; i < pl.size(); i++)
+        {
+            const auto& a = pl[i - 1];
+            const auto& b = pl[i];
+            if (((a[1] > y) != (b[1] > y)) && (x < (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]) + a[0])) in = !in;
+        }
+    return in;
+}
+
+// A sketch curve as a polyline in sketch space (cm).
+Poly curvePolyline(const Ptr<SketchCurve>& c, int n = 48)
+{
+    Poly res;
+    Ptr<Curve3D> g;   // sketch space (each curve type's geometry())
+    if (Ptr<SketchLine> l = c) g = l->geometry();
+    else if (Ptr<SketchArc> a = c) g = a->geometry();
+    else if (Ptr<SketchCircle> ci = c) g = ci->geometry();
+    else if (Ptr<SketchEllipse> e = c) g = e->geometry();
+    else if (Ptr<SketchEllipticalArc> ea = c) g = ea->geometry();
+    else if (Ptr<SketchFittedSpline> fs = c) g = fs->geometry();
+    else if (Ptr<SketchFixedSpline> xs = c) g = xs->geometry();
+    else if (Ptr<SketchControlPointSpline> cs = c) g = cs->geometry();
+    if (!g) return res;
+    Ptr<CurveEvaluator3D> ev = g->evaluator();
+    double s = 0, t = 0;
+    if (!ev->getParameterExtents(s, t)) return res;
+    for (int k = 0; k <= n; k++)
+    {
+        Ptr<Point3D> p;
+        if (ev->getPointAtParameter(s + (t - s) * k / n, p)) res.push_back({p->x(), p->y()});
+    }
+    return res;
 }
 
 } // namespace
@@ -178,14 +290,293 @@ Ptr<ObjectCollection> Replayer::profilesFor(const json& def, std::string& why)
         return nullptr;
     }
     SketchMap& m = sit->second;
-    Ptr<Profiles> ps = m.sketch->profiles();
-    if (!ps || ps->count() == 0)
+    Ptr<Profiles> all0 = m.sketch->profiles();
+    if (!all0 || all0->count() == 0)
     {
         why = "the sketch has no closed profile";
         return nullptr;
     }
+    // The profiles bounded by the payload's own curves (`own`): the curves this add-in projects into a sketch to
+    // hold its relations to model edges are not sketch geometry in the source, but Fusion closes profiles with them
+    // (measured on a real part: a projected bend edge closed an extra region, and a whole-sketch cut took it too)
+    struct ProfileList
+    {
+        std::vector<Ptr<Profile>> v;
+        size_t count() const { return v.size(); }
+        Ptr<Profile> item(size_t i) const { return v[i]; }
+    } own, every;
+    {
+        std::vector<Ptr<SketchEntity>> mine;
+        for (auto& kv : m.ents) mine.push_back(kv.second);
+        for (size_t i = 0; i < all0->count(); i++)
+        {
+            Ptr<Profile> p = all0->item(i);
+            every.v.push_back(p);
+            bool ok = true;
+            Ptr<ProfileLoops> ls = p->profileLoops();
+            for (size_t k = 0; k < ls->count() && ok; k++)
+            {
+                Ptr<ProfileCurves> pcs = ls->item(k)->profileCurves();
+                for (size_t c = 0; c < pcs->count() && ok; c++)
+                {
+                    Ptr<SketchEntity> se = pcs->item(c)->sketchEntity();
+                    bool found = false;
+                    for (auto& e : mine)
+                        if (e == se) found = true;
+                    if (!found) ok = false;
+                }
+            }
+            if (ok) own.v.push_back(p);
+        }
+    }
+    // regions may be bounded by model edges (measured: a region of a sketch on a sheet's face closed by the sheet's
+    // edge), and contours select by their own segments: those see every profile
+    const ProfileList* ps = &every;
     Ptr<ObjectCollection> res = ObjectCollection::create();
-    if (def.contains("contours") && !def["contours"].empty())
+    bool hasContours = def.contains("contours") && !def["contours"].empty();
+    bool hasRegions = def.contains("regions") && !def["regions"].empty();
+    // regions (FORMAT-SPEC 4, extrude/cut): the profile of the rebuilt sketch that contains the region's point
+    // (inside its outer loop, outside its inner loops; the smallest such profile), checked by area (1e-3)
+    if (hasRegions)
+    {
+        std::vector<std::vector<Poly>> loops(ps->count());
+        std::vector<double> areas(ps->count());
+        for (size_t i = 0; i < ps->count(); i++)
+        {
+            // every loop's curves: a point inside the profile has odd crossing parity over all of them (inside
+            // the outer loop and outside its holes)
+            Ptr<ProfileLoops> ls = ps->item(i)->profileLoops();
+            for (size_t k = 0; k < ls->count(); k++)
+                for (auto& pl : loopCurves(m.sketch, ls->item(k))) loops[i].push_back(pl);
+            Ptr<AreaProperties> ap = ps->item(i)->areaProperties();
+            areas[i] = ap ? cm2mm(cm2mm(ap->area())) : 0.0;
+        }
+        std::set<size_t> taken;
+        for (auto& rg : def["regions"])
+        {
+            Ptr<Point3D> q = m.toSketch(m.src.toModel(rg["point"][0].get<double>(), rg["point"][1].get<double>()));
+            double want = rg.value("area", 0.0);
+            int best = -1;
+            for (size_t i = 0; i < ps->count(); i++)
+            {
+                if (loops[i].empty() || !enclosedBy(loops[i], q->x(), q->y())) continue;
+                if (best < 0 || areas[i] < areas[best]) best = static_cast<int>(i);
+            }
+            char buf[160];
+            if (best < 0)
+            {
+                std::snprintf(buf, sizeof buf, "no region of the rebuilt sketch contains the region point (%.3f, %.3f)", rg["point"][0].get<double>(),
+                              rg["point"][1].get<double>());
+                why = buf;
+                return nullptr;
+            }
+            std::set<size_t> group{static_cast<size_t>(best)};
+            double total = areas[best];
+            if (want > 0 && total < want * (1 - 1e-3))
+            {
+                // the source's region split in two here by a curve that is not the source's sketch geometry (a
+                // curve this add-in projected to hold a relation, e.g. a layout line): the neighbours across such
+                // curves are taken while the area allows (measured on a real part: a layout line split a boss region)
+                auto foreignCurves = [&](size_t i) {
+                    std::vector<Ptr<SketchEntity>> v;
+                    Ptr<ProfileLoops> ls = ps->item(i)->profileLoops();
+                    for (size_t k = 0; k < ls->count(); k++)
+                    {
+                        Ptr<ProfileCurves> pcs = ls->item(k)->profileCurves();
+                        for (size_t c = 0; c < pcs->count(); c++)
+                        {
+                            Ptr<SketchEntity> se = pcs->item(c)->sketchEntity();
+                            bool mine = false;
+                            for (auto& kv : m.ents)
+                                if (kv.second == se) mine = true;
+                            if (!mine) v.push_back(se);
+                        }
+                    }
+                    return v;
+                };
+                std::vector<std::vector<Ptr<SketchEntity>>> foreign(ps->count());
+                for (size_t i = 0; i < ps->count(); i++) foreign[i] = foreignCurves(i);
+                for (bool grew = true; grew && total < want * (1 - 1e-3);)
+                {
+                    grew = false;
+                    for (size_t i = 0; i < ps->count() && !grew; i++)
+                    {
+                        if (group.count(i) || taken.count(i) || total + areas[i] > want * (1 + 1e-3)) continue;
+                        bool adjacent = false;
+                        for (size_t g : group)
+                            for (auto& a1 : foreign[g])
+                                for (auto& a2 : foreign[i])
+                                    if (a1 == a2) adjacent = true;
+                        if (!adjacent) continue;
+                        group.insert(i);
+                        total += areas[i];
+                        grew = true;
+                    }
+                }
+            }
+            if (want > 0 && total > want * (1 + 1e-3) && regionRetry_ < 2 && m.space != "3d")
+            {
+                // larger than the source's region: the source bounds regions of a sketch by the model edges in its
+                // plane too (measured: a region of a sketch on a sheet's face closed by the sheet's edge), Fusion
+                // only by sketch curves: those edges are projected into the sketch and the profiles tried again
+                int made = 0;
+                for (auto& b : bodies(true))
+                    for (size_t i = 0; i < b->edges()->count(); i++)
+                    {
+                        Ptr<BRepEdge> e = b->edges()->item(i);
+                        bool inPlane = true;
+                        for (auto& q : edgePoints(e, {0.0, 0.37, 1.0}))
+                            if (std::fabs(m.sketch->modelToSketchSpace(ptCm(q))->z()) > 1e-5) inPlane = false;
+                        if (!inPlane) continue;
+                        Ptr<ObjectCollection> pr = m.sketch->project(e);
+                        if (pr) made += static_cast<int>(pr->count());
+                    }
+                if (made > 0)
+                {
+                    int was = regionRetry_;
+                    regionRetry_ = 2;
+                    std::string w2;
+                    Ptr<ObjectCollection> again = profilesFor(def, w2);
+                    regionRetry_ = was;
+                    if (again) return again;
+                    why = w2;
+                    return nullptr;
+                }
+            }
+            if (want > 0 && std::fabs(total - want) > 1e-3 * want && !regionRetry_)
+            {
+                // the curves this add-in projected (not the source's sketch geometry) made construction, so they
+                // bound no profile, and the profiles tried again (the projections keep their relations)
+                Ptr<SketchCurves> cs = m.sketch->sketchCurves();
+                int made = 0;
+                for (size_t i = 0; i < cs->count(); i++)
+                {
+                    Ptr<SketchCurve> c = cs->item(i);
+                    if (!c || c->isConstruction()) continue;
+                    bool mine = false;
+                    for (auto& kv : m.ents)
+                        if (kv.second == Ptr<SketchEntity>(c)) mine = true;
+                    if (!mine && c->isConstruction(true)) made++;
+                }
+                if (made > 0)
+                {
+                    regionRetry_ = 1;
+                    std::string w2;
+                    Ptr<ObjectCollection> again = profilesFor(def, w2);
+                    regionRetry_ = 0;
+                    if (again) return again;
+                }
+            }
+            if (want > 0 && std::fabs(total - want) > 1e-3 * want)
+            {
+                std::snprintf(buf, sizeof buf, "the region at (%.3f, %.3f) has %.3f mm2 in the rebuilt sketch, %.3f in the source",
+                              rg["point"][0].get<double>(), rg["point"][1].get<double>(), total, want);
+                why = buf;
+                if (std::error_code dec; fs::is_directory(dataDir() / L"debug_regions", dec))   // developer
+                    for (size_t i = 0; i < ps->count(); i++)
+                    {
+                        std::snprintf(buf, sizeof buf, " [%zu: %.2f%s]", i, areas[i], group.count(i) ? " in" : "");
+                        why += buf;
+                    }
+                return nullptr;
+            }
+            for (size_t g : group)
+                if (taken.insert(g).second) res->add(ps->item(g));
+        }
+        if (!hasContours) return res;
+    }
+    // Several contours, or a contour no profile of the rebuilt sketch has as its outer loop (other curves of the
+    // sketch cross it, e.g. a polygon inside a circle): the profiles of the sketch inside the selected contours.
+    // A contour wholly inside another selected one is a hole in it (an island in that hole is material again);
+    // contours that cross are united. (Measured on a real model: a link's boss lists two corner circles as
+    // contours beside regions that leave those circles' quarters out, so a contour is all it encloses.)
+    auto exactContours = [&]() {
+        if (def["contours"].size() != 1) return false;
+        std::set<std::string> wanted;
+        for (auto& s : def["contours"][0]) wanted.insert(s.get<std::string>());
+        for (size_t i = 0; i < ps->count(); i++)
+        {
+            Ptr<ProfileCurves> pcs = outerLoop(ps->item(i))->profileCurves();
+            std::set<std::string> have;
+            for (size_t k = 0; k < pcs->count(); k++)
+            {
+                Ptr<SketchEntity> se = pcs->item(k)->sketchEntity();
+                std::string id = "?";
+                for (auto& kv : m.ents)
+                    if (kv.second == se) id = kv.first;
+                have.insert(id);
+            }
+            if (have == wanted) return true;
+        }
+        return false;
+    };
+    if (hasContours && !exactContours())
+    {
+        std::vector<std::vector<Poly>> contours;
+        for (auto& want : def["contours"])
+        {
+            std::vector<Poly> c;
+            for (auto& sid : want)
+            {
+                auto it = m.ents.find(sid.get<std::string>());
+                Ptr<SketchCurve> sc = it == m.ents.end() ? nullptr : Ptr<SketchCurve>(it->second);
+                if (!sc)
+                {
+                    why = "contour segment " + sid.get<std::string>() + " is not in the rebuilt sketch";
+                    return nullptr;
+                }
+                c.push_back(curvePolyline(sc));
+            }
+            contours.push_back(c);
+        }
+        // nesting depth of each contour among the selected ones
+        std::vector<int> depth(contours.size(), 0);
+        for (size_t i = 0; i < contours.size(); i++)
+            for (size_t j = 0; j < contours.size(); j++)
+            {
+                if (i == j) continue;
+                int in = 0, n = 0;
+                for (auto& pl : contours[i])
+                    for (size_t k = 0; k < pl.size(); k += 4, n++)
+                        if (enclosedBy(contours[j], pl[k][0] + 1e-7, pl[k][1] + 1.3e-7)) in++;
+                if (n > 0 && in == n) depth[i]++;
+            }
+        size_t before = res->count();
+        std::string diag;
+        for (size_t i = 0; i < ps->count(); i++)
+        {
+            std::vector<Poly> loops;
+            Ptr<ProfileLoops> ls = ps->item(i)->profileLoops();
+            for (size_t k = 0; k < ls->count(); k++)
+                for (auto& pl : loopCurves(m.sketch, ls->item(k))) loops.push_back(pl);
+            double x = 0, y = 0;
+            if (!interiorPoint(loops, x, y))
+            {
+                diag += " [profile " + std::to_string(i) + ": no interior point, " + std::to_string(loops.size()) + " curves]";
+                continue;
+            }
+            int outerN = 0, holeN = 0;
+            for (size_t c = 0; c < contours.size(); c++)
+                if (enclosedBy(contours[c], x, y)) (depth[c] % 2 ? holeN : outerN)++;
+            char db[120];
+            std::snprintf(db, sizeof db, " [profile %zu at (%.3f, %.3f) cm: %d/%d]", i, x, y, outerN, holeN);
+            diag += db;
+            if (outerN > holeN)
+            {
+                bool dup = false;
+                for (size_t k = 0; k < res->count(); k++)
+                    if (res->item(k) == ps->item(i)) dup = true;
+                if (!dup) res->add(ps->item(i));
+            }
+        }
+        if (res->count() == before)
+        {
+            why = "no region of the rebuilt sketch lies inside the selected contours" + diag;
+            return nullptr;
+        }
+        return res;
+    }
+    if (hasContours)
     {
         for (auto& want : def["contours"])
         {
@@ -219,30 +610,29 @@ Ptr<ObjectCollection> Replayer::profilesFor(const json& def, std::string& why)
         }
         return res;
     }
-    std::vector<Ptr<Profile>> all;
-    std::vector<std::vector<std::array<double, 2>>> outer;
+    if (!own.v.empty()) ps = &own;   // the whole sketch: its own curves only
+    // A profile is material when an even number of other profiles' outer loops enclose it (it then lies in no hole,
+    // or in an island of a hole). Tested with a point inside it against the other outer loops, each as the
+    // polylines of its curves (crossing parity: right whatever direction each curve runs in; a polygon made by
+    // joining the curves' samples in loop order is not, when curves run against the loop)
+    std::vector<std::vector<Poly>> outer(ps->count());
+    std::vector<std::array<double, 2>> inside(ps->count());
+    std::vector<bool> hasInside(ps->count(), false);
     for (size_t i = 0; i < ps->count(); i++)
     {
-        all.push_back(ps->item(i));
-        outer.push_back(loopPolygon(m.sketch, outerLoop(ps->item(i))));
+        outer[i] = loopCurves(m.sketch, outerLoop(ps->item(i)));
+        std::vector<Poly> loops;
+        Ptr<ProfileLoops> ls = ps->item(i)->profileLoops();
+        for (size_t k = 0; k < ls->count(); k++)
+            for (auto& pl : loopCurves(m.sketch, ls->item(k))) loops.push_back(pl);
+        hasInside[i] = interiorPoint(loops, inside[i][0], inside[i][1]);
     }
-    for (size_t i = 0; i < all.size(); i++)
+    for (size_t i = 0; i < ps->count(); i++)
     {
-        // a point on this region's outer boundary, tested against every other region's outer contour
         int depth = 0;
-        for (size_t j = 0; j < all.size(); j++)
-        {
-            if (i == j || outer[i].empty() || outer[j].empty()) continue;
-            bool enclosed = false;
-            for (auto& q : outer[i])
-                if (polyDistance(outer[j], q[0], q[1]) > 1e-5)
-                {
-                    enclosed = insidePoly(outer[j], q[0], q[1]);
-                    break;
-                }
-            if (enclosed) depth++;
-        }
-        if (depth % 2 == 0) res->add(all[i]);
+        for (size_t j = 0; j < ps->count(); j++)
+            if (i != j && hasInside[i] && !outer[j].empty() && enclosedBy(outer[j], inside[i][0], inside[i][1])) depth++;
+        if (depth % 2 == 0) res->add(ps->item(i));
     }
     if (res->count() == 0) why = "no material region found in the sketch";
     return res->count() ? res : nullptr;
@@ -287,9 +677,28 @@ std::string Replayer::replayExtrude(json& nf, const json& def, bool cut)
     // A cut is tried: 0 as recorded (with the part's solids as participants, so a body a carried result brought
     // is found); 1 as recorded without participants (a sheet-metal body is not cut when it is named as a
     // participant: P12); 2, 3 the other way (with, without); 4 through all both ways. 2-4 are reported approximate.
-    const int attempts = cut ? 5 : 1;
-    for (int attempt = 0; attempt < attempts; attempt++)
+    // 5, 6: a through-all cut that Fusion refuses ("body not found to extrude through": measured on a two-sided
+    // through-all cut sketched on a part's outer face, and on a sheet-metal body) as blind cuts past every body:
+    // one-sided in the recorded direction, then both sides
+    bool anyThroughAll = def["end"].value("type", "") == "throughAll" || (def.contains("end2") && def["end2"].value("type", "") == "throughAll");
+    const int attempts = cut ? (anyThroughAll ? 7 : 5) : 1;
+    double pastAll = 10;
+    for (auto& b : bodies(true))
     {
+        auto bb = boxMm(b);
+        pastAll = std::max(pastAll, 2 * std::hypot(bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2]) + 10);
+    }
+    std::string lastErrorSeen;
+    // the order: as recorded first, then the blind cut past every body in the recorded direction (5) before the
+    // other direction is tried, so a through-all Fusion refuses is not made on the wrong side
+    static const int order[] = {0, 1, 5, 2, 3, 4, 6};
+    for (int ai = 0; ai < 7; ai++)
+    {
+    int attempt = order[ai];
+    if (attempt >= attempts) continue;
+    bool lastTry = true;
+    for (int k = ai + 1; k < 7; k++)
+        if (order[k] < attempts) lastTry = false;
     Ptr<ExtrudeFeatureInput> in = ef->createInput(profile, op);
     if (!in) return "extrude input: " + lastError();
     // the source extrudes along its sketch normal unless reversed; Fusion's positive side is its own sketch normal
@@ -301,6 +710,21 @@ std::string Replayer::replayExtrude(json& nf, const json& def, bool cut)
         std::string t = e.value("type", "");
         if (t == "blind" && thickTarget && &e == &def["end"]) return ToEntityExtentDefinition::create(thickTarget, false);
         if (t == "blind") return DistanceExtentDefinition::create(mmValue(e.value("depth", 0.0)));
+        if (t == "throughAll" && flip && &e == &def["end"] && !def.contains("end2") && def.contains("start") &&
+            def["start"].value("type", "") == "offset" && def["start"].value("distance", 0.0) != 0)
+        {
+            // Fusion refuses a through-all extrusion against the sketch normal from an offset start ("body not
+            // found to extrude through", probe offsettest; with the normal it works): a blind depth past every body
+            double span = 0;
+            for (auto& b : bodies(true))
+            {
+                auto bb = boxMm(b);
+                span = std::max(span, std::hypot(bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2]));
+            }
+            nf["status"] = "approximate";
+            nf["note"] = "through all from an offset start against the sketch normal made as a blind cut past every body (Fusion refuses that through-all)";
+            return DistanceExtentDefinition::create(mmValue(2 * span + std::fabs(def["start"].value("distance", 0.0)) + 10));
+        }
         if (t == "throughAll") return ThroughAllExtentDefinition::create();
         if (t == "upToVertex" || t == "upToSurface" || t == "offsetFromSurface" || t == "upToBody")
         {
@@ -345,6 +769,7 @@ std::string Replayer::replayExtrude(json& nf, const json& def, bool cut)
         const json& s = def["start"];
         std::string st = s.value("type", "");
         double d = s.value("distance", 0.0) * (s.value("reverse", false) ? -1 : 1) * (mirrored ? -1 : 1);
+        // the offset runs along the sketch normal in both systems (probe offsettest)
         if (st == "offset") in->startExtent(OffsetStartDefinition::create(mmValue(d)));
         else if (st == "surface" || st == "vertex")
         {
@@ -383,12 +808,42 @@ std::string Replayer::replayExtrude(json& nf, const json& def, bool cut)
         in->participantBodies(bodies(true));   // a body a base feature brought (a carried result) is not found otherwise
     if (attempt == 4)
         in->setTwoSidesExtent(ThroughAllExtentDefinition::create(), ThroughAllExtentDefinition::create());
+    if (attempt == 5)
+        in->setOneSideExtent(DistanceExtentDefinition::create(mmValue(pastAll)), flip ? NegativeExtentDirection : PositiveExtentDirection);
+    if (attempt == 6)
+        in->setTwoSidesExtent(DistanceExtentDefinition::create(mmValue(pastAll)), DistanceExtentDefinition::create(mmValue(pastAll)));
     Ptr<ExtrudeFeature> f = ef->add(in);
     if (!f)
     {
         std::string err = lastError();
-        if (attempt + 1 < attempts) continue;
-        return std::string(cut ? "cut" : "extrude") + " failed: " + err;
+        if (attempt < 5) lastErrorSeen = err;
+        if (!lastTry) continue;
+        // where the profile and the bodies are (a cut that finds no body: is the profile off the part?)
+        std::string where;
+        if (prof)
+        {
+            std::array<double, 6> pb{1e300, 1e300, 1e300, -1e300, -1e300, -1e300};
+            for (size_t k = 0; k < prof->count(); k++)
+                if (Ptr<Profile> pp = prof->item(k))
+                {
+                    Ptr<BoundingBox3D> bx = pp->boundingBox();
+                    if (!bx) continue;
+                    std::array<double, 6> b{cm2mm(bx->minPoint()->x()), cm2mm(bx->minPoint()->y()), cm2mm(bx->minPoint()->z()),
+                                            cm2mm(bx->maxPoint()->x()), cm2mm(bx->maxPoint()->y()), cm2mm(bx->maxPoint()->z())};
+                    for (int q = 0; q < 3; q++) pb[q] = std::min(pb[q], b[q]), pb[q + 3] = std::max(pb[q + 3], b[q + 3]);
+                }
+            char wb[200];
+            std::snprintf(wb, sizeof wb, " (profile box %.1f %.1f %.1f / %.1f %.1f %.1f mm", pb[0], pb[1], pb[2], pb[3], pb[4], pb[5]);
+            where = wb;
+            for (auto& bb : bodies(true))
+            {
+                auto b = boxMm(bb);
+                std::snprintf(wb, sizeof wb, "; body box %.1f %.1f %.1f / %.1f %.1f %.1f", b[0], b[1], b[2], b[3], b[4], b[5]);
+                where += wb;
+            }
+            where += ")";
+        }
+        return std::string(cut ? "cut" : "extrude") + " failed: " + err + where;
     }
     // Fusion can return a feature whose compute failed: that is a failure too
     std::string msg = f->timelineObject() ? f->timelineObject()->errorOrWarningMessage() : "";
@@ -399,10 +854,16 @@ std::string Replayer::replayExtrude(json& nf, const json& def, bool cut)
         f->deleteMe();
         // a cut that finds no body on its side: the source's sense of "into the material" differs from this
         // face's here (seen on a face of a body a carried result brought, P12): the other side is tried once
-        if (attempt + 1 < attempts && (msg.find("No target body") != std::string::npos || msg.find("body not found") != std::string::npos)) continue;
+        if (!lastTry && (msg.find("No target body") != std::string::npos || msg.find("body not found") != std::string::npos)) continue;
         return std::string(cut ? "cut" : "extrude") + " failed: " + msg;
     }
-    if (attempt >= 2)
+    if (attempt >= 5)
+    {
+        nf["status"] = "approximate";
+        nf["note"] = std::string("through all made as a blind cut past every body") + (attempt == 6 ? " on both sides" : "") +
+                     " (Fusion refused the through-all: " + lastErrorSeen + ")";
+    }
+    else if (attempt >= 2)
     {
         nf["status"] = "approximate";
         nf["note"] = attempt < 4 ? "cut made in the opposite direction: the recorded one finds no material"
@@ -499,7 +960,8 @@ void Replayer::sheetCutOptions(json& nf, const json& def, const Ptr<ExtrudeFeatu
         nf["info"] = nf.contains("info") && !nf["info"].get<std::string>().empty() ? nf["info"].get<std::string>() + "; " + n : n;
     };
     Ptr<SheetMetalRule> rule = comp_->activeSheetMetalRule();
-    if (def.value("linkToThickness", false))
+    // Link to thickness sets a blind depth; with a through-all end it changes nothing (the cut goes through anyway)
+    if (def.value("linkToThickness", false) && def["end"].value("type", "") == "blind")
     {
         if (Ptr<ToEntityExtentDefinition> te = f->extentOne())
             addInfo("Link to thickness: the depth runs up to the sheet's opposite face, so it follows the thickness");

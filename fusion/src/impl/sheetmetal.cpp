@@ -49,6 +49,89 @@ std::string Replayer::replaySheetMetal(json& nf, const json& def)
     return "";
 }
 
+// Convert to Sheet Metal (FORMAT-SPEC 4): Fusion's own conversion (BRepBody::convertToSheetMetal) only turns a body
+// that already is a sheet of the rule's thickness into a sheet-metal body; it does not make the sheet from a solid
+// block, fixed face and bend edges as SolidWorks does. So the sheet is the feature's carried result (the source's
+// sheet), made a Fusion sheet-metal body from the face on the fixed face's plane, with the part's rule set to the
+// feature's thickness and bend radius: later sheet-metal features (edge flanges, cuts) build on it natively.
+std::string Replayer::replayConvertToSheetMetal(json& nf, const json& def)
+{
+    if (!nf.contains("result") || !nf["result"].contains("bodies")) return "Fusion cannot make the sheet from the solid, and the file carries no result for it";
+    Ptr<SheetMetalRule> rule = comp_->activeSheetMetalRule();
+    if (!rule)
+    {
+        json sm{{"thickness", def.value("thickness", 1.0)}, {"bendRadius", def.value("bendRadius", 1.0)}};
+        json marker{{"id", nf.value("id", "") + ":rule"}};
+        std::string w = replaySheetMetal(marker, sm);
+        if (!w.empty()) return "sheet-metal rule: " + w;
+        rule = comp_->activeSheetMetalRule();
+    }
+    // the rule follows the feature (its thickness and bend radius are the feature's own)
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.10g mm", def.value("thickness", 1.0));
+    if (std::fabs(cm2mm(rule->thickness()->value()) - def.value("thickness", 1.0)) > 1e-9 && !rule->thickness()->expression(buf))
+        return "rule thickness refused: " + lastError();
+    std::snprintf(buf, sizeof buf, "%.10g mm", def.value("bendRadius", 1.0));
+    if (std::fabs(cm2mm(rule->bendRadius()->value()) - def.value("bendRadius", 1.0)) > 1e-9 && !rule->bendRadius()->expression(buf))
+        return "rule bend radius refused: " + lastError();
+    std::vector<Ptr<BRepBody>> before = bodies(true);
+    std::string w = applyResult(nf);
+    if (!w.empty()) return "its carried result could not be used: " + w;
+    // the sheet: the solid body the result brought
+    Ptr<BRepBody> sheet;
+    for (auto& b : bodies(true))
+    {
+        bool old = false;
+        for (auto& o : before)
+            if (o == b) old = true;
+        if (!old && !b->isSheetMetal()) sheet = b;
+    }
+    if (!sheet) return "~note:the sheet from its carried result is already a sheet-metal body";
+    // the face on the fixed face's plane: by the reference (the sheet's outer face lies on the solid's), else the
+    // largest planar face on that plane
+    Ptr<BRepFace> fixed;
+    if (def.contains("fixedFace"))
+    {
+        std::vector<Ptr<Base>> hit;
+        json res = resolveRef({sheet}, def["fixedFace"], hit);
+        if (res.value("result", "") == "resolved" && hit.size() == 1) fixed = hit[0];
+        if (!fixed && def["fixedFace"].contains("geom") && def["fixedFace"]["geom"].value("type", "") == "plane")
+        {
+            const json& pp = def["fixedFace"]["geom"]["params"];
+            V3 n = unit(v3(pp["normal"])), p0 = v3(pp["point"]);
+            for (size_t i = 0; i < sheet->faces()->count(); i++)
+            {
+                Ptr<BRepFace> f = sheet->faces()->item(i);
+                Ptr<Plane> pl = f->geometry();
+                if (!pl) continue;
+                V3 fn = unit(vecOf(pl->normal())), fo = ptMm(pl->origin());
+                if (std::fabs(std::fabs(dot(fn, n)) - 1) > 1e-6 || std::fabs(dot(sub(fo, p0), n)) > 1e-3) continue;
+                if (!fixed || f->area() > fixed->area()) fixed = f;
+            }
+        }
+    }
+    if (!fixed) return "~note:its carried result is used; the fixed face was not found on it, so the sheet is not a Fusion sheet-metal body";
+    json fpBefore = bodyFingerprint(sheet);
+    if (!sheet->convertToSheetMetal(fixed, rule))
+    {
+        nf["status"] = "approximate";
+        nf["note"] = "carried as fixed geometry (its resulting bodies): Fusion refused to make it a sheet-metal body (" + lastError() + ")";
+        return "";
+    }
+    // the conversion keeps the geometry (checked)
+    for (auto& b : bodies(true))
+        if (b->isSheetMetal())
+        {
+            json fp = bodyFingerprint(b);
+            if (std::fabs(fp["volume"].get<double>() - fpBefore["volume"].get<double>()) > 1e-6 * fpBefore["volume"].get<double>() + 1e-9)
+                logLine(docName_ + ": convert to sheet metal changed the volume");
+        }
+    nf["status"] = "approximate";
+    nf["note"] = "the sheet is the file's own result of the feature (Fusion converts only a body that already is a sheet), made a Fusion "
+                 "sheet-metal body from its fixed face with the rule's thickness and bend radius; later sheet-metal features build on it";
+    return "";
+}
+
 std::string Replayer::replayBaseFlange(json& nf, const json& def)
 {
     std::string why;

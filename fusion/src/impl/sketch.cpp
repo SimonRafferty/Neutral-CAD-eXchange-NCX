@@ -639,6 +639,7 @@ std::string Replayer::replaySketch(json& nf, const json& def, const Ptr<Base>& p
     if (def.contains("constraints"))
         for (auto& c : def["constraints"])
         {
+            progressTick();
             std::string w = addConstraint(m, c);
             if (!w.empty() && w[0] == '~') infos.push_back(w.substr(1));
             else if (!w.empty()) notes.push_back(w);
@@ -646,11 +647,14 @@ std::string Replayer::replaySketch(json& nf, const json& def, const Ptr<Base>& p
     if (def.contains("dimensions"))
         for (auto& d : def["dimensions"])
         {
+            progressTick();
             std::string w = addDimension(m, d);
             if (!w.empty()) notes.push_back(w);
         }
     if (def.value("constrained", "") == "full" && !sk->isFullyConstrained())
         notes.push_back("the source sketch is fully defined, the rebuilt one is not");
+    // the source's visibility (FORMAT-SPEC 4, sketch `hidden`)
+    if (def.value("hidden", false)) sk->isLightBulbOn(false);
     features[nf.value("id", "")] = sk;
     sketches_[nf.value("id", "")] = m;
     sketchDefs_[nf.value("id", "")] = def;
@@ -780,6 +784,8 @@ std::string Replayer::replaySketch3D(json& nf, const json& def)
         std::string w = addDimension(m, d);
         if (!w.empty()) notes.push_back(w);
     }
+    // the source's visibility (FORMAT-SPEC 4, sketch `hidden`)
+    if (def.value("hidden", false)) sk->isLightBulbOn(false);
     features[nf.value("id", "")] = sk;
     sketches_[nf.value("id", "")] = m;
     sketchDefs_[nf.value("id", "")] = def;

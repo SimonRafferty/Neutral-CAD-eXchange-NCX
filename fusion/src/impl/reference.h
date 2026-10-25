@@ -35,8 +35,9 @@ struct NoticeId
 };
 
 // Import `stepPath` into a temporary document, measure it, close the document. Face descriptors are
-// computed for the components named in `describe` (all when empty and describeAll).
-Reference loadReference(const fs::path& stepPath, const json& model, const NoticeId& notice, bool describeAll);
+// computed for every component when describeAll (only for the components named in `only` when it is not empty).
+Reference loadReference(const fs::path& stepPath, const json& model, const NoticeId& notice, bool describeAll,
+                        const std::set<std::string>& only = {});
 
 // Import a STEP file into `target` as plain geometry (the fallback), deleting the notice body / component.
 // Returns "" or the reason it failed.

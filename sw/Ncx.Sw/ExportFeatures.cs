@@ -115,6 +115,83 @@ namespace Ncx.Sw
             return best == null ? new List<double[]>() : new List<double[]> { best };
         }
 
+        /// <summary>A region's boundary (FORMAT-SPEC 4, `regions`): per loop of its face, in loop order, the sketch segment
+        /// each edge lies on (its id; consecutive edges on one segment once), or, for an edge on no sketch segment, its
+        /// curve in sketch coordinates (`{line: [start, end]}` or `{arc: [centre, radius]}`, mm). Null if a loop's edges
+        /// cannot be read.</summary>
+        static List<object> RegionBoundary(ISketchRegion rg, ISketch sk, SketchIds ids, SketchFrame frame)
+        {
+            try
+            {
+                var segs = ((object[])sk.GetSketchSegments() ?? new object[0]).Cast<ISketchSegment>()
+                    .Where(s => ids.Of(s) != null && !s.ConstructionGeometry).ToList();
+                var loops = new List<object>();
+                for (var loop = rg.GetFirstLoop() as ILoop2; loop != null; loop = loop.GetNext() as ILoop2)
+                {
+                    var items = new List<object>();
+                    foreach (IEdge e in (object[])loop.GetEdges() ?? new object[0])
+                    {
+                        var cp = (double[])e.GetCurveParams2() ?? new double[0];
+                        var curve = (ICurve)e.GetCurve();
+                        if (cp.Length < 8 || curve == null) return null;
+                        double t0 = cp[6], t1 = cp[7];
+                        // the edge's middle and ends, in sketch coordinates (m)
+                        Func<double, double[]> at = t =>
+                        {
+                            var ev = (double[])curve.Evaluate2(t, 0);
+                            return frame.ToSketch(new[] { ev[0], ev[1], ev[2] });
+                        };
+                        var mid = at((t0 + t1) / 2);
+                        var seg = segs.FirstOrDefault(s => OnSegment(s, mid));
+                        if (seg != null)
+                        {
+                            string id = ids.Of(seg);
+                            if (items.Count == 0 || !Equals(items[items.Count - 1], id)) items.Add(id);
+                            continue;
+                        }
+                        var a = at(t0);
+                        var b = at(t1);
+                        if (curve.IsCircle())
+                        {
+                            var cpar = (double[])curve.CircleParams;
+                            var c = frame.ToSketch(new[] { cpar[0], cpar[1], cpar[2] });
+                            items.Add(new JObj { { "arc", new object[] { new[] { U.R(U.Mm(c[0])), U.R(U.Mm(c[1])) }, U.R(U.Mm(cpar[6])) } } });
+                        }
+                        else
+                            items.Add(new JObj { { "line", new object[] { new[] { U.R(U.Mm(a[0])), U.R(U.Mm(a[1])) },
+                                                                         new[] { U.R(U.Mm(b[0])), U.R(U.Mm(b[1])) } } } });
+                    }
+                    loops.Add(items);
+                }
+                return loops.Count > 0 ? loops : null;
+            }
+            catch (Exception) { return null; }   // the boundary is optional: the point and area still select the region
+        }
+
+        /// <summary>Does a point (sketch coordinates, m) lie on this sketch line or arc (within 1e-7 m)?</summary>
+        static bool OnSegment(ISketchSegment s, double[] p)
+        {
+            const double tol = 1e-7;
+            var line = s as ISketchLine;
+            if (line != null)
+            {
+                var a = (ISketchPoint)line.GetStartPoint2();
+                var b = (ISketchPoint)line.GetEndPoint2();
+                double dx = b.X - a.X, dy = b.Y - a.Y, len2 = dx * dx + dy * dy;
+                if (len2 < 1e-18) return false;
+                double t = ((p[0] - a.X) * dx + (p[1] - a.Y) * dy) / len2;
+                if (t < -1e-9 || t > 1 + 1e-9) return false;
+                return Math.Abs((p[0] - a.X) * dy - (p[1] - a.Y) * dx) / Math.Sqrt(len2) < tol;
+            }
+            var arc = s as ISketchArc;
+            if (arc != null)
+            {
+                var c = (ISketchPoint)arc.GetCenterPoint2();
+                return Math.Abs(Math.Sqrt((p[0] - c.X) * (p[0] - c.X) + (p[1] - c.Y) * (p[1] - c.Y)) - arc.GetRadius()) < tol;
+            }
+            return false;
+        }
+
         int unreadableContours;   // set by SelectedProfile: selections the API returned as nothing
 
         string SelectedProfile(JObj def, object[] items, IFeature sketchFeature)
@@ -142,8 +219,11 @@ namespace Ncx.Sw
                     if (pts.Count == 0) return "no point found inside a sketch region";
                     if (frame == null) frame = new SketchFrame(sw, (ISketch)sketchFeature.GetSpecificFeature2());
                     var q = frame.ToSketch(pts[0].Select(U.M).ToArray());
-                    regions.Add(new JObj { { "point", new[] { U.R(U.Mm(q[0])), U.R(U.Mm(q[1])) } }, { "area", face.GetArea() * 1e6 },
-                                           { "clearance", clearance } });
+                    var region = new JObj { { "point", new[] { U.R(U.Mm(q[0])), U.R(U.Mm(q[1])) } }, { "area", face.GetArea() * 1e6 },
+                                            { "clearance", clearance } };
+                    var boundary = RegionBoundary(rg, (ISketch)sketchFeature.GetSpecificFeature2(), ids, frame);
+                    if (boundary != null) region["boundary"] = boundary;
+                    regions.Add(region);
                     continue;
                 }
                 if (c == null) { unreadableContours++; continue; }   // SolidWorks lists it but returns nothing for it

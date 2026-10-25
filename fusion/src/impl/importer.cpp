@@ -108,6 +108,7 @@ json flexCheck(const json& model, std::map<std::string, Replayer*>& rebuilt, con
                 results.push_back(r);
                 continue;
             }
+            progressStep(d.value("name", "") + ": flexing " + pname + " (parameter check)");
             Ptr<Parameter> p = rit->second->parameterFor(pname);
             if (!p)
             {
@@ -140,6 +141,7 @@ json flexCheck(const json& model, std::map<std::string, Replayer*>& rebuilt, con
             for (auto& kv : rebuilt)
             {
                 if (skipDocs.count(kv.first)) continue;
+                progressTick(d.value("name", "") + ": flexing " + pname + ", measuring " + kv.second->documentName());
                 json actual = fingerprintOf(componentBodies(kv.second->component(), true));
                 json expected = moved.count(kv.first) ? probe["fingerprints"][kv.first] : baseline[kv.first];
                 json cmp = coreCompare(expected, actual, "native");
@@ -158,12 +160,20 @@ json flexCheck(const json& model, std::map<std::string, Replayer*>& rebuilt, con
 
 json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& createdDoc);
 
+std::string rootDocName(const json& model)
+{
+    const json* d = findDoc(model, model.value("root", ""));
+    return d ? d->value("name", "") : std::string();
+}
+
 // The import with progress and cancel: a cancelled import closes every document it created, unsaved, so
 // nothing half-built is left behind (a defined state).
 json importFile(const fs::path& file, const json& opts)
 {
     if (opts.value("cancelAfter", -1) >= 0) progressCancelAfter(opts["cancelAfter"].get<int>());
-    progressBegin("Import NCX", 100, opts.value("ui", false));
+    // the dialog shows for job-driven imports too (someone may be watching Fusion); "progress": false hides it
+    progressBegin("Import NCX: " + file.filename().u8string(), 100, opts.value("progress", true));
+    size_t docsBefore = trackedDocuments().size();
     Ptr<Document> created;
     json res;
     try
@@ -172,11 +182,16 @@ json importFile(const fs::path& file, const json& opts)
     }
     catch (const Cancelled& c)
     {
+        // every document this import made (the design, the scratch STEP import of the reference) is closed unsaved
+        std::vector<Ptr<Document>> docs = trackedDocuments();
+        for (size_t i = docsBefore; i < docs.size(); i++)
+            if (docs[i] && docs[i]->isValid()) docs[i]->close(false);
         if (created && created->isValid()) created->close(false);
         res = json{{"ok", true}, {"status", "cancelled"}, {"cancelledAt", c.where},
                    {"report", json::array({json{{"document", file.filename().u8string()}, {"item", "import"}, {"result", "cancelled"},
                                                 {"reason", "cancelled by the user at " + c.where + "; everything this import made was closed"}}})}};
     }
+    if (res.is_object()) res["progress"] = progressTimeline();
     progressEnd();
     return res;
 }
@@ -186,6 +201,7 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
     auto t0 = std::chrono::steady_clock::now();
     Report report;
     json out{{"ok", true}, {"file", file.u8string()}};
+    progressPhase("read payload");
     std::string stepText = readFile(file);
     if (stepText.empty()) return json{{"ok", false}, {"error", "cannot read " + file.u8string()}};
     CoreResult pr = corePayloadRead(stepText);
@@ -206,11 +222,23 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
             plainReason = std::string("the payload is not valid JSON: ") + e.what();
         }
     }
+    // the progress total: a step per feature, component and mate, and a few per document (reference, checks)
+    if (model.is_object() && model.contains("documents"))
+    {
+        int n = 4;
+        for (auto& d : model["documents"])
+            n += 4 + static_cast<int>(d.value("features", json::array()).size() + d.value("components", json::array()).size() +
+                                      d.value("mates", json::array()).size() + d.value("flex", json::array()).size());
+        progressSetTotal(n);
+    }
     // the reference: the file's own geometry
     Reference ref;
     if (plainReason.empty())
     {
-        ref = loadReference(file, model, noticeName, opts.value("faces", true));
+        progressPhase("reference");
+        std::set<std::string> only;   // developer: "only": [part names] rebuilds only those parts (and their sources)
+        for (auto& n : opts.value("only", json::array())) only.insert(n.get<std::string>());
+        ref = loadReference(file, model, noticeName, opts.value("faces", true), only);
         if (!ref.ok) return json{{"ok", false}, {"error", "reference geometry: " + ref.error}};
         out["notice"] = ref.noticeFound.empty() ? "not found" : ref.noticeFound;
         json stale = coreCompare(model["fingerprint"], ref.fingerprint, "exchange");
@@ -219,7 +247,7 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
             plainReason = "the file's geometry no longer matches its payload (" + differencesText(stale) +
                           "): it was changed after export";
     }
-    progressStep("reading the file's geometry");
+    progressStep("building the design");
     Ptr<Document> doc;
     Ptr<Design> des = newDesign(doc);
     createdDoc = doc;
@@ -228,6 +256,7 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
     json verification = json::array();
     if (!plainReason.empty())
     {
+        progressPhase("fallback");
         std::string w = importPlain(file, root, model.is_object() ? model : json{{"documents", json::array()}}, noticeName);
         report.add(file.filename().u8string(), "file", "fallback", plainReason + "; imported as plain geometry" + (w.empty() ? "" : " (" + w + ")"));
         out["status"] = "fallback";
@@ -250,7 +279,10 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
             Replayer rp(report, model, file);
             rp.trace = opts.value("trace", false);
             if (ref.components.count("")) rp.refBodies = &ref.components[""].bodies;
+            progressPhase("replay");
             rp.replayPart(*rootDoc, root);
+            progressPhase("verify mass");
+            progressStep(rootDoc->value("name", "") + ": checking mass properties");
             nameBodies(root, *rootDoc);
             // mass properties: the rebuilt part against the payload (native; exchange where STEP was involved)
             json expected = expectedFingerprint(*rootDoc);
@@ -298,6 +330,7 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
                     Ptr<Occurrence> o = root->occurrences()->addNewComponent(Matrix3D::create());
                     root = o->component();
                 }
+                progressPhase("fallback");
                 importPlain(file, root, model, noticeName);
             }
             else
@@ -319,7 +352,9 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
                 // face by face, against the file's own B-rep
                 if (opts.value("faces", true) && ref.components.count(""))
                 {
-                    json fc = faceCompare(ref.components[""].bodies, componentBodies(root, true));
+                    progressPhase("verify faces");
+                    progressStep(rootDoc->value("name", "") + ": checking faces against the file");
+                    json fc = faceCompare(ref.components[""].bodies, componentBodies(root, true), 0.001, rootDoc->value("name", "") + ": checking faces");
                     v["faces"] = fc.value("result", "?");
                     if (fc.value("result", "") == "mismatch")
                     {
@@ -333,6 +368,7 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
             if (out.value("status", "") == "rebuilt" && rootDoc->contains("flex"))
             {
                 std::map<std::string, Replayer*> rebuilt{{rootDoc->value("id", ""), &rp}};
+                progressPhase("flex");
                 std::set<std::string> skip;
                 if (rp.resultsApplied) skip.insert(rootDoc->value("id", ""));
                 json fx = flexCheck(model, rebuilt, skip);
@@ -345,8 +381,38 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
             verification.push_back(v);
         }
     }
+    // Upright view: SolidWorks models are Y-up; with Fusion's default modelling orientation Z-up they would lie on their
+    // back. The model keeps the file's coordinates (every check, joint and the export stay in the file's frame); the
+    // camera is turned so the source's up is up on screen. The source's up: `orientation.up` (ISSUES 34), else Y for
+    // a SolidWorks file.
+    if (!opts.value("close", false) && model.is_object())
+    {
+        std::string up = model.contains("orientation") ? model["orientation"].value("up", "") : "";
+        if (up.empty() && model.contains("generator") && model["generator"].value("app", "") == "SOLIDWORKS") up = "y";
+        Ptr<Application> app = Application::get();
+        bool zUp = app->preferences() && app->preferences()->generalPreferences() &&
+                   app->preferences()->generalPreferences()->defaultModelingOrientation() == ZUpModelingOrientation;
+        out["fusionUp"] = zUp ? "z" : "y";
+        if (up == "y" && zUp)
+        {
+            Ptr<Viewport> vp = app->activeViewport();
+            Ptr<Camera> cam = vp ? vp->camera() : nullptr;
+            if (cam)
+            {
+                Ptr<Point3D> t = cam->target();
+                cam->eye(Point3D::create(t->x() + 100, t->y() + 100, t->z() + 100));
+                cam->upVector(Vector3D::create(0, 1, 0));
+                cam->isFitView(true);
+                vp->camera(cam);
+                report.add(rootDocName(model), "orientation", "note",
+                           "shown upright: the source is Y-up and Fusion is set to Z-up, so the view is turned (Y up on screen); the model keeps the file's coordinates");
+            }
+        }
+    }
     out["report"] = report.entries;
     out["verification"] = verification;
+    out["jointFrames"] = jointFrames();
+    jointFrames() = json::array();
     // counts for the summary line
     std::map<std::string, int> counts;
     for (auto& e : report.entries) counts[e["result"].get<std::string>()]++;
