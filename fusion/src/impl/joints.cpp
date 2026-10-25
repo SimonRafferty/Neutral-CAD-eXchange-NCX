@@ -188,6 +188,20 @@ struct JointBuilder
         return false;
     }
 
+    // Suppressed in the assembly's active configuration. Assemblies list no configurations in schema 0.1, and the
+    // SolidWorks exporter keys an assembly mate's state "cfg:active" (features use the configuration's id): the
+    // active configuration's id, "cfg:active", or the only key there is, decide.
+    bool mateSuppressed(const json& m) const
+    {
+        if (!m.contains("suppressed") || !m["suppressed"].is_object() || m["suppressed"].empty()) return false;
+        const json& s = m["suppressed"];
+        std::string active = asmDoc.value("activeConfiguration", "");
+        if (!active.empty() && s.contains(active)) return s[active].get<bool>();
+        if (s.contains("cfg:active")) return s["cfg:active"].get<bool>();
+        if (s.size() == 1) return s.begin()->get<bool>();
+        return false;
+    }
+
     void run(std::map<std::string, Ptr<Base>>& jointOf)
     {
         const json mates = asmDoc.value("mates", json::array());
@@ -198,10 +212,15 @@ struct JointBuilder
         std::map<std::pair<std::string, std::string>, std::vector<size_t>> byPair;
         std::vector<std::vector<MateSide>> sides(mates.size());
         static const std::set<std::string> mechanical{"gear", "screw", "rackPinion", "cam"};
+        // suppressed mates (FORMAT-SPEC 5, Mates: `suppressed` {config: bool}) hold nothing in the source and may not
+        // hold in the placement (L11's Distance-Lift): left out of the joints, and said so
+        std::set<size_t> suppressed;
+        for (size_t i = 0; i < mates.size(); i++)
+            if (mateSuppressed(mates[i])) suppressed.insert(i);
         for (size_t i = 0; i < mates.size(); i++)
         {
             for (auto& r : mates[i].value("refs", json::array())) sides[i].push_back(side(r));
-            if (mechanical.count(mates[i].value("type", ""))) continue;
+            if (suppressed.count(i) || mechanical.count(mates[i].value("type", ""))) continue;
             // the assembly and its fixed components do not move: to a moving component they are one partner
             std::set<std::string> units;
             for (auto& s : sides[i]) units.insert(fixed.count(s.unit) ? std::string() : s.unit);
@@ -242,14 +261,18 @@ struct JointBuilder
         for (size_t i = 0; i < mates.size(); i++)
         {
             std::string t = mates[i].value("type", "");
-            if (!mechanical.count(t)) continue;
+            if (!mechanical.count(t) || suppressed.count(i)) continue;
             covered[i] = motionLink(mates[i], sides[i], jointOf);
         }
         for (size_t i = 0; i < mates.size(); i++)
         {
             std::string name = mates[i].value("name", mates[i].value("id", ""));
             auto it = covered.find(i);
-            if (it == covered.end())
+            if (suppressed.count(i))
+                report.add(asmName, name, "note", "the " + mates[i].value("type", std::string("")) +
+                                                      " mate is suppressed in the source (it holds nothing there): not made as a joint (Fusion joins a component "
+                                                      "pair with one joint, which the active mates define); the components stay where the file places them");
+            else if (it == covered.end())
                 report.add(asmName, name, "approximate", "components placed where the file puts them; the " + mates[i].value("type", "") +
                                                              " mate is covered by the joints of the components it joins");
             else if (it->second.rfind("~", 0) == 0)

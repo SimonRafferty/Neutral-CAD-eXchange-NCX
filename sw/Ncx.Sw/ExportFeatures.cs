@@ -191,6 +191,12 @@ namespace Ncx.Sw
                 def["reverse"] = d.ReverseDirection;
                 def["end"] = End(d, true, nf);
                 if (d.BothDirections) def["end2"] = End(d, false, nf);
+                if (((JObj)def["end"]).Str("type") == "throughAllBoth")
+                {
+                    // SolidWorks' "Through All - Both" is one end condition; neutrally it is through all both ways
+                    def["end"] = new JObj { { "type", "throughAll" } };
+                    def["end2"] = new JObj { { "type", "throughAll" } };
+                }
                 if (!boss && d.FlipSideToCut) def["flipSide"] = true;
                 // sheet metal: a cut normal to the sheet across bends; a cut's or boss's depth tied to the thickness
                 if (!boss && d.NormalCut) def["normalCut"] = true;

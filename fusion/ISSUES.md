@@ -295,3 +295,32 @@ The owner answered 21-26 in FORMAT-SPEC §4 (no sample, schema or core change). 
 
 Nothing here needs a format change. If the owner wants P34/P35 native in a system like Fusion, the only missing
 piece is the corner's bend-region shape, which only a result (as now) can carry.
+
+## Round 5
+
+Against the 59 samples of NCX 0.5.3 (P47, P48, L11 new). The brief and spec took this feedback in NCX 0.5.4.
+
+### 27. Inscribed polygons carry one tangent (exporter; P48)
+
+P48's `SK_Hex` is `constrained: "full"`, but its inscribed hexagon carries only `tangent` (s9, circle s2), the
+`patterned` pairs and one fixed side: no importer can make it fully defined from that (Fusion: the circle and five
+sides under-defined). Proposal: the exporter writes, for a polygon whose construction circle is inscribed, every side
+`tangent` to the circle and every side's midpoint `coincident` with it (equal sides tangent to one circle do not fix a
+hexagon; with their midpoints on it they do), as it writes every corner on the circle for a circumscribed one. No
+format change.
+
+### 28. Normal cut across a bend: carry the result (proposal)
+
+`normalCut: true` has no counterpart in Fusion (nor, as far as is known, in Onshape). A straight cut is the same only
+where the profile lies on a flat region; across a bend it removes different material, by less than the native mass
+tolerance on typical parts (the spec's own 0.33 mm³). Proposal: the exporter attaches the feature's `result` when a
+normal cut crosses a bend (it knows: the cut's faces are not all planar-normal to one flat face), so an importer
+without the option can check its straight cut against it and use the result when they differ. L11's cut lies on a
+flat face: Fusion's straight cut removes exactly profile area x thickness and the part matches.
+
+### 29. Suppressed mate key in assemblies (spec wording)
+
+Mates use `{config: bool}` "as for features", but assemblies have no configurations in schema 0.1 and L11 writes
+`{"cfg:active": true}`. Proposal: the spec names `cfg:active` as the key of an assembly without configurations (the
+Fusion exporter now writes suppressed joints this way too). The Fusion importer accepts the active configuration's
+id, `cfg:active`, or a single key.

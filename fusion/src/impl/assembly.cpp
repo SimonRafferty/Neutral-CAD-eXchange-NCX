@@ -163,7 +163,12 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
         auto rit = ref.components.find(name);
         if (rit != ref.components.end()) rp->refBodies = &rit->second.bodies;
         rp->occurrence = occ;
+        // Fusion's sheet-metal features put their bodies into the ACTIVE component, not the one whose
+        // features() made them (measured, L11: the base flange's body landed in the root): the part's
+        // component is activated while it is rebuilt
+        occ->activate();
         rp->replayPart(d, comp);
+        des->activateRootComponent();
         nameBodies(comp, d);
         registry[id] = rp.get();
         buildOcc[id] = occ;

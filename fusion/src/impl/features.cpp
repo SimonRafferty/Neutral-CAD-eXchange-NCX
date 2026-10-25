@@ -278,6 +278,12 @@ std::string Replayer::replayExtrude(json& nf, const json& def, bool cut)
     FeatureOperations op = cut ? CutFeatureOperation : (def.value("merge", true) ? JoinFeatureOperation : NewBodyFeatureOperation);
     if (!cut && bodies(true).empty()) op = NewBodyFeatureOperation;
     Ptr<ExtrudeFeatures> ef = comp_->features()->extrudeFeatures();
+    // Link to thickness (FORMAT-SPEC 4, cut in a sheet-metal body): Fusion's expressions cannot name the rule's
+    // thickness (measured: "Expression is invalid", and the rule's thickness refuses a user parameter), so the
+    // depth runs up to the sheet's opposite face, which follows the thickness
+    Ptr<BRepFace> thickTarget = (def.value("linkToThickness", false) && comp_->activeSheetMetalRule() && def["end"].value("type", "") == "blind")
+                                    ? sheetOppositeFace(prof, def["end"].value("depth", 0.0))
+                                    : nullptr;
     // A cut is tried: 0 as recorded (with the part's solids as participants, so a body a carried result brought
     // is found); 1 as recorded without participants (a sheet-metal body is not cut when it is named as a
     // participant: P12); 2, 3 the other way (with, without); 4 through all both ways. 2-4 are reported approximate.
@@ -293,6 +299,7 @@ std::string Replayer::replayExtrude(json& nf, const json& def, bool cut)
 
     auto extentFor = [&](const json& e, std::string& w) -> Ptr<ExtentDefinition> {
         std::string t = e.value("type", "");
+        if (t == "blind" && thickTarget && &e == &def["end"]) return ToEntityExtentDefinition::create(thickTarget, false);
         if (t == "blind") return DistanceExtentDefinition::create(mmValue(e.value("depth", 0.0)));
         if (t == "throughAll") return ThroughAllExtentDefinition::create();
         if (t == "upToVertex" || t == "upToSurface" || t == "offsetFromSurface" || t == "upToBody")
@@ -428,9 +435,109 @@ std::string Replayer::replayExtrude(json& nf, const json& def, bool cut)
         }
     }
     features[nf.value("id", "")] = f;
+    sheetCutOptions(nf, def, f, prof, cut);
     break;
     }
     return "";
+}
+
+// ---------------------------------------------------------------------------------------- sheet-metal cut options
+// FORMAT-SPEC 4, "cut in a sheet-metal body":
+//  - linkToThickness: the depth is the sheet's thickness and follows it. Fusion's rule thickness is not a design
+//    parameter, so a user parameter holds the thickness, the rule's thickness is set to it and the depth's
+//    expression names it: editing the parameter changes the sheet and the cut together.
+//  - normalCut: SolidWorks cuts normal to the sheet's faces wherever the cut crosses it. Fusion has no such option;
+//    a straight cut is the same exactly when the profile lies on a flat region of the sheet, which shows as the cut
+//    removing (profile area) x (depth). Otherwise the straight cut is reported approximate.
+// The planar face of the part's solids parallel to the profile's sketch plane at `depthMm` from it, under the
+// profile (its first curve's start, projected): the sheet's other side for a cut linked to the thickness.
+Ptr<BRepFace> Replayer::sheetOppositeFace(const Ptr<ObjectCollection>& prof, double depthMm)
+{
+    if (!prof || prof->count() == 0 || depthMm <= 0) return nullptr;
+    Ptr<Profile> p = prof->item(0);
+    Ptr<Sketch> sk = p ? p->parentSketch() : nullptr;
+    if (!sk || !p->profileLoops() || p->profileLoops()->count() == 0) return nullptr;
+    Ptr<ProfileCurves> pcs = p->profileLoops()->item(0)->profileCurves();
+    if (!pcs || pcs->count() == 0) return nullptr;
+    Ptr<SketchCurve> cv = pcs->item(0)->sketchEntity();
+    Ptr<BoundingBox3D> cb = cv ? cv->boundingBox() : nullptr;   // sketch space
+    if (!cb) return nullptr;
+    Ptr<Point3D> at = Point3D::create((cb->minPoint()->x() + cb->maxPoint()->x()) / 2, (cb->minPoint()->y() + cb->maxPoint()->y()) / 2, 0);
+    V3 o = ptMm(sk->sketchToModelSpace(Point3D::create(0, 0, 0)));
+    V3 x = ptMm(sk->sketchToModelSpace(Point3D::create(1, 0, 0))), y = ptMm(sk->sketchToModelSpace(Point3D::create(0, 1, 0)));
+    V3 n = unit(cross(sub(x, o), sub(y, o)));
+    V3 q = ptMm(sk->sketchToModelSpace(at));
+    Ptr<BRepFace> best;
+    for (auto& b : bodies(true))
+        for (size_t i = 0; i < b->faces()->count(); i++)
+        {
+            Ptr<BRepFace> f = b->faces()->item(i);
+            Ptr<Plane> pl = f->geometry();
+            if (!pl || std::fabs(std::fabs(dot(unit(vecOf(pl->normal())), n)) - 1) > 1e-9) continue;
+            double off = dot(sub(ptMm(pl->origin()), q), n);
+            if (std::fabs(std::fabs(off) - depthMm) > 1e-6) continue;
+            V3 foot = add(q, mul(n, off));
+            Ptr<BoundingBox3D> bb = f->boundingBox();
+            V3 lo = ptMm(bb->minPoint()), hi = ptMm(bb->maxPoint());
+            bool inside = true;
+            for (int k = 0; k < 3; k++)
+                if (foot[k] < lo[k] - 1e-4 || foot[k] > hi[k] + 1e-4) inside = false;
+            if (!inside) continue;
+            if (best) return nullptr;   // ambiguous
+            best = f;
+        }
+    return best;
+}
+
+void Replayer::sheetCutOptions(json& nf, const json& def, const Ptr<ExtrudeFeature>& f, const Ptr<ObjectCollection>& prof, bool cut)
+{
+    auto approxNote = [&](const std::string& n) {
+        nf["status"] = "approximate";
+        nf["note"] = nf.contains("note") && !nf["note"].get<std::string>().empty() ? nf["note"].get<std::string>() + "; " + n : n;
+    };
+    auto addInfo = [&](const std::string& n) {
+        nf["info"] = nf.contains("info") && !nf["info"].get<std::string>().empty() ? nf["info"].get<std::string>() + "; " + n : n;
+    };
+    Ptr<SheetMetalRule> rule = comp_->activeSheetMetalRule();
+    if (def.value("linkToThickness", false))
+    {
+        if (Ptr<ToEntityExtentDefinition> te = f->extentOne())
+            addInfo("Link to thickness: the depth runs up to the sheet's opposite face, so it follows the thickness");
+        else
+            approxNote(std::string("Link to thickness not carried (") + (rule ? "no face of the sheet lies at the depth opposite the sketch" : "no sheet-metal rule") +
+                       "): the depth is the thickness's value, fixed");
+    }
+    if (cut && def.value("normalCut", false))
+    {
+        double area = 0;
+        for (size_t i = 0; prof && i < prof->count(); i++)
+            if (Ptr<Profile> p = prof->item(i))
+                if (Ptr<AreaProperties> ap = p->areaProperties(HighCalculationAccuracy)) area += ap->area() * 100.0;   // cm^2 -> mm^2
+        double depth = def["end"].value("depth", 0.0);
+        if (Ptr<DistanceExtentDefinition> d1 = f->extentOne())
+            if (Ptr<ModelParameter> dp = d1->distance()) depth = std::fabs(dp->value()) * 10.0;
+        double removed = 0;
+        bool measured = false;
+        if (Ptr<TimelineObject> to = f->timelineObject())
+        {
+            // the bodies' volume with the timeline just before the cut and after it
+            int at = to->index();
+            Ptr<Timeline> tl = design_->timeline();
+            double before = 0, after = 0;
+            for (auto& b : bodies(true)) after += b->volume();
+            if (tl && to->rollTo(true))
+            {
+                for (auto& b : bodies(true)) before += b->volume();
+                tl->moveToEnd();
+                removed = (before - after) * 1000.0;   // cm^3 -> mm^3
+                measured = at >= 0;
+            }
+        }
+        if (measured && area > 0 && depth > 0 && std::fabs(removed - area * depth) <= 1e-6 * std::max(1.0, area * depth))
+            addInfo("Normal cut made as a straight cut: the profile lies on a flat region of the sheet, where the two are the same");
+        else
+            approxNote("Normal cut made as a straight cut (Fusion has no cut normal to the sheet): it may remove different material where it crosses a bend");
+    }
 }
 
 // ---------------------------------------------------------------------------------------- axis sense

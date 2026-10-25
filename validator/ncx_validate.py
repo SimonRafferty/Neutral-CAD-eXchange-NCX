@@ -382,6 +382,9 @@ def check_dimension(sk, dm):
             return vnorm(vsub(pts[1], pts[0])), None
         if len(ents) == 1 and es[0] and es[0].get("type") == "line":
             return vnorm(vsub(es[0]["end"], es[0]["start"])), None
+        if len(ents) == 2 and all(e and e.get("type") in ("circle", "arc") for e in es) \
+                and vnorm(vsub(es[0]["center"], es[1]["center"])) <= LEN_TOL:
+            return abs(es[0]["radius"] - es[1]["radius"]), None   # concentric: the gap between them (spec 4)
         if len(ents) == 2:
             for a, b in ((0, 1), (1, 0)):
                 p, e = pts[a], es[b]

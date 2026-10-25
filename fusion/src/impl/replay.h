@@ -120,6 +120,8 @@ private:
 
     // features (features.cpp)
     std::string replayExtrude(json& nf, const json& def, bool cut);
+    Ptr<BRepFace> sheetOppositeFace(const Ptr<ObjectCollection>& prof, double depthMm);
+    void sheetCutOptions(json& nf, const json& def, const Ptr<ExtrudeFeature>& f, const Ptr<ObjectCollection>& prof, bool cut);
     std::string replayRevolve(json& nf, const json& def, bool cut);
     std::string replayFillet(json& nf, const json& def);
     std::string replayChamfer(json& nf, const json& def);

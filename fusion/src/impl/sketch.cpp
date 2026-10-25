@@ -152,7 +152,12 @@ Ptr<Base> Replayer::sketchEntityFor(SketchMap& m, const json& e, std::string& wh
     if (kind == "origin") return m.origin;
     if (kind == "sketchEntity")
     {
-        auto sit = sketches_.find(e.value("feature", ""));
+        // an entity of another document's sketch (FORMAT-SPEC 4, Sketch): the copy an insertPart made of that
+        // sketch here (replayInsertPart keys it "T:<document>|<feature>" and keeps the source's entity ids)
+        auto sit = sketches_.end();
+        std::string docRef = e.value("document", "");
+        if (!docRef.empty() && docRef != doc_.value("id", "")) sit = sketches_.find("T:" + docRef + "|" + e.value("feature", ""));
+        if (sit == sketches_.end()) sit = sketches_.find(e.value("feature", ""));
         if (sit == sketches_.end())
         {
             why = "sketch " + e.value("feature", "") + " was not rebuilt";
@@ -259,6 +264,37 @@ std::string Replayer::addConstraint(SketchMap& m, const json& c)
         made = gc->addTangent(cv(ob[0]), cv(ob[1]));
     else if (t == "equal" && ob.size() == 2 && cv(ob[0]) && cv(ob[1]))
         made = gc->addEqual(cv(ob[0]), cv(ob[1]));
+    else if (t == "patterned" && ob.size() >= 2)
+    {
+        // copies of one another (FORMAT-SPEC 4, Sketch): they stay equal, and parallel where they are parallel
+        // lines (a linear pattern's copies; a circular pattern's, a polygon's sides, are turned, so not parallel)
+        std::vector<std::string> refused;
+        for (size_t i = 1; i < ob.size(); i++)
+        {
+            Ptr<SketchCurve> a = cv(ob[0]), b = cv(ob[i]);
+            if (!a || !b) return "relation patterned: its entities are not curves";
+            if (!gc->addEqual(a, b))
+            {
+                std::string err = lastError();
+                if (err.find("OVER_CONSTRAINT") == std::string::npos) refused.push_back("equal: " + err);
+            }
+            Ptr<SketchLine> la = ln(ob[0]), lb = ln(ob[i]);
+            if (la && lb)
+            {
+                Ptr<Point3D> a0 = la->startSketchPoint()->geometry(), a1 = la->endSketchPoint()->geometry();
+                Ptr<Point3D> b0 = lb->startSketchPoint()->geometry(), b1 = lb->endSketchPoint()->geometry();
+                double ax = a1->x() - a0->x(), ay = a1->y() - a0->y(), bx = b1->x() - b0->x(), by = b1->y() - b0->y();
+                double cr = (ax * by - ay * bx) / (std::hypot(ax, ay) * std::hypot(bx, by));
+                if (std::fabs(cr) < 1e-9 && !gc->addParallel(la, lb))
+                {
+                    std::string err = lastError();
+                    if (err.find("OVER_CONSTRAINT") == std::string::npos) refused.push_back("parallel: " + err);
+                }
+            }
+        }
+        if (!refused.empty()) return "relation patterned refused (" + refused[0] + ")";
+        return "";
+    }
     else if ((t == "concentric" || t == "coradial") && ob.size() == 2 && cv(ob[0]) && cv(ob[1]))
     {
         made = gc->addConcentric(cv(ob[0]), cv(ob[1]));

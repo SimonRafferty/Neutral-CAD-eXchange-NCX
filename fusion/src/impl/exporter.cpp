@@ -340,18 +340,60 @@ struct DocWriter
         {
             Ptr<SketchPoint> p = pts->item(i);
             if (p == originPt || p->isReference()) continue;
+            // the end points of projected curves are Fusion's, not the user's (not marked as references themselves):
+            // written as free points they would leave the re-imported sketch under-defined (L06 round trip)
+            if (Ptr<SketchEntityList> conn = p->connectedEntities())
+            {
+                bool onlyRefs = conn->count() > 0;
+                for (size_t k = 0; k < conn->count(); k++)
+                    if (!conn->item(k)->isReference()) onlyRefs = false;
+                if (onlyRefs) continue;
+            }
             pointId(p);
         }
+        // geometry projected from another sketch of this part: a reference to that sketch's entity (FORMAT-SPEC 4,
+        // Sketch, `sketchEntity`); the projection is the relation's meaning when it lies off this plane
+        auto otherSketchRef = [&](const Ptr<SketchEntity>& se) -> json {
+            Ptr<Base> re = se ? se->referencedEntity() : nullptr;
+            // the component's origin projected into the sketch
+            if (Ptr<ConstructionPoint> cp = re)
+            {
+                Ptr<ConstructionPoint> o = comp->originConstructionPoint();
+                Ptr<ConstructionPoint> nat = cp->nativeObject() ? cp->nativeObject() : cp;
+                if (nat == o || cp == o) return json{{"kind", "origin"}, {"by", "id"}};
+            }
+            Ptr<SketchEntity> src = re;
+            if (!src) return nullptr;
+            // in an assembly the source comes back as a proxy (another token): its native entity is the one written
+            std::vector<std::string> toks{src->entityToken()};
+            if (Ptr<SketchPoint> sp = src)
+                if (Ptr<SketchPoint> nat = sp->nativeObject()) toks.push_back(nat->entityToken());
+            if (Ptr<SketchLine> sl = src)
+                if (Ptr<SketchLine> nat = sl->nativeObject()) toks.push_back(nat->entityToken());
+            if (Ptr<SketchCircle> sc = src)
+                if (Ptr<SketchCircle> nat = sc->nativeObject()) toks.push_back(nat->entityToken());
+            if (Ptr<SketchArc> sa = src)
+                if (Ptr<SketchArc> nat = sa->nativeObject()) toks.push_back(nat->entityToken());
+            for (const std::string& tok : toks)
+                for (auto& kv : sketchIds)
+                {
+                    if (kv.first == id) continue;
+                    auto it = kv.second.find(tok);
+                    if (it != kv.second.end()) return json{{"kind", "sketchEntity"}, {"by", "id"}, {"feature", kv.first}, {"id", it->second}};
+                }
+            return nullptr;
+        };
         auto ref = [&](const Ptr<Base>& b) -> json {
             if (Ptr<SketchPoint> p = b)
             {
                 if (p == originPt) return json{{"kind", "origin"}, {"by", "id"}};
-                if (p->isReference()) return nullptr;
+                if (p->isReference()) return otherSketchRef(p);
             }
             if (Ptr<SketchEntity> se = b)
             {
                 auto it = ids.find(se->entityToken());
                 if (it != ids.end()) return it->second;
+                if (se->isReference()) return otherSketchRef(se);
             }
             return nullptr;
         };
@@ -391,13 +433,21 @@ struct DocWriter
             }
             if (!ok)
             {
-                notes.push_back(sk->name() + ": a " + t + " relation to projected geometry is not exported");
+                std::string what;
+                for (auto& e : ents)
+                    if (Ptr<SketchEntity> se = e)
+                        if (se->isReference())
+                        {
+                            Ptr<Base> re = se->referencedEntity();
+                            what = re ? std::string(" (projected from ") + re->objectType() + ")" : " (its source is not reported by Fusion)";
+                        }
+                notes.push_back(sk->name() + ": a " + t + " relation to projected geometry is not exported" + what);
                 continue;
             }
             d["constraints"].push_back(json{{"type", t}, {"entities", ej}});
         }
         for (size_t i = 0; i < pts->count(); i++)
-            if (pts->item(i)->isFixed())
+            if (pts->item(i)->isFixed() && pts->item(i) != originPt)
                 if (auto r = ref(pts->item(i)); !r.is_null()) d["constraints"].push_back(json{{"type", "fix"}, {"entities", {r}}});
         // dimensions
         Ptr<SketchDimensions> dims = sk->sketchDimensions();
@@ -1326,7 +1376,13 @@ json exportFile(const fs::path& out, const json& opts)
                     fp["bodies"].push_back(bodyFingerprint(o->component()->bRepBodies()->item(b), o->transform2()));
             k++;
         }
-        // joints -> mates
+        // joints -> mates; a suppressed joint's mates go out suppressed (FORMAT-SPEC 5, Mates). Assemblies list no
+        // configurations, so the key is "cfg:active", as the SolidWorks exporter writes it
+        auto markSuppressed = [&](MateWriter& w, size_t from, bool supp, const std::string& jn) {
+            if (!supp) return;
+            for (size_t k = from; k < w.mates.size(); k++) w.mates[k]["suppressed"] = {{"cfg:active", true}};
+            notes.push_back(jn + ": suppressed joint written as suppressed mate(s)");
+        };
         std::vector<std::string> mnotes;
         MateWriter mw(mnotes);
         for (size_t i = 0; i < occs->count(); i++)
@@ -1334,19 +1390,21 @@ json exportFile(const fs::path& out, const json& opts)
         for (size_t i = 0; i < root->joints()->count(); i++)
         {
             Ptr<Joint> j = root->joints()->item(i);
-            if (j->isSuppressed()) continue;
             V3 origin{0, 0, 0};
             Ptr<Base> g1 = j->geometryOrOriginOne();
             if (Ptr<JointGeometry> g = g1) origin = ptMm(g->origin());
             else if (Ptr<JointOrigin> jo = g1) origin = ptMm(jo->geometry()->origin());
+            size_t n0 = mw.mates.size();
             mw.joint(j->name(), j->occurrenceOne(), j->occurrenceTwo(), j->jointMotion(), origin);
+            markSuppressed(mw, n0, j->isSuppressed(), j->name());
         }
         for (size_t i = 0; i < root->asBuiltJoints()->count(); i++)
         {
             Ptr<AsBuiltJoint> j = root->asBuiltJoints()->item(i);
-            if (j->isSuppressed()) continue;
             V3 origin = j->geometry() ? ptMm(j->geometry()->origin()) : V3{0, 0, 0};
+            size_t n0 = mw.mates.size();
             mw.joint(j->name(), j->occurrenceOne(), j->occurrenceTwo(), j->jointMotion(), origin);
+            markSuppressed(mw, n0, j->isSuppressed(), j->name());
         }
         for (size_t i = 0; i < root->motionLinks()->count(); i++)
         {

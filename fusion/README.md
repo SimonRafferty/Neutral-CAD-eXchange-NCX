@@ -112,7 +112,8 @@ The tools are Python 3 scripts (standard library only, except the validator); ru
 | `tools/results_table.py` | the per-sample Markdown table of `FINDINGS.md` from those results |
 | `tools/shot.py <file> <png>` | import, screenshot, list the timeline |
 | `tools/read_all.py` | the core's reader over the conformance vectors and the samples (set `NCX_CORE_DLL` to `fusion\build\core\Release\ncx_core.dll`) |
-| `../validator/ncx_validate.py` | the format validator, run on every re-export; set up with a venv in the clone: `pip install jsonschema "cadquery-ocp<8"` (8.0 breaks its level 4) |
+| `tools/tree.py` | the open design's components, bodies (volume, box) and occurrence offsets |
+| `../validator/ncx_validate.py` | the format validator, run on every re-export; set up with a venv in the clone: `pip install jsonschema "cadquery-ocp<8"` (8.0 breaks its level 4); it needs the core for levels 3-4: set `NCX_CORE_DLL` to `fusion\build\core\Release\ncx_core.dll` (without it the verdict is INCOMPLETE) |
 
 Jobs: `{"cmd": "import", "file": ..., "close": true, "trace": true, "faces": true, "keepPartial": false}`,
 `{"cmd": "export", "file": ...}`, `{"cmd": "uiImport", "file": ..., "quiet": true, "cancelAfter": n}`,

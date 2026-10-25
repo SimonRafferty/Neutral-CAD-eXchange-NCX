@@ -14,7 +14,7 @@ namespace Ncx.Sw
 {
     public partial class Exporter
     {
-        public const string Version = "0.5.3";
+        public const string Version = "0.5.4";
         readonly ISldWorks sw;
         public readonly Report Report = new Report();
 

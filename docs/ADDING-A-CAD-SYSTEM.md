@@ -158,7 +158,9 @@ Implement in this order, testing each on its sample before moving on:
    after drawing ties a relation to the wrong one. Relations to another sketch's entities (`sketchEntity`) may
    point off the sketch's plane (a layout point below a sheet face): relate to its projection. A fully defined
    source sketch must arrive fully defined: compare your solver's status with the payload's `constrained`;
-   samples P47 (slots), P48 (polygons) and L11 (layout points into sheet metal) exercise these;
+   samples P47 (slots), P48 (polygons) and L11 (layout points into sheet metal) exercise these. P48's second
+   hexagon has only an inscribed circle, and the relations carried cannot hold it regular: it arrives
+   under-defined in every system (SolidWorks too). Report it; do not invent relations to make it fully defined;
 2. extrude/cut (end conditions, thin, start conditions, selected contours), revolve;
 3. reference planes, axes, points, coordinate systems;
 4. fillets, chamfers; patterns, mirrors; shell, draft;
@@ -223,7 +225,9 @@ own exporter (AP214 when available) and let `ncx_payload_write` embed the payloa
 Round-trip test: export from the target, import in the target, and compare.
 A feature your importer built from a carried result has no native counterpart to export: write it `opaque` with
 that same result again (you know its provenance), so the file stays rebuildable everywhere.
-**Run `validator/ncx_validate.py` on every file you export** and fix every error before anything else: it checks
+**Run `validator/ncx_validate.py` on every file you export** (it needs the core: build it with `core/build.ps1`, or
+point `NCX_CORE_DLL` at your add-in's copy; a verdict of INCOMPLETE is not a pass) and fix every error before
+anything else: it checks
 what other add-ins rely on (units, frames, seeds against dimensions, references, fingerprints against the geometry),
 which your own importer may not notice because it shares your exporter's assumptions.
 
@@ -276,7 +280,10 @@ add yours. Ones that cost a debugging round each:
   intermediate-radius list is not in position order; `windows.h` defines `near` (a name clash in C++). A bend
   radius override given as a plain number is read in millimetres; two-offset edge flange offsets run outward from
   the edge's ends (holding a flange back needs a negative offset); a fold with two bend lines keeps the strip
-  between them and folds both sides (a jog is two folds, the far line first).
+  between them and folds both sides (a jog is two folds, the far line first). Sheet-metal features build their
+  bodies in the active component: activate the part's occurrence while rebuilding it. A rule's thickness cannot
+  appear in a feature expression and a rule refuses a user parameter, so a depth that follows the thickness
+  (`linkToThickness`) is an extent to the sheet's other face.
 - **Onshape** (from a trial add-in, not yet in this repository): cloud-only, so a web-API client (or an Onshape app's server), not a desktop
   add-in. Use a versioned path (`/api/v17`) and `application/json;charset=UTF-8; qs=0.09`: unversioned paths use a
   legacy JSON form and every feature post fails with a bare "Error processing json". Quotas: FeatureScript

@@ -285,7 +285,9 @@ that meets a field it does not understand reports the feature `approximate` rath
   the sheet, bends included, as a hole punched or lasered in the flat; false or absent: straight along the sketch
   normal). `cut` and `extrude` in a sheet-metal body: `linkToThickness` (true: the depth is the sheet's thickness
   and follows it). A straight cut through
-  a bend removes slightly different material (measured: 0.33 mm³ on four 2 mm holes across a 3 mm bend).
+  a bend removes slightly different material (measured: 0.33 mm³ on four 2 mm holes across a 3 mm bend), below the
+  mass tolerance, so an importer cannot tell its own straight cut from the normal one by mass; on a flat face the two
+  are the same. Where a system has no normal cut, it reports the cut `approximate` when the cut crosses a bend.
 - `rib`: `profile` (an open sketch), `twoSided`, `thickness`, `reverseThickness` (the side of a
   one-sided rib), `flipMaterial` (which way from the sketch it fills), `extrusion` (0 parallel to the
   sketch plane, 1 normal to it), optional `draft {angle, outward, fromWall}`.
@@ -505,11 +507,14 @@ with the rest of the history.
 - **`offset`** (Offset Entities): `entities: [a, b]`, an offset segment and its source in the same sketch. The two
   stay concentric (arcs, circles) or parallel (lines); the offset distance is one of the sketch's `dimensions`.
 - **`patterned`** (a sketch pattern's copies): `entities`, two or more segments of the same sketch that are copies of
-  one another; they stay equal (and parallel, for lines) when the seed changes.
+  one another; they stay equal when the seed changes. Copies of a linear pattern (lines parallel in their seeded
+  positions) stay parallel too; copies turned by a circular pattern, such as a polygon's sides, are only equal.
 - A **sketch entity of another document** (`{kind: "sketchEntity", by: "id", document, feature, id}`) is an
   entity of a sketch an `insertPart` brought in: `feature` and `id` name the entity in the source document. The
   derived part's copy of the sketch has the same geometry, so an importer finds the entity there by its
-  coordinates (the source entity's coordinates through the source sketch's frame). This is how a derived part's
+  coordinates (the source entity's coordinates through the source sketch's frame). An importer that rebuilds the
+  inserted sketch itself (a copy keyed by the source sketch and its entity ids) finds the entity there by its `id`,
+  and by coordinates only where its copy has other ids: two points may share a position (see below). This is how a derived part's
   sketches relate to, dimension from and convert entities of the layout sketch they are drawn on.
   The referenced entity may lie off the sketch's plane (a layout point on the mid plane, the sketch on a sheet's
   face): the relation then holds its projection onto the sketch plane, as a point projected along the sketch's
@@ -520,6 +525,8 @@ with the rest of the history.
   relations that hold them (equal caps, sides tangent to them, corners on the polygon's circle).
 - `dimensions` keep the native full name (`D1@SK_Outline`), so spreadsheet-driven dimension
   writes keep working, and a `param` link where a parameter drives them.
+- A `distance` between two circles or arcs is between their centres, except between two concentric ones, where
+  it is the gap between them (the difference of their radii): a ring's width, a slot's offset from its pivot.
 - Sketch names are kept verbatim.
 
 **Equations:** `{target, expression}` in a small neutral grammar (`+ - * / ^ ( )`,
@@ -696,7 +703,7 @@ within 0.01 mm.
 - Without `component`, the reference is the assembly's own `originPlane` or `origin`. Layout-style
   assemblies mate every component's base planes to the assembly's planes this way.
 - `suppressed` (optional) `{config: bool}`, as for features: a mate suppressed in the source holds nothing
-  there. An importer makes it and suppresses it (or leaves it out and says so); the components stay at
+  there. An assembly that lists no configurations uses the key `cfg:active` for its one (active) state. An importer makes it and suppresses it (or leaves it out and says so); the components stay at
   their `transform`.
 - A mate whose source has an end with no geometry (its part deleted) is left out of the file by the
   exporter, with a note: it holds nothing.

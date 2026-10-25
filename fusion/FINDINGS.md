@@ -15,6 +15,9 @@ SolidWorks 2026. No SolidWorks was used.
   only: miter flange and closed corner gaps, jog offset and `fixProjectedLength`, edge flange `positionOffset`, the
   variable fillet's smooth law), and the add-in made ready to publish (version 0.1.0, clean build, release zip).
   Section 11 says what changed.
+- Round 5 (2026-10-25): a fifth agent, from a fresh clone (NCX 0.5.3), against the 59 samples of
+  `NCX-samples-0.5.3.zip` (the 56 re-exported with SolidWorks add-in 0.5.3, plus P47 slots, P48 polygons and the L11
+  assembly). Section 12 says what changed; brief and spec feedback folded into `FORMAT-SPEC.md` and `docs/ADDING-A-CAD-SYSTEM.md` in NCX 0.5.4; issues 27-29.
 
 Tested with Autodesk Fusion 2706.1.14 (Windows 10 x64); built with Visual Studio 2019 Build Tools (v142).
 
@@ -348,35 +351,33 @@ Insert Part (which needs saved documents) as a later improvement.
 
 ## 8. Per-sample results
 
-Round 4, on the 56 samples (unchanged since round 3; round 3's results in git history, 7c217de). Import
-(`tools/run_samples.py`, every check in spec 6.1; "exact" = everything rebuilt natively and every check matched;
-"approximate" = geometry matches, but something was built as a functional equivalent, taken from a carried result,
-or reported; "fallback" = the part was replaced by the file's own geometry, with the reason):
+Round 5, on the 59 samples of NCX 0.5.3 (the 56 re-exported with SolidWorks add-in 0.5.3, plus P47, P48, L11).
+Round 4's text and table are in git history (9ad89b8). Import (`tools/run_samples.py`, every check in spec 6.1;
+"exact" = everything rebuilt natively and every check matched; "approximate" = geometry matches, but something was
+built as a functional equivalent, taken from a carried result, or reported; "fallback" = the part was replaced by the
+file's own geometry, with the reason):
 
 | | exact | approximate | fallback | failed | not tried |
 |---|---|---|---|---|---|
 | round 1 (55 old samples) | 19 | 31 | 5 | 0 | 0 |
 | round 2 (56 samples, core 0.2.0) | 22 | 32 | 2 | 0 | 0 |
 | round 3 (placement data) | 25 | 31 | 0 | 0 | 0 |
-| **round 4** | **25** | **31** | **0** | **0** | **0** |
+| round 4 | 25 | 31 | 0 | 0 | 0 |
+| **round 5 (59 samples, NCX 0.5.3)** | **26** | **33** | **0** | **0** | **0** |
 
-The sample counts do not move in round 4: P29 and P43 now rebuild their jog and offset flange (functional
-equivalents matching the source at native tolerance) instead of taking the carried result, but a functional
-equivalent is reported approximate, and every sheet-metal part stays approximate for its cut list (Fusion has none).
-What changed per feature: P29 `Jog-Step` and P43 `Edge-Offset` carried -> rebuilt (and P43's profile sketch
-`SK_Offset` is now rebuilt too); P35 `Miter-Upstand` and P34 `Corner-Closed` are rebuilt to the spec's definitions
-first and still take their results (corner bend region, ISSUES 25).
+The 56 older samples give exactly round 4's results with the 0.5.3 re-exports (the same class sample by sample, and the same
+first approximations in the table). P47 is exact; P48 approximate (its inscribed hexagon arrives under-defined, as it does in
+SolidWorks: section 12); L11 approximate (Insert Part as sketch copies, cut list). Before this round's fixes L11 fell
+back (its bracket's sheet-metal body was built in the wrong component).
 
-Round trip (`tools/roundtrip.py`: import, Export NCX, import the exported file): **19 exact, 37 approximate, 0
-failed, 0 not tried** (round 3: 17 / 39). P26 and P39 are now exact: surfaces are exported mapped. P10's suppressed
-cut now goes out mapped and suppressed. Export still writes no sheet metal, holes, lofts, patterns or variable
-fillets as mapped features: those go out opaque with their carried results, so their re-imports are approximate.
+Round trip (`tools/roundtrip.py`: import, Export NCX, import the exported file): **21 exact, 38 approximate, 0
+failed, 0 not tried** (round 4: 19 / 37 of 56; P47 and P48 exact, L11 approximate: the exporter still writes no sheet
+metal, so the base flange goes out opaque with its result). Export still writes no sheet metal, holes, lofts,
+patterns or variable fillets as mapped features: those go out opaque with their carried results, so their re-imports
+are approximate.
 
-Validator (`validator/ncx_validate.py`, levels 1-4, cadquery-ocp 7.9.3) on every re-export: **56 of 56 PASS**, and
-the only warnings are C-NOTICE on the two surface-only parts (P26, P39: the core writes no notice body into a part
-with no solid, as spec 6 says). Round 3's exporter warnings are gone: P10 `M-RESULT-MISSING` (the suppressed cut is
-mapped) and P26/P39 `M-RESULT` (results list their surface bodies; and now those features are mapped anyway).
-The 56 samples themselves all PASS.
+Validator (`validator/ncx_validate.py`, levels 1-4, cadquery-ocp 7.9.3, `NCX_CORE_DLL` set to the build's core) on
+every re-export: **59 of 59 PASS**; the only warnings are C-NOTICE on the two surface-only parts (P26, P39), as before.
 
 | sample | import | mass | faces | structure | flex | approximations / fallbacks (first ones) | round trip | validator (re-export) |
 |---|---|---|---|---|---|---|---|---|
@@ -390,6 +391,7 @@ The 56 samples themselves all PASS.
 | L08 | exact | match | match | match | - |  | exact (4 mapped, 0 as results) | PASS |
 | L09 | exact | match | match | match | - |  | approximate (8 mapped, 0 as results) | PASS |
 | L10 | exact | match | skipped | match | - |  | approximate (2 mapped, 1 as results) | PASS |
+| L11 | approximate | match | match | match | - | L11_Layout (approximate); cut list Sheet<1> (approximate) | approximate (7 mapped, 1 as results) | PASS |
 | P01_block | exact | match | match | match | - |  | exact (2 mapped, 0 as results) | PASS |
 | P02_block_features | exact | match | match | match | - |  | exact (6 mapped, 0 as results) | PASS |
 | P03_revolve_shaft | exact | match | match | match | - |  | exact (5 mapped, 0 as results) | PASS |
@@ -436,8 +438,10 @@ The 56 samples themselves all PASS.
 | P44_cut_list | approximate | match | match | match | - | Weldment (approximate); Tube-Frame (approximate); cut list Long rail<1> (approximate); cut list TUBE, SQUARE 20.00 X 20.00 X 2.00<2> (approximate); +1 | approximate (13 mapped, 0 as results) | PASS |
 | P45_sketch3d | approximate | match | match | match | - | Weldment (approximate); Tube-Path (approximate); cut list TUBE, SQUARE 20.00 X 20.00 X 2.00<1> (approximate); cut list TUBE, SQUARE 20.00 X 20.00 X 2.00<2> (approximate); +2 | approximate (11 mapped, 0 as results) | PASS |
 | P46_weldment_corners | approximate | match | match | match | - | Weldment (approximate); Tube-Miter (approximate); Tube-Butt1 (approximate); Tube-Butt2 (approximate); +7 | approximate (73 mapped, 12 as results) | PASS |
+| P47_slots | exact | match | match | match | - |  | exact (4 mapped, 0 as results) | PASS |
+| P48_polygons | approximate | match | match | match | - | SK_Hex (approximate) | exact (4 mapped, 0 as results) | PASS |
 
-Import totals: approximate 31, exact 25
+Import totals: approximate 33, exact 26
 
 ## 9. Round 2: what changed
 
@@ -527,3 +531,41 @@ Ready to publish:
   files into AppData by hand);
 - tracked files hold no path of this machine (`rebuild.sh` takes `$PYTHON`); `tools/__pycache__` is untracked;
   `fusion/.gitattributes` keeps `*.sh` with LF line endings.
+
+## 12. Round 5: what changed
+
+The spec's 0.5.3 additions, each met in a sample:
+
+| spec item | sample | what happened first | now |
+|---|---|---|---|
+| points sharing a position are separate entities | P47 (p9 on the slot's centreline, p15 the construction line's end, `coincident`) | exact at the first import: the importer already made standalone points separately and merges only by payload id | exact |
+| slots as plain lines/arcs with `equal`, `tangent`, `midpoint` | P47 | exact at the first import | exact |
+| `patterned` (polygon sides) | P48 | "relation patterned has no Fusion counterpart here" x12 | each pair `equal`; `parallel` only where the two lines are parallel at their seeds (a polygon's sides are not: spec §4, `patterned`). The circumscribed hexagon is fully defined; the inscribed one (one `tangent` only) leaves its circle and five sides under-defined (Fusion's own per-curve check), reported "the source sketch is fully defined, the rebuilt one is not", as SolidWorks reports it (ISSUES 27) |
+| `sketchEntity` of another document, off the sketch plane | L11 `SK_Holes` (layout points at z 0, the sketch on the sheet's face at z -2) | "sketch f:1 was not rebuilt": references were looked up among the part's own sketches only | looked up in the Insert Part copy (`T:<document>|<feature>`, same entity ids) first; `Sketch.project` gives the projected point; the sketch arrives fully defined |
+| cut `linkToThickness` | L11 `Cut-Pivots` | blind 2 mm | Fusion's expressions cannot name the rule's thickness ("Expression is invalid"), and the rule's thickness refuses a user parameter ("Invalid expression"), measured; so the cut runs **up to the sheet's opposite face** (the planar face parallel to the sketch plane at the depth, under the profile), which follows the thickness. Reported in the feature's info |
+| cut `normalCut` | L11 `Cut-Pivots` | ignored | a straight cut; checked by the removed volume: equal to profile area x depth (1e-6) means the profile lies on a flat region, where a straight and a normal cut are the same (info); otherwise reported approximate |
+| mate `suppressed` | L11 `Distance-Lift` (`{"cfg:active": true}`) | folded into the pin's revolute joint and reported "rebuilt" (the key is not a configuration id, so it read as active) | left out of the joints and reported as a note; the components stay at their transforms. Key: the active configuration's id, `cfg:active`, or a single key (ISSUES 29) |
+
+Fusion facts found (measured):
+
+- **Sheet-metal features build in the active component.** A base flange made with `comp.features().flangeFeatures()`
+  of a component under an occurrence put its body into the **root** component (L11: the bracket had no body, its hole
+  sketch found no face, the part fell back and the assembly counted 3 bodies for 2). The assembly import now
+  activates each part's build occurrence while the part is rebuilt (`assembly.cpp`), then the root again. The 10
+  older assemblies are unchanged by it.
+- **Rule thickness and expressions.** See the table; neither direction of link works, so "follows the thickness" is
+  an extent to the opposite face.
+- **Projected entities at export.** `SketchEntity.referencedEntity()` of a point projected from another sketch of a
+  part under an occurrence is an assembly-context proxy: its `entityToken` is not the native entity's. Taking the
+  token of `nativeObject()` finds the source; the relation goes out as a `sketchEntity` reference (a projected
+  component origin as `origin`). The end points of projected curves are not marked `isReference` themselves: they
+  were written as free points, which left re-imported sketches under-defined (L06 `SK_Post`, L11 `SK_Holes`); they
+  are now skipped. A fixed origin is no longer written as a `fix` relation.
+- **Suppressed joints at export** go out as suppressed mates (`cfg:active`) instead of being skipped silently.
+
+Tools: `tools/tree.py` (probe `tree`: components, bodies with volume and box, occurrence offsets); the `sketches`
+probe reports each sketch's and curve's `isFullyConstrained`. `tools/rebuild.sh` prints BUILD FAILED and stops when
+the compile fails (it went on to reload the old DLL before).
+
+Not done this round: the version is still 0.1.0 (no installer was built or released); export of sheet metal,
+holes, lofts and patterns as mapped features is unchanged (opaque with results).

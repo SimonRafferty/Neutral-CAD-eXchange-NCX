@@ -77,6 +77,13 @@ json probe(const json& req)
         if (req.value("close", true)) res["closed"] = doc->close(false);
         return res;
     }
+    if (what == "tree")
+    {
+        // the active design's components, bodies (volume, box in mm) and occurrence transforms
+        Ptr<Design> des = app->activeProduct();
+        if (!des) return json{{"ok", false}, {"error", "no active design"}};
+        return json{{"ok", true}, {"tree", walk(des->rootComponent())}};
+    }
     if (what == "timeline")
     {
         Ptr<Design> des = app->activeProduct();
@@ -202,11 +209,11 @@ json probe(const json& req)
             {
                 Ptr<Sketch> sk = c->sketches()->item(i);
                 json sj{{"component", c->name()}, {"name", sk->name()}, {"origin", ptMm(sk->origin())}, {"x", vecOf(sk->xDirection())},
-                        {"y", vecOf(sk->yDirection())}, {"profiles", sk->profiles()->count()}, {"curves", json::array()}};
+                        {"y", vecOf(sk->yDirection())}, {"profiles", sk->profiles()->count()}, {"full", sk->isFullyConstrained()}, {"curves", json::array()}};
                 for (size_t k = 0; k < sk->sketchCurves()->count(); k++)
                 {
                     Ptr<SketchCurve> cv = sk->sketchCurves()->item(k);
-                    json cj{{"type", cv->objectType()}, {"ref", cv->isReference()}, {"constr", cv->isConstruction()}};
+                    json cj{{"type", cv->objectType()}, {"ref", cv->isReference()}, {"constr", cv->isConstruction()}, {"full", cv->isFullyConstrained()}};
                     if (Ptr<SketchCircle> ci = cv) cj["center"] = ptMm(ci->centerSketchPoint()->worldGeometry());
                     if (Ptr<SketchLine> l = cv) cj["a"] = ptMm(l->startSketchPoint()->worldGeometry()), cj["b"] = ptMm(l->endSketchPoint()->worldGeometry());
                     sj["curves"].push_back(cj);
