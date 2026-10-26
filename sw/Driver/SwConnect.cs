@@ -14,13 +14,14 @@ namespace Ncx.Driver
         [DllImport("ole32.dll")] static extern int GetRunningObjectTable(int reserved, out IRunningObjectTable prot);
         [DllImport("ole32.dll")] static extern int CreateBindCtx(int reserved, out IBindCtx ppbc);
 
-        /// <summary>API major version (26 = 2018, 33 = 2025, 34 = 2026) -> running SolidWorks.</summary>
-        public static Dictionary<int, ISldWorks> Running()
+        /// <summary>The running SolidWorks with this API major version (26 = 2018, 33 = 2025, 34 = 2026), or null. The
+        /// version is read from each process's executable (its file version's major part is the API version), so no
+        /// call is made into any other SolidWorks session: one the user is working in is never touched.</summary>
+        public static ISldWorks Find(int major)
         {
-            var found = new Dictionary<int, ISldWorks>();
             IRunningObjectTable rot;
             IBindCtx ctx;
-            if (GetRunningObjectTable(0, out rot) != 0 || CreateBindCtx(0, out ctx) != 0) return found;
+            if (GetRunningObjectTable(0, out rot) != 0 || CreateBindCtx(0, out ctx) != 0) return null;
             IEnumMoniker e;
             rot.EnumRunning(out e);
             var mk = new IMoniker[1];
@@ -28,21 +29,24 @@ namespace Ncx.Driver
             {
                 string name;
                 mk[0].GetDisplayName(ctx, null, out name);
-                if (!name.StartsWith("SolidWorks_PID_")) continue;
+                int at = name.IndexOf("SolidWorks_PID_", StringComparison.Ordinal);
+                int pid;
+                if (at < 0 || !int.TryParse(name.Substring(at + "SolidWorks_PID_".Length), out pid)) continue;
+                int procMajor;
+                try { procMajor = System.Diagnostics.Process.GetProcessById(pid).MainModule.FileVersionInfo.FileMajorPart; }
+                catch (Exception) { continue; }
+                if (procMajor != major) continue;
                 object o;
                 rot.GetObject(mk[0], out o);
-                var sw = o as ISldWorks;
-                if (sw == null) continue;
-                int major = int.Parse(sw.RevisionNumber().Split('.')[0]);
-                found[major] = sw;
+                return o as ISldWorks;
             }
-            return found;
+            return null;
         }
 
         public static ISldWorks Get(int major)
         {
-            ISldWorks sw;
-            if (!Running().TryGetValue(major, out sw))
+            ISldWorks sw = Find(major);
+            if (sw == null)
                 throw new InvalidOperationException("no running SolidWorks with API " + major + " (" + (major + 1992) + ")");
             return sw;
         }

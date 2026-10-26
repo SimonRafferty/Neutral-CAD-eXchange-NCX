@@ -57,8 +57,10 @@ std::string Replayer::replaySheetMetal(json& nf, const json& def)
 std::string Replayer::replayConvertToSheetMetal(json& nf, const json& def)
 {
     if (!nf.contains("result") || !nf["result"].contains("bodies")) return "Fusion cannot make the sheet from the solid, and the file carries no result for it";
+    // the part's own rule ("NCX <document>"), never one this component merely reports (a precaution: the rule this
+    // function edits must not be another part's)
     Ptr<SheetMetalRule> rule = comp_->activeSheetMetalRule();
-    if (!rule)
+    if (!rule || rule->name() != "NCX " + docName_)
     {
         json sm{{"thickness", def.value("thickness", 1.0)}, {"bendRadius", def.value("bendRadius", 1.0)}};
         json marker{{"id", nf.value("id", "") + ":rule"}};
@@ -861,7 +863,7 @@ std::string Replayer::replaySketchedBend(json& nf, const json& def)
     // centre or end of the bend, so the line Fusion is given is the source's line moved across the sheet: to the
     // bend's start (the axis projected onto the sheet's plane), or half / a whole flat bend length from it.
     Ptr<Sketch> srcSketch = sit->second.sketch;
-    V3 l0 = ptMm(line->startSketchPoint()->worldGeometry()), l1 = ptMm(line->endSketchPoint()->worldGeometry());
+    V3 l0 = modelPointMm(line->startSketchPoint()), l1 = modelPointMm(line->endSketchPoint());
     V3 ld = unit(sub(l1, l0));
     std::vector<double> offsets{0.0};   // across the sheet from the source's line, along `across` (mm)
     V3 across{0, 0, 0};
@@ -1442,7 +1444,7 @@ std::string Replayer::replayJog(json& nf, const json& def)
     double angle = std::round(def.value("angle", 90.0) * 1e6) / 1e6;
     double th = deg2rad(angle);
     double t = cm2mm(rule->thickness()->value()), k = rule->kFactor();
-    V3 l0 = ptMm(line->startSketchPoint()->worldGeometry()), l1 = ptMm(line->endSketchPoint()->worldGeometry());
+    V3 l0 = modelPointMm(line->startSketchPoint()), l1 = modelPointMm(line->endSketchPoint());
     V3 ld = unit(sub(l1, l0));
     V3 lm = mul(add(l0, l1), 0.5);
     // the bends: the first is the one nearer the fixed face's plane

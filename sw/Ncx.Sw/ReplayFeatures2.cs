@@ -63,7 +63,7 @@ namespace Ncx.Sw
             Func<IFeature> revolve = () => (IFeature)FM.FeatureRevolve2(single, true, thin != null, cut, reverse, false, t1, 0,   // a thin feature is still a solid
                                           U.Rad(def.Num("angle", 360)), U.Rad(def.Num("angle2")), false, false, 0, 0,
                                           tt, U.M(thin?.Num("thickness") ?? 0), U.M(thin?.Num("thickness2") ?? 0),
-                                          def.Bool("merge", true), false, true);
+                                          cut || def.Bool("merge", true), false, true);   // a cut has no merge (false makes it fail)
             var feat = revolve();
             if (FeatureCount() == n0 && (def.Arr("regions").Count > 0 || def.Arr("contours").Count > 0))
             {
@@ -156,11 +156,35 @@ namespace Ncx.Sw
             return null;
         }
 
+        /// <summary>A pattern direction's `reverse` as SolidWorks takes it. The spec's `reverse` is against the direction its
+        /// edge reference records (descriptor `direction`); SolidWorks reverses against its own edge's line direction,
+        /// which another writer may record the other way (Fusion: P22's posts went the wrong way).</summary>
+        bool PatternReverse(JObj dir)
+        {
+            return Reversed(dir.Bool("reverse"), dir.Obj("ref"));
+        }
+
+        /// <summary>A `reverse` taken against the direction (or axis) a geometric reference records, as SolidWorks takes
+        /// it: against the direction its own descriptor of the resolved entity has.</summary>
+        bool Reversed(bool rev, JObj r)
+        {
+            var pr = r?.Obj("geom")?.Obj("params");
+            string key = pr == null ? null : pr.Has("direction") ? "direction" : pr.Has("axis") ? "axis" : null;
+            if (key == null) return rev;
+            List<object> ents;
+            var res = ResolveRef(r, out ents);
+            if (res.Str("result") != "resolved" || ents.Count != 1) return rev;
+            var have = Host.Descriptor(ents[0])?.Obj("geom")?.Obj("params")?.Vec(key);
+            return have != null && V.Dot(have, pr.Vec(key)) < 0 ? !rev : rev;
+        }
+
         string ReplayLinearPattern(JObj nf, JObj def)
         {
             doc.ClearSelection2(true);
             var d1 = def.Obj("dir1");
             var d2 = def.Obj("dir2");
+            bool rev1 = PatternReverse(d1), rev2 = d2 != null && PatternReverse(d2);
+            doc.ClearSelection2(true);
             string why = SelectRef(d1.Obj("ref"), false, 1);
             if (why != null) return "direction 1: " + why;
             if (d2 != null && (why = SelectRef(d2.Obj("ref"), true, 2)) != null) return "direction 2: " + why;
@@ -169,7 +193,7 @@ namespace Ncx.Sw
             int n0 = FeatureCount();
             var feat = FM.FeatureLinearPattern5((int)d1.Num("count"), U.M(d1.Num("spacing")),
                                                 d2 == null ? 1 : (int)d2.Num("count"), d2 == null ? 0 : U.M(d2.Num("spacing")),
-                                                d1.Bool("reverse"), d2 != null && d2.Bool("reverse"), "NULL", "NULL",
+                                                rev1, rev2, "NULL", "NULL",
                                                 def.Bool("geometryPattern"), false, false, false, true, true, false, false,
                                                 false, false, 0, 0, def.Bool("seedOnly"), false);
             return Created(n0, feat, nf, "linear pattern") ?? SkipInstances(nf, def);
@@ -178,12 +202,14 @@ namespace Ncx.Sw
         string ReplayCircularPattern(JObj nf, JObj def)
         {
             doc.ClearSelection2(true);
+            bool rev = Reversed(def.Bool("reverse"), def.Obj("axis"));   // against the axis the reference records
+            doc.ClearSelection2(true);
             string why = SelectRef(def.Obj("axis"), false, 1);
             if (why != null) return "axis: " + why;
             if ((why = SelectAll(def.Arr("seeds"), true, 4)) != null) return "seed: " + why;
             if ((why = SelectPatternExtras(def)) != null) return why;
             int n0 = FeatureCount();
-            var feat = FM.FeatureCircularPattern5((int)def.Num("count"), U.Rad(def.Num("angle")), def.Bool("reverse"), "NULL",
+            var feat = FM.FeatureCircularPattern5((int)def.Num("count"), U.Rad(def.Num("angle")), rev, "NULL",
                                                   def.Bool("geometryPattern"), def.Bool("equalSpacing"), false, false, false,
                                                   false, 1, 0, "NULL", false);
             return Created(n0, feat, nf, "circular pattern") ?? SkipInstances(nf, def);
@@ -291,10 +317,70 @@ namespace Ncx.Sw
             return false;
         }
 
+        /// <summary>A hole from another system (no SolidWorks Hole Wizard data): its neutral sizes as cuts from the face it
+        /// starts on, one circle per centre, the counterbore first (FORMAT-SPEC 4 `hole`). A blind hole's drill point
+        /// and a countersink are not made yet.</summary>
+        string ReplayHoleAsCuts(JObj nf, JObj def)
+        {
+            var sz = def.Obj("sizes") ?? new JObj();
+            string kind = def.Str("holeType") ?? "simple";
+            double dia = sz.Num("holeDiameter");
+            var measured = sz.Arr("measuredDiameters").Select(Convert.ToDouble).ToList();
+            if (dia <= 0 && measured.Count > 0) dia = measured[0];
+            if (dia <= 0) return "hole diameter unknown (no SolidWorks Hole Wizard data and no sizes)";
+            if (kind == "countersink") return "a countersink hole from another system is not built yet";
+            var end = def.Obj("end");
+            bool through = end == null || end.Str("type") == "throughAll";
+            double depth = end?.Num("depth") ?? 0;
+            if (!through && depth <= 0) return "blind hole without a depth";
+            var pts = def.Arr("points").Select(p => ((List<object>)p).Select(Convert.ToDouble).Select(U.M).ToArray()).ToList();
+            if (pts.Count == 0) return "hole without centres";
+            List<object> faces;
+            var res = ResolveRef(def.Obj("face"), out faces);
+            if (res.Str("result") != "resolved") return "hole face " + res.Str("result");
+            var face = (IEntity)faces[0];
+            var smgr = (ISketchManager)doc.SketchManager;
+            // one cut of circles of this diameter at every centre, from the face into the material
+            Func<double, bool, double, string> cut = (d, thru, dep) =>
+            {
+                doc.ClearSelection2(true);
+                if (!face.Select4(false, null)) return "could not select the hole face";
+                smgr.InsertSketch(true);
+                var sk = (ISketch)smgr.ActiveSketch;
+                if (sk == null) return "could not sketch on the hole face";
+                var fr = new SketchFrame(sw, sk);
+                foreach (var p in pts)
+                {
+                    var s = fr.ToSketch(p);
+                    smgr.CreateCircleByRadius(s[0], s[1], 0, U.M(d) / 2);
+                }
+                smgr.InsertSketch(true);
+                doc.ClearSelection2(true);
+                ((IFeature)doc.FeatureByPositionReverse(0)).Select2(false, 0);
+                int c0 = FeatureCount();
+                FM.FeatureCut4(true, false, false, thru ? 1 : 0, 0, U.M(dep), 0, false, false, false, false, 0, 0, false, false, false, false,
+                               false, false, true, false, true, false, 0, 0, false, false);
+                doc.ClearSelection2(true);
+                return FeatureCount() > c0 ? null : "cut not created";
+            };
+            if (kind == "counterbore" && sz.Num("counterBoreDiameter") > 0 && sz.Num("counterBoreDepth") > 0)
+            {
+                string w1 = cut(sz.Num("counterBoreDiameter"), false, sz.Num("counterBoreDepth"));
+                if (w1 != null) return "counterbore: " + w1;
+                Name((IFeature)doc.FeatureByPositionReverse(0), nf.Str("name") + " (counterbore)");
+            }
+            int n0 = FeatureCount();
+            string w2 = cut(dia, through, depth);
+            if (w2 != null) return "hole: " + w2;
+            Approx(nf, "built as cuts of its sizes (no SolidWorks Hole Wizard data: the file comes from another system)" +
+                       (!through ? "; flat-bottomed (no drill point)" : ""));
+            return Created(n0, null, nf, "hole");
+        }
+
         string ReplayHole(JObj nf, JObj def)
         {
             var w = def.Obj("wizard");
-            if (w == null || w.Str("app") != "SOLIDWORKS") return "hole wizard data from another system not mapped yet";
+            if (w == null || w.Str("app") != "SOLIDWORKS") return ReplayHoleAsCuts(nf, def);
             var pts = def.Arr("points").Select(p => ((List<object>)p).Select(Convert.ToDouble).Select(U.M).ToArray()).ToList();
             // the face is found by its descriptor; the hole is placed by picking that face at the first centre
             List<object> faces;

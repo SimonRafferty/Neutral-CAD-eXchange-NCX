@@ -12,11 +12,9 @@ param([string]$Config = 'Release', [switch]$NoDeploy, [switch]$Clean)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# the version is set once, in CMakeLists.txt; the manifest must agree
+# the version is set once, in CMakeLists.txt (project VERSION); CMake writes the manifest (build\NCX.manifest) from
+# NCX\NCX.manifest.in with it
 $cmVersion = ([regex]::Match((Get-Content -Raw (Join-Path $here 'CMakeLists.txt')), 'project\(ncx_fusion VERSION ([0-9.]+)')).Groups[1].Value
-# (by pattern: Windows PowerShell 5.1's ConvertFrom-Json refuses the manifest's empty "" description key)
-$mfVersion = ([regex]::Match((Get-Content -Raw (Join-Path $here 'NCX\NCX.manifest')), '"version"\s*:\s*"([^"]+)"')).Groups[1].Value
-if ($cmVersion -ne $mfVersion) { throw "version mismatch: CMakeLists.txt says $cmVersion, NCX\NCX.manifest says $mfVersion" }
 
 # Visual Studio (any edition with the C++ tools) and the CMake it bundles
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -40,7 +38,7 @@ if ($NoDeploy) { return }
 
 $dest = Join-Path $env:APPDATA 'Autodesk\Autodesk Fusion 360\API\AddIns\NCX'
 New-Item -ItemType Directory -Force $dest | Out-Null
-Copy-Item (Join-Path $here 'NCX\NCX.manifest') $dest -Force
+Copy-Item (Join-Path $build 'NCX.manifest') $dest -Force
 if (Test-Path (Join-Path $here 'NCX\resources')) { Copy-Item (Join-Path $here 'NCX\resources') $dest -Recurse -Force }
 $out = Join-Path $build $Config
 Copy-Item (Join-Path $out 'NcxFusionImpl.dll') $dest -Force

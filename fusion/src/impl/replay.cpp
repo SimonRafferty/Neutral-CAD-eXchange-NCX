@@ -17,7 +17,51 @@ Ptr<TimelineObject> timelineObjectOf(const Ptr<Base>& o)
     if (Ptr<ConstructionPoint> p = o) return p->timelineObject();
     return nullptr;
 }
+
+Ptr<Attributes> attributesOf(const Ptr<Base>& o0)
+{
+    Ptr<Base> o = o0;
+    if (Ptr<Feature> f = o)
+    {
+        // a proxy (built with its occurrence active, the upright wrapper): its native feature, as the export reads it
+        if (f->assemblyContext())
+            if (Ptr<Feature> nf = f->parentComponent()->features()->itemByName(f->name())) return nf->attributes();
+        return f->attributes();
+    }
+    if (Ptr<Sketch> s = o) return s->nativeObject() ? s->nativeObject()->attributes() : s->attributes();
+    if (Ptr<ConstructionPlane> c = o) return c->nativeObject() ? c->nativeObject()->attributes() : c->attributes();
+    if (Ptr<ConstructionAxis> c = o) return c->nativeObject() ? c->nativeObject()->attributes() : c->attributes();
+    if (Ptr<ConstructionPoint> c = o) return c->nativeObject() ? c->nativeObject()->attributes() : c->attributes();
+    return nullptr;
+}
 } // namespace
+
+// The solids' shape, independent of where Fusion measures them (an occurrence's placement moves centroids): what
+// an export compares to tell whether a part changed after it was imported (provenance, below)
+json shapeSignature(const std::vector<Ptr<BRepBody>>& solids)
+{
+    std::vector<json> v;
+    for (auto& b : solids)
+        v.push_back(json{{"volume", cm2mm(cm2mm(cm2mm(b->volume())))}, {"area", cm2mm(cm2mm(b->area()))},
+                         {"faces", b->faces()->count()}, {"edges", b->edges()->count()}});
+    std::sort(v.begin(), v.end(), [](const json& a, const json& b) { return a["volume"].get<double>() < b["volume"].get<double>(); });
+    return json(v);
+}
+
+bool sameShape(const json& a, const json& b)
+{
+    if (!a.is_array() || !b.is_array() || a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++)
+    {
+        if (a[i].value("faces", 0) != b[i].value("faces", 0) || a[i].value("edges", 0) != b[i].value("edges", 0)) return false;
+        for (const char* q : {"volume", "area"})
+        {
+            double x = a[i].value(q, 0.0), y = b[i].value(q, 0.0);
+            if (std::fabs(x - y) > 1e-6 * std::max(1.0, std::fabs(x))) return false;
+        }
+    }
+    return true;
+}
 
 std::vector<Ptr<BRepBody>> Replayer::bodies(bool solidOnly) const
 {
@@ -58,10 +102,53 @@ std::string Replayer::replayPart(const json& doc, const Ptr<Component>& comp)
             json fp = bodyFingerprint(b);
             a.push_back(json{{"v", fp["volume"]}, {"c", fp["centroid"]}, {"solid", b->isSolid()}});
         }
+        // developer: the bodies of every other component of the design too (does a feature reach into another part?)
+        if (std::error_code tec; fs::exists(dataDir() / L"trace_all", tec))
+            for (size_t i = 0; i < design_->allComponents()->count(); i++)
+            {
+                Ptr<Component> c = design_->allComponents()->item(i);
+                if (c == comp_) continue;
+                for (size_t k = 0; k < c->bRepBodies()->count(); k++)
+                    { json o = json::object(); o["other"] = c->name(); o["v"] = c->bRepBodies()->item(k)->volume(); a.push_back(o); }
+            }
         report_.pendingTrace = a;
+    };
+    // Provenance (exporter.cpp, passthrough): every timeline object a payload feature made carries attribute NCX/source
+    // {id, type, k: its place in the group}; the group's first also NCX/def (the feature without its carried result;
+    // a sketch without its definition, which is exported natively with its entities' ids, attribute NCX/id) and
+    // NCX/after (shapeSignature after it). An export then writes a functional equivalent (several Fusion features for
+    // one source feature, or none that Fusion has) back as the source's definition while the part's shape is as it was.
+    Ptr<Timeline> tl = design_->timeline();
+    size_t groupStart = tl->count();
+    const json* groupOf = nullptr;
+    auto closeGroup = [&]() {
+        if (!groupOf) return;
+        size_t end = tl->count();
+        json def = *groupOf;
+        def.erase("result");
+        if (def.value("type", "") == "sketch" || def.value("type", "") == "sketch3d") def.erase("def");
+        std::string after = shapeSignature(bodies(true)).dump();
+        int k = 0;
+        for (size_t i = groupStart; i < end; i++)
+        {
+            Ptr<TimelineObject> t = tl->item(static_cast<int>(i));
+            Ptr<Attributes> as = attributesOf(t ? t->entity() : nullptr);
+            if (!as) continue;
+            as->add("NCX", "source", json{{"id", def.value("id", "")}, {"type", def.value("type", "")}, {"k", k}}.dump());
+            if (k == 0)
+            {
+                as->add("NCX", "def", def.dump());
+                as->add("NCX", "after", after);
+            }
+            k++;
+        }
+        groupOf = nullptr;
     };
     for (auto& nf : feats)
     {
+        closeGroup();
+        groupStart = tl->count();
+        groupOf = &nf;
         std::string fname = nf.value("name", "");
         progressStep(docName_ + ": " + fname);
         std::string failure;
@@ -152,6 +239,7 @@ std::string Replayer::replayPart(const json& doc, const Ptr<Component>& comp)
         else
             report_.add(docName_, fname, "failed", failure + "; its carried result could not be used either: " + noResult);
     }
+    closeGroup();
     replayEquations(doc);
     replayProperties(doc);
     for (auto& kv : deferred_)

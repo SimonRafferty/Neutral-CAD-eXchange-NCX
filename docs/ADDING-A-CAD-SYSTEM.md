@@ -100,9 +100,10 @@ them flexible.
   `top` = XZ, `right` = YZ). Your system may give the same words to other planes (Onshape's *Front* is XZ; Fusion
   set to Z-up calls XY its top).
 - **Which way is up.** The file's `orientation.up` (spec §4, top level; absent: `y`) says which axis the source shows
-  as up. If your system's convention differs, turn the view (or place the model under one transform) so the model is
-  upright for the user, and say so in a note; keep every coordinate, reference and check in the file's frame, and
-  export in that frame.
+  as up. If your system's convention differs, place the model so it is upright in your system's own frame (its
+  Top view looks down the file's up axis), and say so in a note. Turning only the camera is not enough: the user's
+  Home view, view cube and standard views still show the model lying on its side. Keep every coordinate, reference
+  and check in the file's frame (one transform between the two), and export in that frame.
 - **Find the target's machine-readable feature definitions first.** Many CAD APIs publish every feature's parameter
   names, enum values and types (Onshape: `featurespecs` plus its OpenAPI file). Cache them and check every feature
   you create against them before sending it; it makes nearly every feature right first time.
@@ -192,7 +193,8 @@ Implement in this order, testing each on its sample before moving on:
    - Several `contours` combine by the area each encloses; a contour inside another is a hole; crossing ones unite
      (spec §4). A curve your own system adds to a sketch (a projected edge) must not split or close a profile.
    - A picked region: build it from its `boundary` where present, then check its point and area; a region may be
-     bounded by the face's own edges, not only by sketch curves.
+     bounded by the face's own edges, not only by sketch curves. If your profiles come only from sketch curves,
+     project those face edges into the sketch, or draw them as fixed curves where projection is refused.
    - `start` offsets run along the sketch normal, against it with `reverse`, whichever way the feature runs.
 3. **Reference planes, axes, points, coordinate systems.**
 4. **Fillets, chamfers; patterns, mirrors; shell, draft.**
@@ -242,7 +244,9 @@ one the user will try first.
 - **Sub-assemblies: rigid or flexible** (spec §5, components). A sub-assembly's own mates always hold its parts. A
   rigid one (the default) moves as one piece in its parent: also hold each of its parts to it (a rigid group, or each
   part grounded to its parent). A `flexible: true` one keeps only its mates, so they can move with the parent's
-  motion. Make the sub-assembly's mates inside it, against its own parts.
+  motion. Make the sub-assembly's mates inside it, against its own parts. A system that shares one sub-assembly's
+  joints and grounding across all its occurrences (Fusion) needs one component per use when the same sub-assembly
+  is placed both rigid and flexible.
 - **Mates between parts of different sub-assemblies** belong to the top level: make them there, against the parts as
   they sit in the design (proxies, assembly context), measured through each part's full path.
 - **Frame-based mate systems** (Onshape mate connectors, Fusion joints) join two coordinate frames, while the payload's
@@ -292,6 +296,45 @@ model in the frame it was imported in, and `orientation` with your system's up a
 Round-trip test: export from the target, import in the target, and compare.
 A feature your importer built from a carried result has no native counterpart to export: write it `opaque` with
 that same result again (you know its provenance), so the file stays rebuildable everywhere.
+
+**Record provenance on import, and use it on export.** Most users send a model to your system and back. Your
+importer builds some features as functional equivalents (Insert Part as copied sketches, a weldment member as
+extrusions, a convert to sheet metal as a body plus a conversion), and your exporter cannot turn those back into the
+source's features. So, as you import, tag what you build. Attributes on the CAD objects are the place, since they are
+saved with the model.
+- **Every feature:** the payload feature it came from, its definition, and the part's shape right after it.
+- **Every sketch entity:** its payload id.
+- **Every document's component:** the whole source document, and the component's state as imported (solids' volume,
+  area, face and edge counts, parameter values, how many features, occurrences and joints).
+- **Every placed occurrence:** its component entry's id.
+
+On export, use those tags in this order:
+- **Whole documents first.** A document whose state is unchanged goes out as the source's own document. An assembly
+  goes out with its components at their current positions, which keeps the mates, limits and sub-assemblies.
+- **Then single features.** In a document the user changed, write natively whatever your system has. Where your
+  system built the feature as an equivalent, or as several objects, or cannot write it natively, write the source's
+  definition while the part's shape right after it is unchanged.
+- **Keep the source's ids** for documents, features and sketch entities, so the source's references stay valid.
+- **Keep it switchable.** Offer an option to switch passthrough off, so your native export can still be tested.
+
+Measured on the Fusion add-in: the folding step went SolidWorks → Fusion → SolidWorks with every part rebuilt and all
+87 mates, against 8 parts as plain geometry and 30 mates without it.
+
+Write the rest of what users see:
+- **Materials:** under the source's name when the import mapped it (Fusion's "Stainless Steel AISI 304" goes back as
+  "AISI 304"); none when the source had none and your default stands in for it.
+- **Appearances**, with the source's exact values when you recorded them.
+- **Custom properties.**
+- **Equations and global variables** in the neutral grammar, under the source's names (Fusion renames `W` to `W_`;
+  write `W`). An importer uses `native` text only from its own system's files.
+
+A few writing rules:
+- **Profiles:** whenever a sketch has more than one profile, write the selection explicitly as `contours` or
+  `regions`. Your system's "every profile" is not the odd-even whole sketch: adjacent regions, or a revolve axis on
+  the boundary, make SolidWorks refuse it.
+- **Cuts:** never write `merge` on a cut.
+- **Document order:** dependencies first (a layout before the parts inserting it). An importer should not rely on
+  that either; order the documents itself.
 **Run `validator/ncx_validate.py` on every file you export** (it needs the core: build it with `core/build.ps1`, or
 point `NCX_CORE_DLL` at your add-in's copy; a verdict of INCOMPLETE is not a pass) and fix every error before
 anything else: it checks what other add-ins rely on (units, frames, seeds against dimensions, references,
@@ -375,9 +418,21 @@ add yours. Ones that cost a debugging round each:
     occurrence does not tie it to its parent. A joint reports its axis in the coordinates of the occurrence it was
     built on and its origin in the design's; a sub-assembly's own joints cannot be read back afterwards (no
     occurrences, no geometry): record each joint's frame as you build it. Fusion's model orientation
-    (`GeneralPreferences.defaultModelingOrientation`) is often Z-up.
+    (`GeneralPreferences.defaultModelingOrientation`) is often Z-up. A cut made without naming its participant
+    bodies also cuts other parts' bodies built at the same origin (and `participantBodies()` then reads empty).
+  - Geometry: `measureMinimumDistance` measures a planar face as its whole infinite plane (measure to its edges when
+    the nearest point is off the face); projecting an edge that a later feature of the same sketch made is refused as
+    circular.
   - Responsiveness: Fusion pumps no events during an add-in's command unless the add-in calls `adsk::doEvents()`;
     a progress dialog that is never updated looks exactly like a hang.
+  - Upright wrapper (the model inside one turned component): a part is built with its occurrence active, and Fusion
+    then makes no `Path` of the native sketch curves (sweeps, thin extrudes, surface revolves): use the curves of the
+    sketch's proxy in that occurrence. On export read native objects: a proxy body or face is measured in the root's
+    turned frame (deleted bodies went out turned by 90° and were not found). `Feature` has no `nativeObject`: find
+    the native feature by name in its parent component.
+  - Export: a vertex descriptor needs its point as its one sample; Fusion's "All" extent (`AllExtentDefinition`) is
+    through all; a fixed spline has only its two ends as points, so write its exact `nurbs` (importers build another
+    system's spline from `nurbs`).
 - **Onshape** (from a trial add-in, not yet in this repository): cloud-only, so a web-API client (or an Onshape app's
   server), not a desktop add-in. Use a versioned path (`/api/v17`) and `application/json;charset=UTF-8; qs=0.09`:
   unversioned paths use a legacy JSON form and every feature post fails with a bare "Error processing json". Quotas:

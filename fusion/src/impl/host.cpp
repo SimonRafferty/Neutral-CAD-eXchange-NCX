@@ -78,6 +78,45 @@ bool closest(const Ptr<Base>& entity, const V3& pMm, V3& out, double& d)
     // positionOne is on geometryOne (the entity)
     Ptr<Point3D> a = r->positionOne();
     if (!a) return false;
+    // A planar face is measured as its whole plane (measured on P49: a disc face r 5 reported 0 mm from points
+    // 60 mm away in its plane, so two coplanar faces were "ambiguous"): when the foot of the perpendicular is not
+    // on the face, the nearest point is on the face's boundary
+    if (Ptr<BRepFace> f = e)
+        if (Ptr<Plane>(f->geometry()))
+        {
+            // the face's own evaluator works in its own (native) space, a proxy's too (measured: with the model in
+            // a rotated component every sample read as off its face): the foot point is taken back there
+            Ptr<BRepFace> fn = f->nativeObject() ? Ptr<BRepFace>(f->nativeObject()) : f;
+            Ptr<Point3D> an = a;
+            if (xf)
+            {
+                Ptr<Matrix3D> inv = xf->copy();
+                inv->invert();
+                an = ptCm(applyMm(inv, ptMm(a)));
+            }
+            Ptr<SurfaceEvaluator> fe = fn->evaluator();
+            Ptr<Point2D> uv;
+            if (fe && fe->getParameterAtPoint(an, uv) && uv && !fe->isParameterOnFace(uv))
+            {
+                double best = std::numeric_limits<double>::infinity();
+                Ptr<Point3D> bestP;
+                Ptr<BRepEdges> es = f->edges();
+                for (size_t i = 0; es && i < es->count(); i++)
+                {
+                    Ptr<MeasureResults> r2 = measure()->measureMinimumDistance(es->item(i), ptCm(p));
+                    if (r2 && r2->positionOne() && r2->value() < best)
+                    {
+                        best = r2->value();
+                        bestP = r2->positionOne();
+                    }
+                }
+                if (bestP)
+                {
+                    d = cm2mm(best);
+                    a = bestP;
+                }
+            }
+        }
     out = ptMm(a);
     if (xf)
     {
@@ -497,8 +536,22 @@ std::array<double, 6> boxMm(const Ptr<Base>& entity)
     return {0, 0, 0, 0, 0, 0};
 }
 
-json descriptor(const Ptr<Base>& entity)
+json descriptor(const Ptr<Base>& entity0)
 {
+    // a proxy is described as its native entity, in its component's own frame (the measure context places it)
+    Ptr<Base> entity = entity0;
+    if (Ptr<BRepFace> f = entity0)
+    {
+        if (f->nativeObject()) entity = f->nativeObject();
+    }
+    else if (Ptr<BRepEdge> e = entity0)
+    {
+        if (e->nativeObject()) entity = e->nativeObject();
+    }
+    else if (Ptr<BRepVertex> v = entity0)
+    {
+        if (v->nativeObject()) entity = v->nativeObject();
+    }
     json g;
     std::string kind;
     json p;
@@ -526,6 +579,17 @@ json descriptor(const Ptr<Base>& entity)
         Ptr<BRepFaces> fs = e->faces();
         if (fs && fs->count() == 2 && fs->item(0) == fs->item(1)) g["seam"] = true;
         if (len < 1e-9) g["degenerate"] = true;
+    }
+    else if (Ptr<BRepVertex> v = entity)
+    {
+        // a vertex: its point, which is also its one sample (FORMAT-SPEC 5; P30's variable fillet radii)
+        kind = "vertex";
+        V3 pt = ptMm(v->geometry());
+        g["type"] = "point";
+        g["params"] = json{{"point", json::array({pt[0], pt[1], pt[2]})}};
+        g["samples"] = json::array({json::array({pt[0], pt[1], pt[2]})});
+        g["bbox"] = json::array({pt[0], pt[1], pt[2], pt[0], pt[1], pt[2]});
+        return json{{"kind", kind}, {"by", "geom"}, {"geom", g}};
     }
     g["bbox"] = boxMm(entity);
     return json{{"kind", kind}, {"by", "geom"}, {"geom", g}};
@@ -795,6 +859,56 @@ json faceCompare(const json& reference, const std::vector<Ptr<BRepBody>>& rebuil
     for (auto& x : info) targets.push_back(json{{"id", x["id"]}, {"area", x["area"]}});
     if (!progressMessage.empty()) progressTick(progressMessage + ": matching " + std::to_string(n) + " faces");
     return coreFaceCompare(json{{"tolerance", tolerance}, {"faces", faces}, {"targets", targets}});
+}
+
+// ---------------------------------------------------------------------------------------- provenance
+json documentState(const Ptr<Component>& c)
+{
+    std::vector<Ptr<BRepBody>> solids;
+    for (size_t i = 0; i < c->bRepBodies()->count(); i++)
+        if (c->bRepBodies()->item(i)->isSolid()) solids.push_back(c->bRepBodies()->item(i));
+    json params = json::array();
+    Ptr<ModelParameters> mp = c->modelParameters();
+    for (size_t i = 0; mp && i < mp->count(); i++)
+        params.push_back(json::array({mp->item(i)->name(), mp->item(i)->value()}));
+    std::sort(params.begin(), params.end());
+    size_t joints = c->joints()->count() + c->asBuiltJoints()->count();
+    return json{{"shape", shapeSignature(solids)}, {"parameters", params},
+                {"timeline", c->features()->count() + c->sketches()->count() + c->constructionPlanes()->count() + c->constructionAxes()->count() +
+                                 c->constructionPoints()->count()},
+                {"occurrences", c->occurrences()->count()}, {"joints", joints}};
+}
+
+bool sameState(const json& a, const json& b)
+{
+    if (!a.is_object() || !b.is_object()) return false;
+    if (!sameShape(a.value("shape", json::array()), b.value("shape", json::array()))) return false;
+    for (const char* k : {"timeline", "occurrences", "joints"})
+        if (a.value(k, -1) != b.value(k, -1)) return false;
+    json pa = a.value("parameters", json::array()), pb = b.value("parameters", json::array());
+    if (pa.size() != pb.size()) return false;
+    for (size_t i = 0; i < pa.size(); i++)
+        if (pa[i][0] != pb[i][0] || std::fabs(pa[i][1].get<double>() - pb[i][1].get<double>()) > 1e-9 * std::max(1.0, std::fabs(pa[i][1].get<double>())))
+            return false;
+    return true;
+}
+
+void recordDocument(const Ptr<Component>& c, const json& doc)
+{
+    if (!c) return;
+    Ptr<Attributes> as = c->attributes();
+    as->add("NCX", "document", doc.dump());
+    as->add("NCX", "documentId", doc.value("id", ""));
+    as->add("NCX", "state", documentState(c).dump());
+}
+
+V3 modelPointMm(const Ptr<SketchPoint>& p)
+{
+    Ptr<Sketch> sk = p->parentSketch();
+    if (sk && sk->nativeObject()) sk = sk->nativeObject();
+    Ptr<SketchPoint> np = p->nativeObject() ? p->nativeObject() : p;
+    if (!sk) return ptMm(p->worldGeometry());
+    return ptMm(sk->sketchToModelSpace(np->geometry()));
 }
 
 } // namespace ncxf

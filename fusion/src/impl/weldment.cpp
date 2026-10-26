@@ -200,8 +200,8 @@ std::string Replayer::replayStructuralMember(json& nf, const json& def)
             Member m;
             m.line = e;
             if (!m.line) return "member path segment: " + (why.empty() ? "only straight segments are supported" : why);
-            m.a = ptMm(m.line->startSketchPoint()->worldGeometry());
-            m.b = ptMm(m.line->endSketchPoint()->worldGeometry());
+            m.a = modelPointMm(m.line->startSketchPoint());
+            m.b = modelPointMm(m.line->endSketchPoint());
             ms.push_back(m);
         }
         // the chain's direction along each segment: segment i runs towards the point it shares with i+1
@@ -293,7 +293,7 @@ std::string Replayer::replayStructuralMember(json& nf, const json& def)
             m.sketch = comp_->sketches()->add(pl);
             if (!m.sketch) return "member profile sketch: " + lastError();
             m.sketch->name(nf.value("name", "") + " profile " + std::to_string(made + 1));
-            Ptr<Point3D> c = m.sketch->modelToSketchSpace(m.line->startSketchPoint()->worldGeometry());
+            Ptr<Point3D> c = m.sketch->modelToSketchSpace(ptCm(modelPointMm(m.line->startSketchPoint())));
             if (tube)
             {
                 double W = mm2cm(n[0]), H = mm2cm(n[1]), t = mm2cm(n[2]);

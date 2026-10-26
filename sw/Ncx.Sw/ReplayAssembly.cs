@@ -322,7 +322,7 @@ namespace Ncx.Sw
             bool append = false;
             foreach (JObj r in m.Arr("refs"))
             {
-                string why = SelectAssemblyRef(adoc, comps, r, append, 0);
+                string why = SelectAssemblyRef(adoc, comps, r, append, 0, m.Str("type") == "lock");
                 if (why != null) return why;
                 append = true;
             }
@@ -330,8 +330,9 @@ namespace Ncx.Sw
         }
 
         /// <summary>Select one assembly reference {component, path?, ref} - or {ref}, the assembly's own plane or
-        /// origin - with a selection mark (mates use 0, patterns their own marks).</summary>
-        string SelectAssemblyRef(IModelDoc2 adoc, Dictionary<string, IComponent2> comps, JObj r, bool append, int mark)
+        /// origin - with a selection mark (mates use 0, patterns their own marks). lockPart: the ref is one side of a
+        /// lock mate, which only fixes the two components to each other.</summary>
+        string SelectAssemblyRef(IModelDoc2 adoc, Dictionary<string, IComponent2> comps, JObj r, bool append, int mark, bool lockPart = false)
         {
             var sd = (SelectData)((ISelectionMgr)adoc.SelectionManager).CreateSelectData();
             sd.Mark = mark;
@@ -368,6 +369,16 @@ namespace Ncx.Sw
             }
             var rf = r.Obj("ref");
             string kind = rf.Str("kind");
+            // AddMate5 refuses a lock to a sub-assembly's own plane or origin (error 0; to one of its parts it is
+            // made): lock to the part fixed in the sub-assembly instead, which moves with it (Fusion writes such locks)
+            if (lockPart && (kind == "originPlane" || kind == "origin"))
+                while (comp.GetModelDoc2() is IAssemblyDoc)
+                {
+                    var kids = ((object[])comp.GetChildren() ?? new object[0]).Cast<IComponent2>().Where(k => !k.IsSuppressed()).ToList();
+                    var held = kids.FirstOrDefault(k => k.IsFixed()) ?? kids.FirstOrDefault();
+                    if (held == null) break;
+                    comp = held;
+                }
             if (kind == "origin")
             {
                 // the origin's point (a mate takes the point, not the origin feature)
@@ -972,7 +983,11 @@ namespace Ncx.Sw
             if (fingerprint != null)
             {
                 var actual = Host.DocFingerprint(adoc);
-                var rep = (JObj)Json.Parse(NcxCore.FingerprintCompare(Json.Write(fingerprint, true), Json.Write(actual, true)).ReportJson);
+                // parts that fell back hold the file's B-rep as this system measures it: another kernel wrote the
+                // payload's numbers, so they compare at exchange tolerance (FORMAT-SPEC 6.1)
+                string options = fellBack.Count > 0 ? "{\"profile\":\"exchange\"}" : null;
+                var rep = (JObj)Json.Parse(NcxCore.FingerprintCompare(Json.Write(fingerprint, true), Json.Write(actual, true), options).ReportJson);
+                if (options != null) v["tolerance"] = "exchange";
                 v["result"] = rep.Str("result");
                 v["differences"] = rep["differences"];
             }

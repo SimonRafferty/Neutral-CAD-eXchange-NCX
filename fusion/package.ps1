@@ -1,4 +1,4 @@
-# Package the NCX Fusion add-in for end users: builds it (unless -NoBuild) and writes the installer
+# Package the NCX Fusion add-in for end users: builds it from scratch (unless -NoBuild) and writes the installer
 #   fusion\out\NCX-Fusion-Setup-<version>.exe
 # from fusion\installer\NCX-Fusion.iss (needs Inno Setup 6: winget install JRSoftware.InnoSetup). It installs the
 # add-in folder Fusion loads (NCX.manifest, NCX.dll, NcxFusionImpl.dll, ncx_core.dll, the add-in's README and the
@@ -9,14 +9,17 @@
 param([string]$Config = 'Release', [switch]$NoBuild)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-if (-not $NoBuild) { & (Join-Path $here 'build.ps1') -Config $Config -NoDeploy }
-$version = ([regex]::Match((Get-Content -Raw (Join-Path $here 'NCX\NCX.manifest')), '"version"\s*:\s*"([^"]+)"')).Groups[1].Value
-if (-not $version) { throw 'no version in NCX\NCX.manifest' }
+# a release is built from an empty build folder (build.ps1 -Clean)
+if (-not $NoBuild) { & (Join-Path $here 'build.ps1') -Config $Config -NoDeploy -Clean }
 $build = Join-Path $here "build"
+# the version CMake wrote into the manifest from CMakeLists.txt (read by pattern: Windows PowerShell 5.1's
+# ConvertFrom-Json refuses the manifest's empty "" description key)
+$version = ([regex]::Match((Get-Content -Raw (Join-Path $build 'NCX.manifest')), '"version"\s*:\s*"([^"]+)"')).Groups[1].Value
+if (-not $version) { throw 'no version in build\NCX.manifest: build first' }
 
 # the add-in folder's files, exactly as Fusion loads them (the installer script lists the same)
 $files = @(
-    (Join-Path $here 'NCX\NCX.manifest'),
+    (Join-Path $build 'NCX.manifest'),
     (Join-Path $build "$Config\NCX.dll"),
     (Join-Path $build "$Config\NcxFusionImpl.dll"),
     (Join-Path $build "core\$Config\ncx_core.dll"),

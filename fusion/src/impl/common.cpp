@@ -329,4 +329,66 @@ bool isNoticeName(const std::string& bodyName, const std::string& noticeHeaderNa
     return headerForm(bodyName).rfind("README", 0) == 0;
 }
 
+// ---------------------------------------------------------------------------- which way is up
+bool fusionIsZUp()
+{
+    Ptr<Application> app = Application::get();
+    return app->preferences() && app->preferences()->generalPreferences() &&
+           app->preferences()->generalPreferences()->defaultModelingOrientation() == ZUpModelingOrientation;
+}
+
+std::string fileUpAxis(const json& model)
+{
+    static const std::set<std::string> axes{"x", "y", "z", "-x", "-y", "-z"};
+    std::string up = model.is_object() && model.contains("orientation") && model["orientation"].is_object()
+                         ? model["orientation"].value("up", "")
+                         : "";
+    return axes.count(up) ? up : "y";
+}
+
+Ptr<Matrix3D> uprightRotation(const std::string& fileUp, bool zUp)
+{
+    double sgn = fileUp[0] == '-' ? -1 : 1;
+    char ax = fileUp.back();
+    Ptr<Vector3D> from = Vector3D::create(ax == 'x' ? sgn : 0, ax == 'y' ? sgn : 0, ax == 'z' ? sgn : 0);
+    Ptr<Vector3D> to = zUp ? Vector3D::create(0, 0, 1) : Vector3D::create(0, 1, 0);
+    if (from->isEqualTo(to)) return nullptr;
+    Ptr<Matrix3D> m = Matrix3D::create();
+    if (from->isParallelTo(to))
+    {
+        // opposite: half a turn about the X axis (or Y when up is along X)
+        Ptr<Vector3D> axis = ax == 'x' ? Vector3D::create(0, 1, 0) : Vector3D::create(1, 0, 0);
+        m->setToRotation(3.14159265358979323846, axis, Point3D::create(0, 0, 0));
+    }
+    else
+        m->setToRotateTo(from, to);   // y -> z: +90 deg about X
+    return m;
+}
+
+bool hasSheetMetal(const json& doc)
+{
+    static const std::set<std::string> sm{"sheetMetal", "baseFlange", "edgeFlange", "convertToSheetMetal", "hem", "jog",
+                                          "sketchedBend", "miterFlange", "closedCorner", "unfold", "fold", "breakCorner",
+                                          "loftedBend", "flatPattern"};
+    for (auto& f : doc.value("features", json::array()))
+        if (sm.count(f.value("type", ""))) return true;
+    return false;
+}
+
+Ptr<Occurrence>& modelWrapper()
+{
+    static Ptr<Occurrence> w;
+    return w;
+}
+
+Ptr<Occurrence> findModelWrapper(const Ptr<Design>& des)
+{
+    if (!des) return nullptr;
+    Ptr<Occurrences> os = des->rootComponent()->occurrences();
+    for (size_t i = 0; os && i < os->count(); i++)
+        if (os->item(i)->component()->attributes()->itemByName("NCX", "wrapper")) return os->item(i);
+    return nullptr;
+}
+
 } // namespace ncxf
+

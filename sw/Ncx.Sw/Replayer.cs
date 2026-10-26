@@ -29,6 +29,7 @@ namespace Ncx.Sw
         string docId;
         readonly Dictionary<string, IFeature> features = new Dictionary<string, IFeature>();   // neutral id -> feature
         readonly List<IFeature> originPlanes = new List<IFeature>();
+        readonly HashSet<string> fellBack = new HashSet<string>();   // ids of documents replaced by the file's B-rep
         readonly Dictionary<string, SketchMap> sketchMaps = new Dictionary<string, SketchMap>();   // sketch id -> entities
         // every rebuilt part's sketch maps (mates may reference a sketch entity in a component)
         readonly Dictionary<string, Dictionary<string, SketchMap>> sketchMapsByDoc = new Dictionary<string, Dictionary<string, SketchMap>>();
@@ -91,10 +92,12 @@ namespace Ncx.Sw
                 CloseReference();
                 var rebuilt = new Dictionary<string, IModelDoc2>();
                 bool hasFlex = model.Arr("documents").Cast<JObj>().Any(x => x.Arr("flex").Count > 0);
-                var fellBack = new HashSet<string>();
+                fellBack.Clear();
                 fixedGeometry.Clear();
-                // documents come in dependency order (a layout before the parts inserting it, parts before
-                // assemblies); each is saved so later documents can reference it by path
+                // documents in dependency order (a layout before the parts inserting it, parts before assemblies;
+                // another writer may list them otherwise: Fusion's export put the layouts last); each is saved so
+                // later documents can reference it by path
+                model["documents"] = DependencyOrder(model);
                 foreach (JObj d in model.Arr("documents"))
                 {
                     Step("rebuilding " + d.Str("name"));
@@ -122,8 +125,8 @@ namespace Ncx.Sw
                             doc = rd;
                             part = rd as IPartDoc;
                             Verification.Remove(ver);
-                            if (part != null) Verify(d);
                             fellBack.Add(d.Str("id"));
+                            if (part != null) Verify(d);
                         }
                         else if (part != null)
                             VerifyRebuilt(d);
@@ -170,6 +173,40 @@ namespace Ncx.Sw
                 CloseReference();
             }
             return saved;
+        }
+
+        /// <summary>The model's documents, each after every document it names (a component's document, an insertPart or
+        /// mirrorPart source, a reference's `document`), in the file's order otherwise (FORMAT-SPEC: no cycles).</summary>
+        static List<object> DependencyOrder(JObj model)
+        {
+            var docs = model.Arr("documents").Cast<JObj>().ToList();
+            var ids = new HashSet<string>(docs.Select(d => d.Str("id")));
+            Func<object, HashSet<string>, HashSet<string>> names = null;
+            names = (o, acc) =>
+            {
+                var j = o as JObj;
+                if (j != null)
+                    foreach (var kv in j)
+                    {
+                        var s = kv.Value as string;
+                        if (s != null && (kv.Key == "document" || kv.Key == "source") && ids.Contains(s)) acc.Add(s);
+                        else names(kv.Value, acc);
+                    }
+                else if (o is List<object>)
+                    foreach (var x in (List<object>)o) names(x, acc);
+                return acc;
+            };
+            var needs = docs.ToDictionary(d => d.Str("id"), d => names(d, new HashSet<string>()));
+            var done = new HashSet<string>();
+            var order = new List<object>();
+            while (order.Count < docs.Count)
+            {
+                var next = docs.FirstOrDefault(d => !done.Contains(d.Str("id")) && needs[d.Str("id")].All(n => n == d.Str("id") || done.Contains(n)))
+                           ?? docs.First(d => !done.Contains(d.Str("id")));   // a cycle (invalid): file order
+                done.Add(next.Str("id"));
+                order.Add(next);
+            }
+            return order;
         }
 
         /// <summary>Does a later document of the model use this one: insert or mirror it, or place it as a component
@@ -513,7 +550,9 @@ namespace Ncx.Sw
             var em = (IEquationMgr)doc.GetEquationMgr();
             foreach (JObj e in d.Arr("equations"))
             {
-                string eq = e.Str("native") ?? ("\"" + e.Str("target") + "\" = " + e.Str("expression"));
+                // the native text only from SolidWorks' own files (another system's native text is its own grammar)
+                bool ours = string.Equals(Model?.Obj("generator")?.Str("app"), "SOLIDWORKS", StringComparison.OrdinalIgnoreCase);
+                string eq = (ours ? e.Str("native") : null) ?? ("\"" + e.Str("target") + "\" = " + e.Str("expression"));
                 if (em.Add2(-1, eq, true) < 0) Report.Add(docId, "equation " + e.Str("target"), "failed", "could not add equation");
             }
         }
@@ -531,7 +570,11 @@ namespace Ncx.Sw
             bool splines = d.Arr("features").Cast<JObj>().Any(nf => (nf.Obj("def")?.Arr("entities") ?? new List<object>())
                                                                     .Cast<JObj>().Any(e => e.Str("type") == "spline"));
             // a carried result came through STEP, which moves freeform faces slightly: exchange tolerance too
-            string options = (crossVersion && splines) || resultsApplied ? "{\"profile\":\"exchange\"}" : null;
+            // a part that fell back holds the file's own B-rep: it is compared with the payload at exchange tolerance
+            // (FORMAT-SPEC 6.1: the writer's kernel may measure the same body differently)
+            // a file from another CAD system was measured by another kernel (FORMAT-SPEC 6.1: exchange tolerance)
+            bool foreign = !string.Equals(Model?.Obj("generator")?.Str("app"), "SOLIDWORKS", StringComparison.OrdinalIgnoreCase);
+            string options = (crossVersion && splines) || resultsApplied || foreign || fellBack.Contains(d.Str("id")) ? "{\"profile\":\"exchange\"}" : null;
             var rep = (JObj)Json.Parse(NcxCore.FingerprintCompare(Json.Write(expected, true), Json.Write(actual, true), options).ReportJson);
             var entry = new JObj { { "document", docId }, { "result", rep.Str("result") }, { "differences", rep["differences"] },
                                    { "expected", expected }, { "actual", actual } };
@@ -540,8 +583,9 @@ namespace Ncx.Sw
                 entry["tolerance"] = "exchange";
                 var native = (JObj)Json.Parse(NcxCore.FingerprintCompare(Json.Write(expected, true), Json.Write(actual, true)).ReportJson);
                 if (native.Str("result") == "mismatch" && rep.Str("result") != "mismatch")
-                    Report.Add(docId, "splines", "note", "SolidWorks " + sw.RevisionNumber().Split('.')[0] +
-                               " fits natural-end splines slightly differently from the source's version; the part matches at exchange tolerance");
+                    Report.Add(docId, foreign ? "tolerance" : "splines", "note", foreign
+                               ? "written by " + Model.Obj("generator").Str("app") + ", whose kernel measures the same shapes slightly differently; the part matches at exchange tolerance"
+                               : "SolidWorks " + sw.RevisionNumber().Split('.')[0] + " fits natural-end splines slightly differently from the source's version; the part matches at exchange tolerance");
             }
             Verification.Add(entry);
         }

@@ -16,6 +16,7 @@
 #include "reference.h"
 #include "replay.h"
 
+#include <cstring>
 #include <memory>
 
 namespace ncxf {
@@ -62,6 +63,11 @@ std::string Replayer::replayInsertPart(json& nf, const json& def)
         sketchesDone++;
         // its driving dimensions follow the source's
         Ptr<Sketch> sk = features[key];
+        // what it is a copy of (FORMAT-SPEC 4 `transferred`), for the export: written back as the transferred item of
+        // this insertPart, not as a sketch of its own
+        if (sk)
+            sk->attributes()->add("NCX", "transferred",
+                                  json{{"document", srcId}, {"feature", s}, {"name", item.value("name", s)}, {"stock", nf.value("name", "")}}.dump());
         // shown as the inserting part shows it (the item's `hidden`); without it hidden: transferred sketches are
         // reference geometry (ISSUES 36)
         if (sk) sk->isLightBulbOn(!item.value("hidden", true));
@@ -93,14 +99,29 @@ std::string Replayer::replayInsertPart(json& nf, const json& def)
 // (Occurrence.isGrounded, the browser's Pin); inside a sub-assembly, a fixed component is grounded to its parent
 // (Occurrence.isGroundToParent, the anchor icon), so the sub-assembly moves as one when any of it is dragged, as a
 // SolidWorks sub-assembly does; everything else is explicitly neither (Fusion had anchored some top-level parts).
-// Whether a sub-assembly is solved as flexible: a component entry of it says `flexible: true` (ISSUES 35); the
-// payload does not carry it yet, so sub-assemblies are rigid, SolidWorks' default.
-bool flexibleDoc(const json& model, const std::string& docId)
+// Rigid or flexible sub-assemblies (FORMAT-SPEC 5, components): a component entry that places a sub-assembly may say
+// `flexible: true`. Fusion keeps a sub-assembly's joints and its parts' Ground to Parent in the sub-assembly's
+// component, which every occurrence of it shares, so a sub-assembly placed both rigid and flexible (L12: the same arm
+// twice, the second flexible) is built as two components: the rigid one under the document's id, the flexible one
+// under "<id>#flex" (named "<name> (flexible)" when both exist).
+const char* const kFlexSuffix = "#flex";
+
+bool placesFlexible(const json& model, const json& comp)
 {
-    for (auto& d : model["documents"])
-        for (auto& c : d.value("components", json::array()))
-            if (c.value("document", "") == docId && c.value("flexible", false)) return true;
-    return false;
+    if (!comp.value("flexible", false)) return false;
+    const json* d = findDoc(model, comp.value("document", ""));
+    return d && d->value("kind", "") == "assembly";
+}
+
+std::string buildKeyOf(const json& model, const json& comp)
+{
+    return comp.value("document", "") + (placesFlexible(model, comp) ? kFlexSuffix : "");
+}
+
+std::string baseDocId(const std::string& key)
+{
+    size_t n = std::strlen(kFlexSuffix);
+    return key.size() > n && key.compare(key.size() - n, n, kFlexSuffix) == 0 ? key.substr(0, key.size() - n) : key;
 }
 
 void holdOccurrence(const Ptr<Occurrence>& o, bool fixed, bool topLevel)
@@ -140,6 +161,24 @@ std::vector<Ptr<BRepBody>> worldBodies(const Ptr<Component>& root, std::vector<P
             if (!p->isLightBulbOn()) visible = false;
         if (!visible) continue;
         Ptr<Component> c = o->component();
+        // In the upright wrapper (common.h) a native body's mass properties come where its occurrence puts it
+        // (measured: a part placed only in the rotated wrapper read its centroid rotated), so the bodies are measured
+        // as proxies in the root's context and taken back through the wrapper's placement
+        Ptr<Occurrence> w = modelWrapper();
+        Ptr<Occurrence> po = w ? o->createForAssemblyContext(w) : nullptr;
+        if (po)
+        {
+            Ptr<Matrix3D> inv = w->transform2()->copy();
+            inv->invert();
+            Ptr<BRepBodies> pb = po->bRepBodies();
+            for (size_t k = 0; pb && k < pb->count(); k++)
+                if (pb->item(k)->isSolid() && pb->item(k)->isLightBulbOn())
+                {
+                    out.push_back(pb->item(k));
+                    xfs.push_back(inv);
+                }
+            continue;
+        }
         for (size_t k = 0; k < c->bRepBodies()->count(); k++)
             if (c->bRepBodies()->item(k)->isSolid() && c->bRepBodies()->item(k)->isLightBulbOn())
             {
@@ -210,7 +249,35 @@ Ptr<Occurrence> plainComponent(const Ptr<Component>& root, const RefComponent& r
 json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, Report& report, const json& opts,
                     const fs::path& file, json& verification, std::string& status)
 {
-    Ptr<Component> root = des->rootComponent();
+    // the model's component: the root, or the upright wrapper (common.h); occurrences made in it are measured and
+    // activated through the wrapper (MeasureManager measures only in the root's context)
+    Ptr<Occurrence> wrapper = modelWrapper();
+    Ptr<Component> root = wrapper ? wrapper->component() : des->rootComponent();
+    // Parts and sub-assemblies are built inside the wrapper too, and measured and activated through it. (Built at
+    // the design's root instead, an instance placed in the wrapper from a component whose build occurrence is at the
+    // root did not get the placement asked for: L12's hanger came out in the file's frame, L03's pins turned.)
+    // Their cuts cannot reach each other: the parts built before are hidden while one is rebuilt (below).
+    Ptr<Component> buildRoot = root;
+    auto inRoot = [&](const Ptr<Occurrence>& o) -> Ptr<Occurrence> {
+        if (!o || !wrapper) return o;
+        Ptr<Occurrence> p = o->createForAssemblyContext(wrapper);
+        return p ? p : o;
+    };
+    // developer: where the model's top-level occurrences are at each phase (trace)
+    auto xfDebug = [&](const std::string& when) {
+        if (!opts.value("trace", false) || !wrapper) return;
+        std::string t;
+        for (size_t k = 0; k < root->occurrences()->count(); k++)
+        {
+            Ptr<Occurrence> o = root->occurrences()->item(k);
+            Ptr<Matrix3D> m = o->transform2();
+            char b[160];
+            std::snprintf(b, sizeof b, "%s [%.2f %.2f %.2f / %.2f %.2f %.2f]; ", o->name().c_str(), m->getCell(1, 1), m->getCell(1, 2), m->getCell(2, 1),
+                          m->getCell(0, 3), m->getCell(1, 3), m->getCell(2, 3));
+            t += b;
+        }
+        report.add("debug", "placement " + when, "note", t);
+    };
     std::map<std::string, std::unique_ptr<Replayer>> reps;
     std::map<std::string, Replayer*> registry;
     std::map<std::string, Ptr<Occurrence>> buildOcc;   // document id -> the occurrence it was built under
@@ -247,7 +314,7 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
         if (d.value("kind", "") != "part") continue;
         std::string id = d.value("id", ""), name = d.value("name", "");
         if (!only.empty() && !only.count(name)) continue;
-        Ptr<Occurrence> occ = root->occurrences()->addNewComponent(Matrix3D::create());
+        Ptr<Occurrence> occ = buildRoot->occurrences()->addNewComponent(Matrix3D::create());
         if (!occ)
         {
             report.add(name, "part", "failed", "could not create a component: " + lastError());
@@ -260,13 +327,29 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
         rp->trace = opts.value("trace", false);
         auto rit = ref.components.find(name);
         if (rit != ref.components.end()) rp->refBodies = &rit->second.bodies;
-        rp->occurrence = occ;
+        rp->occurrence = inRoot(occ);
         // Fusion's sheet-metal features put their bodies into the ACTIVE component, not the one whose
         // features() made them (measured, L11: the base flange's body landed in the root): the part's
         // component is activated while it is rebuilt
-        occ->activate();
+        // Every part is rebuilt with its occurrence active: Fusion's sheet-metal features build in the active
+        // component, and a cut made without naming its bodies then reaches only the active component's (measured on
+        // the folding step: with no part active, such cuts also cut the other parts built at the same origin).
+        // Features made so keep proxies of their inputs; the exporter reads them as native objects.
+        inRoot(occ)->activate();
         progressPhase("replay: " + name);
+        // the parts built before are hidden while this one is rebuilt: every part is built at the origin, and a cut
+        // made without naming its bodies (sheet metal refuses named ones) cut the visible parts it met (measured:
+        // the Cheek Opposite's Cut-Extrude7 reached the Top Hanger Cheek built before it, and the other way round)
+        std::vector<Ptr<Occurrence>> hidden;
+        for (auto& kv : buildOcc)
+            if (kv.second && kv.second->isValid() && kv.second->isLightBulbOn())
+            {
+                kv.second->isLightBulbOn(false);
+                hidden.push_back(kv.second);
+            }
         rp->replayPart(d, comp);
+        for (auto& h : hidden)
+            if (h && h->isValid()) h->isLightBulbOn(true);
         progressPhase("verify mass");
         des->activateRootComponent();
         progressStep(name + ": checking mass properties");
@@ -282,13 +365,38 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
         v["mass"] = cmp.value("result", "?");
         v["tolerance"] = profile;
         if (cmp.value("result", "") != "match") v["massDetail"] = cmp;
+        // a mismatch: is the rebuild what Fusion measures on the file's own B-rep? (evidence only: two kernels
+        // measure some analytic bodies differently too; the spec allows that escape for freeform bodies only)
+        if (cmp.value("result", "") == "mismatch" && rit != ref.components.end() && !rit->second.bodies.empty())
+        {
+            json refFps = json::array();
+            for (auto& b : rit->second.bodies)
+                if (b.contains("fingerprint")) refFps.push_back(b["fingerprint"]);
+            json rc = coreCompare(json{{"bodies", refFps}}, actual, "native");
+            v["vsFileGeometry"] = rc.value("result", "?");
+            if (rc.value("result", "") != "match") v["vsFileGeometryDetail"] = rc;
+            // Spec 6.1's rule for freeform bodies, applied to any body (ISSUES 39, measured on the folding step's nut:
+            // every face matches, the rebuild equals Fusion's measurement of the file's B-rep at native, and differs
+            // from the payload by 5.6e-5 in volume): the rebuild is kept, reported approximate with the reason
+            json ex = coreCompare(expected, actual, "exchange");
+            if (rc.value("result", "") == "match" && ex.value("result", "") != "mismatch")
+            {
+                cmp = ex;
+                v["mass"] = ex.value("result", "match");
+                v["massNote"] = "matches Fusion's own measurement of the file's B-rep at native and the payload at exchange";
+                report.add(name, "mass check", "approximate",
+                           "the rebuild equals Fusion's measurement of the file's own geometry (native tolerance) and the payload's "
+                           "fingerprint at exchange tolerance only: the two kernels measure this body differently (" +
+                               differencesText(v["massDetail"]) + "); kept");
+            }
+        }
         if (rp->resultsApplied) skipFlex.insert(id);
         if (cmp.value("result", "") == "mismatch" && opts.value("faces", true) && rit != ref.components.end() &&
             !rit->second.bodies.empty() && rit->second.bodies[0].contains("faces"))
         {
             // which faces differ, before the part falls back (for the report)
             progressStep(name + ": checking faces against the file");
-            setMeasureContext(occ);
+            setMeasureContext(inRoot(occ));
             json fc = faceCompare(rit->second.bodies, componentBodies(comp, true), 0.001, name + ": checking faces");
             setMeasureContext(nullptr);
             v["faces"] = fc.value("result", "?");
@@ -304,9 +412,11 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
                 report.add(name, "part", "fallback", why + "; replaced by the file's own geometry");
                 progressPhase("fallback");
                 comp->name(name + " (partial rebuild)");
+                comp->attributes()->add("NCX", "partialRebuild", name);   // kept for diagnosis; never exported
                 occ->isLightBulbOn(false);
                 partialRebuilds.push_back(occ);
-                Ptr<Occurrence> plain = plainComponent(root, rit->second, name);
+                Ptr<Occurrence> plain = plainComponent(buildRoot, rit->second, name);
+                if (plain) rp->replayPropertiesOn(d, plain->component());
                 buildOcc[id] = plain;
                 compOf[id] = plain->component();
                 skipFlex.insert(id);
@@ -339,7 +449,7 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
             {
                 progressPhase("verify faces");
                 progressStep(name + ": checking faces against the file");
-                setMeasureContext(occ);
+                setMeasureContext(inRoot(occ));
                 json fc = faceCompare(rit->second.bodies, componentBodies(comp, true), 0.001, name + ": checking faces");
                 v["faces"] = fc.value("result", "?");
                 if (fc.value("result", "") != "match") v["facesDetail"] = facesBrief(fc, rit->second.bodies);
@@ -353,10 +463,26 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
     std::string rootId = model.value("root", "");
     std::set<std::string> usedBuild;
     std::map<std::string, Ptr<Occurrence>> occOf;   // "<assembly id>|<component id>" -> occurrence
+    // how each sub-assembly is placed: rigid and/or flexible (each its own Fusion component, see placesFlexible)
+    std::set<std::string> placedRigid, placedFlex;
     for (auto& d : model["documents"])
+        for (auto& c : d.value("components", json::array()))
+            (placesFlexible(model, c) ? placedFlex : placedRigid).insert(c.value("document", ""));
+    for (auto& d0 : model["documents"])
     {
-        if (d.value("kind", "") != "assembly" || (!only.empty() && !onlyAsm.count(d.value("name", "")))) continue;
+        if (d0.value("kind", "") != "assembly" || (!only.empty() && !onlyAsm.count(d0.value("name", "")))) continue;
+        std::string docId = d0.value("id", "");
+        std::vector<bool> variants;   // false: rigid (or the root), true: flexible
+        if (docId == rootId || placedRigid.count(docId) || !placedFlex.count(docId)) variants.push_back(false);
+        if (docId != rootId && placedFlex.count(docId)) variants.push_back(true);
+        for (bool flex : variants)
+        {
+        // the flexible build of a sub-assembly is keyed "<id>#flex" (its occurrences, its joints)
+        json dv = d0;
+        if (flex) dv["id"] = docId + kFlexSuffix;
+        const json& d = dv;
         std::string id = d.value("id", ""), name = d.value("name", "");
+        std::string compName = name + (flex && variants.size() > 1 ? " (flexible)" : "");
         Ptr<Component> comp;
         if (id == rootId)
         {
@@ -365,9 +491,9 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
         }
         else
         {
-            Ptr<Occurrence> o = root->occurrences()->addNewComponent(Matrix3D::create());
+            Ptr<Occurrence> o = buildRoot->occurrences()->addNewComponent(Matrix3D::create());
             comp = o->component();
-            comp->name(name);
+            comp->name(compName);
             buildOcc[id] = o;
         }
         compOf[id] = comp;
@@ -377,7 +503,7 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
         {
             progressStep(name + ": placing " + c.value("name", c.value("id", "")) + " (" + std::to_string(++kComp) + " of " +
                          std::to_string(nComp) + ")");
-            std::string cd = c.value("document", "");
+            std::string cd = buildKeyOf(model, c);
             auto cit = compOf.find(cd);
             if (cit == compOf.end())
             {
@@ -388,23 +514,36 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
             // Every instance is a new occurrence made at its place. The build occurrence is never moved: in a
             // parametric design a moved occurrence is only a pending position, which the next occurrence added
             // reverts, and while pending it offsets every new occurrence of the same component (measured).
+            // In the upright wrapper, an identity placement is not taken as given: Fusion put such an instance where
+            // the component's build occurrence is in the world (measured on L12: the hanger came out with the
+            // inverse of the wrapper's rotation, lying in the file's frame). A translation of 1e-9 mm (below every
+            // tolerance) makes Fusion take it as a placement in the wrapper.
+            if (wrapper && xf->isEqualTo(Matrix3D::create()))
+            {
+                Ptr<Vector3D> tr = xf->translation();
+                tr->x(tr->x() + 1e-10);
+                xf->translation(tr);
+            }
             Ptr<Occurrence> o = comp->occurrences()->addExistingComponent(cit->second, xf);
             if (!o)
             {
                 report.add(name, c.value("name", c.value("id", "")), "failed", "could not place the component: " + lastError());
                 continue;
             }
-            // a rigid sub-assembly's components are grounded to it before its joints are made (made after, Fusion
-            // refused it on a part already joined)
-            holdOccurrence(o, c.value("fixed", false) || (comp != root && !flexibleDoc(model, id)), comp == root);
+            // A rigid sub-assembly's components are grounded to it before its joints are made (made after, Fusion
+            // refused it on a part already joined). In a flexible one only its fixed components are: its mates hold
+            // the rest, and those move with the parent's motion (FORMAT-SPEC 5).
+            // in the upright wrapper the top level is held to the wrapper (pinned itself), as a sub-assembly's parts are
+            holdOccurrence(o, c.value("fixed", false) || (comp != root && !flex), comp == root && !wrapper);
             occOf[id + "|" + c.value("id", "")] = o;
         }
+        if (id == rootId) xfDebug("after placing");
         // assembly-level features (planes, sketches, cuts; patterns are placed instances) and mates (joints.cpp)
         if (!d.value("features", json::array()).empty() || !d.value("parameters", json::array()).empty())
         {
             auto arp = std::make_unique<Replayer>(report, model, file);
             arp->asmOccs = &occOf;
-            arp->occurrence = id == rootId ? nullptr : buildOcc[id];
+            arp->occurrence = id == rootId ? wrapper : inRoot(buildOcc[id]);
             progressPhase("assembly features");
             arp->replayPart(d, comp);
             reps[id] = std::move(arp);
@@ -412,21 +551,24 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
         progressPhase("joints");
         progressStep(name + ": joints from the mates");
         buildJoints(model, d, comp, occOf, report);
-        // a sub-assembly is rigid unless the source solves it as flexible (ISSUES 35): its own mates are joints in it
-        // (they hold its parts), and one rigid group of all its components keeps them from moving relative to each
-        // other when the top level moves, as a rigid SolidWorks sub-assembly does
-        // a sub-assembly is rigid unless the source solves it as flexible (ISSUES 35): its mates are joints in it,
-        // and every component of it is also grounded to it (Ground to Parent), so it moves as one piece when the top
-        // level moves, as a rigid SolidWorks sub-assembly does. The joints are made at the file's placement, so
-        // they agree with the grounding.
-        if (id != rootId && !flexibleDoc(model, id))
+        if (id == rootId) xfDebug("after joints");
+        // A sub-assembly's own mates are joints in it (they hold its parts). A rigid one (SolidWorks' default) also
+        // has every component grounded to it (Ground to Parent), so it moves as one piece when the top level moves;
+        // the joints are made at the file's placement, so they agree with the grounding. A flexible one keeps only
+        // its joints (and its fixed components grounded to it).
+        if (id != rootId && !flex)
         {
             std::string refused;
             for (size_t k = 0; k < comp->occurrences()->count(); k++)
                 if (!comp->occurrences()->item(k)->isGroundToParent()) refused += (refused.empty() ? "" : ", ") + comp->occurrences()->item(k)->name();
             report.add(name, "rigid sub-assembly", refused.empty() ? "note" : "approximate",
-                       "solved rigid (SolidWorks' default): its mates are joints in it and its components are grounded to it" +
+                       "solved rigid (the file does not say flexible): its mates are joints in it and its components are grounded to it" +
                            (refused.empty() ? std::string() : " (Fusion did not ground " + refused + ": it moves as its joints allow)"));
+        }
+        else if (flex)
+            report.add(name, "flexible sub-assembly", "note",
+                       "solved flexible (the file says so): its mates are joints in " + compName +
+                           ", only its fixed components are grounded to it, and the parent's mates join its parts, so they move with the parent's motion");
         }
     }
     // the build occurrences no instance took over: sub-assemblies' and nested parts' are deleted, unused parts
@@ -434,7 +576,7 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
     progressPhase("placement");
     std::set<std::string> instanced;
     for (auto& d : model["documents"])
-        for (auto& c : d.value("components", json::array())) instanced.insert(c.value("document", ""));
+        for (auto& c : d.value("components", json::array())) instanced.insert(buildKeyOf(model, c));
     // what stays (layouts, the parts' partial rebuilds) goes into one hidden component, so the top level holds
     // only the assembly's own components (loose copies there overlapped the assembly and could be dragged)
     Ptr<Occurrence> aside;
@@ -468,7 +610,23 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
     if (aside)
     {
         aside->isLightBulbOn(false);
-        aside->isGrounded(true);
+        if (wrapper) aside->isGroundToParent(true);   // pinning a nested occurrence does not tie it to its parent
+        else aside->isGrounded(true);
+    }
+    xfDebug("after tidying");
+    // Provenance of whole documents (exporter.cpp, document passthrough): every document's component keeps the source
+    // document and its state as imported (recordDocument); every placed occurrence its component entry (NCX/component).
+    // An export writes a document Fusion left as it was back as the source's own, so SolidWorks -> Fusion -> SolidWorks
+    // gives the source's history, mates and limits back.
+    progressStep("recording where each document came from");
+    for (auto& kv : compOf)
+        if (const json* sd = findDoc(model, baseDocId(kv.first)))
+            if (kv.second && kv.second->isValid()) recordDocument(kv.second, *sd);
+    for (auto& kv : occOf)
+    {
+        size_t bar = kv.first.find('|');
+        if (kv.second && kv.second->isValid())
+            kv.second->attributes()->add("NCX", "component", json{{"document", baseDocId(kv.first.substr(0, bar))}, {"id", kv.first.substr(bar + 1)}}.dump());
     }
     progressStep("capturing the positions");
     if (des->snapshots() && des->snapshots()->hasPendingSnapshot()) des->snapshots()->add();

@@ -196,6 +196,28 @@ namespace Ncx.Sw
                         }
                         case "spline":
                         {
+                            // Another system's spline is built from its exact B-spline (`nurbs`): its fit points, if any,
+                            // are that system's fit, which SolidWorks would fit differently, and a fixed spline (Fusion's
+                            // from an exact curve) has only its two ends (P23 through Fusion: the boss face differed).
+                            var nurbs = e.Obj("nurbs");
+                            bool ours = string.Equals(Model?.Obj("generator")?.Str("app"), "SOLIDWORKS", StringComparison.OrdinalIgnoreCase);
+                            if (nurbs != null && (!ours || e.Arr("points").Count < 3))
+                            {
+                                seg = NurbsSpline(sm, nurbs, map);
+                                if (seg != null)
+                                {
+                                    // its points by position: the ends (and any fit points the writer listed)
+                                    var made = ((object[])((ISketchSpline)seg).GetPoints2() ?? new object[0]).Cast<ISketchPoint>().ToList();
+                                    foreach (var pid in e.Arr("pointIds").Cast<string>())
+                                    {
+                                        double[] q;   // already in sketch space
+                                        if (pid == null || !pointPos.TryGetValue(pid, out q)) continue;
+                                        var hit = made.FirstOrDefault(m => Math.Abs(m.X - q[0]) < 1e-9 && Math.Abs(m.Y - q[1]) < 1e-9);
+                                        if (hit != null) own(pid, hit);
+                                    }
+                                }
+                                break;
+                            }
                             var fit = e.Arr("points").Select(q => map(((List<object>)q).Select(Convert.ToDouble).ToArray())).ToList();
                             var data = fit.SelectMany(q => new[] { q[0], q[1], 0.0 }).ToArray();
                             seg = (ISketchSegment)sm.CreateSpline2(data, true);   // natural ends, as the UI makes them
@@ -468,6 +490,34 @@ namespace Ncx.Sw
         /// <summary>Spline handles the user set (tangent direction/magnitude, curvature), on the rebuilt spline. The
         /// direction is an angle in the sketch's axes, so it is mapped through the same source-to-target transform
         /// as the points (the target sketch's axes may be rotated or mirrored).</summary>
+        /// <summary>A sketch spline that is exactly this B-spline (FORMAT-SPEC 4 `nurbs`: sketch mm, knots as given,
+        /// `weights` for a rational one), through SplineParamData (works in and out of process).</summary>
+        static ISketchSegment NurbsSpline(ISketchManager sm, JObj nurbs, Func<double[], double[]> map)
+        {
+            var cps = nurbs.Arr("controlPoints").Cast<List<object>>().Select(q => map(q.Select(Convert.ToDouble).ToArray())).ToList();
+            var knots = nurbs.Arr("knots").Select(Convert.ToDouble).ToArray();
+            var w = nurbs.Arr("weights").Select(Convert.ToDouble).ToList();
+            bool rational = w.Count == cps.Count && w.Any(x => Math.Abs(x - 1) > 1e-12);
+            int degree = (int)nurbs.Num("degree", 3);
+            if (cps.Count < 2 || knots.Length != cps.Count + degree + 1) return null;
+            var pd = sm.CreateSplineParamData();
+            pd.Dimension = rational ? 4 : 3;
+            pd.Order = degree + 1;
+            pd.Periodic = nurbs.Bool("periodic") ? 1 : 0;
+            pd.ControlPointsCount = cps.Count;
+            var flat = new List<double>();
+            for (int i = 0; i < cps.Count; i++)
+            {
+                flat.Add(cps[i][0]);
+                flat.Add(cps[i][1]);
+                flat.Add(0);
+                if (rational) flat.Add(w[i]);
+            }
+            if (!pd.SetControlPoints(flat.ToArray()) || !pd.SetKnotPoints(knots)) return null;
+            var made = sm.CreateSplinesByEqnParams2(pd) as object[];
+            return made != null && made.Length > 0 ? made[0] as ISketchSegment : null;
+        }
+
         string ApplySplineHandles(ISketchSpline sp, JObj e, bool mirrored, Func<double[], double[]> map)
         {
             var want = e.Arr("handles").Cast<JObj>().ToList();
@@ -515,24 +565,39 @@ namespace Ncx.Sw
             var src = new SketchFrame(fr.Vec("origin").Select(U.M).ToArray(), fr.Vec("x"), fr.Vec("z"));
             var tgt = new SketchFrame(sw, copy);
             Func<string, double[]> at = k => tgt.ToSketch(src.ToModel(U.M(ent.Vec(k)[0]), U.M(ent.Vec(k)[1])));
-            Func<ISketchPoint, double[], bool> near = (sp, q) => sp != null && Math.Abs(sp.X - q[0]) < 1e-7 && Math.Abs(sp.Y - q[1]) < 1e-7;
+            // The copy of an under-defined layout may solve a little differently from run to run (one import in three
+            // missed a point by more than 0.1 um): the nearest entity within 10 um
+            const double tol = 1e-5;
+            Func<ISketchPoint, double[], double> gap = (sp, q) => sp == null ? double.MaxValue : Math.Max(Math.Abs(sp.X - q[0]), Math.Abs(sp.Y - q[1]));
+            Func<IEnumerable<object>, Func<object, double>, object> nearest = (cands, score) =>
+            {
+                object best = null;
+                double bs = tol;
+                foreach (var x in cands)
+                {
+                    double v = score(x);
+                    if (v < bs) { bs = v; best = x; }
+                }
+                return best;
+            };
             var segs = ((object[])copy.GetSketchSegments() ?? new object[0]).OfType<ISketchSegment>().ToList();
             switch (ent.Str("type"))
             {
                 case "point":
                 {
                     var q = at("p");
-                    return ((object[])copy.GetSketchPoints2() ?? new object[0]).OfType<ISketchPoint>().FirstOrDefault(sp => near(sp, q));
+                    return nearest(((object[])copy.GetSketchPoints2() ?? new object[0]).OfType<ISketchPoint>(), o => gap((ISketchPoint)o, q));
                 }
                 case "line":
                 {
                     var a = at("start");
                     var b = at("end");
-                    return segs.OfType<ISketchLine>().FirstOrDefault(l =>
+                    return nearest(segs.OfType<ISketchLine>(), o =>
                     {
+                        var l = (ISketchLine)o;
                         var p1 = (ISketchPoint)l.GetStartPoint2();
                         var p2 = (ISketchPoint)l.GetEndPoint2();
-                        return (near(p1, a) && near(p2, b)) || (near(p1, b) && near(p2, a));
+                        return Math.Min(Math.Max(gap(p1, a), gap(p2, b)), Math.Max(gap(p1, b), gap(p2, a)));
                     });
                 }
                 case "arc":
@@ -542,8 +607,13 @@ namespace Ncx.Sw
                     double rad = U.M(ent.Num("radius"));
                     bool circle = ent.Str("type") == "circle";
                     var s0 = circle ? null : at("start");
-                    return segs.OfType<ISketchArc>().FirstOrDefault(x => near((ISketchPoint)x.GetCenterPoint2(), c) && Math.Abs(x.GetRadius() - rad) < 1e-7 &&
-                        (circle || near((ISketchPoint)x.GetStartPoint2(), s0) || near((ISketchPoint)x.GetEndPoint2(), s0)));
+                    return nearest(segs.OfType<ISketchArc>(), o =>
+                    {
+                        var x = (ISketchArc)o;
+                        double v = Math.Max(gap((ISketchPoint)x.GetCenterPoint2(), c), Math.Abs(x.GetRadius() - rad));
+                        if (!circle) v = Math.Max(v, Math.Min(gap((ISketchPoint)x.GetStartPoint2(), s0), gap((ISketchPoint)x.GetEndPoint2(), s0)));
+                        return v;
+                    });
                 }
             }
             return null;

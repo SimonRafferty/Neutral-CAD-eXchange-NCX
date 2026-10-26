@@ -87,6 +87,7 @@ private:
     void replayParameters(const json& doc);
     void replayEquations(const json& doc);
     void replayProperties(const json& doc);   // props.cpp
+    bool plainGeometry_ = false;              // replayProperties on a fallback's plain geometry (no features)
 
 public:
     Ptr<Parameter> parameterFor(const std::string& native);
@@ -99,6 +100,8 @@ public:
     std::string replayInsertPart(json& nf, const json& def);
     void registerParameter(const std::string& native, const Ptr<Parameter>& p);
     std::string documentName() const { return docName_; }
+    // properties, material and appearances onto another component (a fallback part's plain geometry; props.cpp)
+    void replayPropertiesOn(const json& doc, const Ptr<Component>& comp);
     Ptr<Component> component() const { return comp_; }
 
 private:
@@ -130,6 +133,13 @@ private:
     std::string replayPoint(json& nf, const json& def);
     Ptr<ObjectCollection> profilesFor(const json& def, std::string& why);
     int regionRetry_ = 0;   // profilesFor's retries: 1 projected curves made construction, 2 model edges in the plane projected
+    // regions' `boundary` (FORMAT-SPEC 4): the model edges a region's boundary runs along, projected into the sketch
+    // so the region exists there (returns how many were projected; `note` says what was not found)
+    int regionBoundary(SketchMap& m, const json& region, std::string& note);
+    std::vector<Ptr<SketchEntity>> boundaryCurves_;   // curves projected for a boundary: never made construction
+    std::string regionNote_;                           // what profilesFor did with boundaries, for the feature's report
+    std::set<std::string> boundaryDone_;
+    int displaced_ = -1;   // the file's boundary line pieces are displaced (ISSUES 37): -1 not yet known               // "<sketch id>|<region point>" whose boundary was handled
 
     // features2.cpp
     std::string seedsFor(const json& def, Ptr<ObjectCollection>& out, bool& bodiesMode);
@@ -142,6 +152,7 @@ private:
     std::string replayShell(json& nf, const json& def);
     std::string replayDraft(json& nf, const json& def);
     Ptr<Path> pathFor(const json& ref, std::string& why);
+    Ptr<Path> pathOf(const Ptr<ObjectCollection>& curves, const Ptr<Sketch>& sk);   // through the occurrence's proxies if need be
     std::string replaySweep(json& nf, const json& def, bool cut);
     std::string replayLoft(json& nf, const json& def, bool cut);
     std::string replaySurfaceExtrude(json& nf, const json& def);
@@ -191,6 +202,9 @@ std::string featureName(const Ptr<Base>& obj);
 const json* findDoc(const json& model, const std::string& id);
 json& jointFrames();   // joints.cpp: the frames of the joints made by this import (developer check)
 void holdOccurrence(const Ptr<Occurrence>& o, bool fixed, bool topLevel);   // assembly.cpp
+bool placesFlexible(const json& model, const json& comp);   // a component entry placing a flexible sub-assembly
+std::string buildKeyOf(const json& model, const json& comp); // the build key of a component's document ("<id>#flex" if flexible)
+std::string baseDocId(const std::string& key);                // the document id of a build key
 json expectedFingerprint(const json& doc);
 Ptr<Design> newDesign(Ptr<Document>& doc);
 std::vector<Ptr<BRepBody>> componentBodies(const Ptr<Component>& c, bool solidOnly);

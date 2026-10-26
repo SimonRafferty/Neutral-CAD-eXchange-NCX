@@ -1,6 +1,6 @@
 ; NCX for Autodesk Fusion: installer (Inno Setup 6). Built by fusion\package.ps1, which passes the version and the
 ; built files' folders; to build by hand from fusion\installer:
-;   ISCC.exe /DAppVersion=0.1.0 NCX-Fusion.iss
+;   ISCC.exe /DAppVersion=<the version in CMakeLists.txt> NCX-Fusion.iss   (after a build: it takes build\NCX.manifest)
 ;
 ; Installs for the current user only (no administrator rights): Fusion loads add-ins from the user's own
 ; %APPDATA%\Autodesk\Autodesk Fusion 360\API\AddIns, so the installer only copies the NCX folder there. The
@@ -10,7 +10,7 @@
 ; log and temporary files.
 
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #error AppVersion is not defined: build with fusion\package.ps1 (it passes the version set in CMakeLists.txt)
 #endif
 #ifndef BuildDir
   #define BuildDir "..\build"
@@ -52,7 +52,7 @@ FinishedLabelNoIcons=Start Autodesk Fusion. You will find Import NCX... and Expo
 FinishedLabel=Start Autodesk Fusion. You will find Import NCX... and Export NCX... in Fusion's File menu.
 
 [Files]
-Source: "..\NCX\NCX.manifest"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\NCX.manifest"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\{#Config}\NCX.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\{#Config}\NcxFusionImpl.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\core\{#Config}\ncx_core.dll"; DestDir: "{app}"; Flags: ignoreversion

@@ -252,7 +252,31 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
     Ptr<Design> des = newDesign(doc);
     createdDoc = doc;
     if (!des) return json{{"ok", false}, {"error", "cannot create a design: " + lastError()}};
-    Ptr<Component> root = des->rootComponent();
+    // upright in Fusion's own frame (FORMAT-SPEC 4 `orientation`): the model goes into one component under one
+    // rotation when the file's up axis is not Fusion's; inside it everything stays in the file's frame
+    const std::string fileUp = fileUpAxis(model);
+    const bool zUp = fusionIsZUp();
+    out["fileUp"] = fileUp;
+    out["fusionUp"] = zUp ? "z" : "y";
+    auto makeWrapper = [&](const Ptr<Design>& d) -> Ptr<Component> {
+        modelWrapper() = nullptr;
+        d->rootComponent()->attributes()->add("NCX", "orientation", fileUp);
+        Ptr<Matrix3D> r = uprightRotation(fileUp, zUp);
+        if (!r) return d->rootComponent();
+        Ptr<Occurrence> w = d->rootComponent()->occurrences()->addNewComponent(r);
+        if (!w) return d->rootComponent();
+        const json* rd = findDoc(model, model.is_object() ? model.value("root", "") : "");
+        w->component()->name(rd ? rd->value("name", "") : file.stem().u8string());
+        w->component()->attributes()->add("NCX", "wrapper", fileUp);
+        w->isGrounded(true);
+        modelWrapper() = w;
+        return w->component();
+    };
+    struct WrapperReset
+    {
+        ~WrapperReset() { modelWrapper() = nullptr; }
+    } wrapperReset;
+    Ptr<Component> root = makeWrapper(des);
     json verification = json::array();
     if (!plainReason.empty())
     {
@@ -275,12 +299,18 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
         else
         {
             root->name(rootDoc->value("name", ""));
-            setMeasureContext(nullptr);
+            setMeasureContext(modelWrapper());
+            // sheet-metal features build in the active component: the wrapper's, when there is one
+            // (only then: a feature made while an occurrence is active keeps proxies of its inputs)
+            if (modelWrapper() && hasSheetMetal(*rootDoc)) modelWrapper()->activate();
             Replayer rp(report, model, file);
+            rp.occurrence = modelWrapper();
             rp.trace = opts.value("trace", false);
             if (ref.components.count("")) rp.refBodies = &ref.components[""].bodies;
             progressPhase("replay");
             rp.replayPart(*rootDoc, root);
+            if (modelWrapper()) des->activateRootComponent();
+            setMeasureContext(modelWrapper());
             progressPhase("verify mass");
             progressStep(rootDoc->value("name", "") + ": checking mass properties");
             nameBodies(root, *rootDoc);
@@ -323,7 +353,7 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
                     doc->close(false);
                     des = newDesign(doc);
                     createdDoc = doc;
-                    root = des->rootComponent();
+                    root = makeWrapper(des);
                 }
                 else
                 {
@@ -332,10 +362,17 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
                 }
                 progressPhase("fallback");
                 importPlain(file, root, model, noticeName);
+                // the plain geometry keeps the document's material and appearances (its bodies are in the
+                // component the STEP import made, or in root)
+                Ptr<Component> plainComp = root;
+                if (root->bRepBodies()->count() == 0 && root->occurrences()->count() > 0) plainComp = root->occurrences()->item(0)->component();
+                rp.replayPropertiesOn(*rootDoc, plainComp);
+                recordDocument(plainComp, *rootDoc);   // provenance (host.h): the export can give the source's history back
             }
             else
             {
                 out["status"] = "rebuilt";
+                recordDocument(root, *rootDoc);   // provenance (host.h)
                 // structure: every mapped feature present under its name
                 json missing = json::array();
                 for (auto& nf : (*rootDoc)["features"])
@@ -381,34 +418,12 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
             verification.push_back(v);
         }
     }
-    // Upright view: SolidWorks models are Y-up; with Fusion's default modelling orientation Z-up they would lie on their
-    // back. The model keeps the file's coordinates (every check, joint and the export stay in the file's frame); the
-    // camera is turned so the source's up is up on screen. The source's up: `orientation.up` (ISSUES 34), else Y for
-    // a SolidWorks file.
-    if (!opts.value("close", false) && model.is_object())
-    {
-        std::string up = model.contains("orientation") ? model["orientation"].value("up", "") : "";
-        if (up.empty() && model.contains("generator") && model["generator"].value("app", "") == "SOLIDWORKS") up = "y";
-        Ptr<Application> app = Application::get();
-        bool zUp = app->preferences() && app->preferences()->generalPreferences() &&
-                   app->preferences()->generalPreferences()->defaultModelingOrientation() == ZUpModelingOrientation;
-        out["fusionUp"] = zUp ? "z" : "y";
-        if (up == "y" && zUp)
-        {
-            Ptr<Viewport> vp = app->activeViewport();
-            Ptr<Camera> cam = vp ? vp->camera() : nullptr;
-            if (cam)
-            {
-                Ptr<Point3D> t = cam->target();
-                cam->eye(Point3D::create(t->x() + 100, t->y() + 100, t->z() + 100));
-                cam->upVector(Vector3D::create(0, 1, 0));
-                cam->isFitView(true);
-                vp->camera(cam);
-                report.add(rootDocName(model), "orientation", "note",
-                           "shown upright: the source is Y-up and Fusion is set to Z-up, so the view is turned (Y up on screen); the model keeps the file's coordinates");
-            }
-        }
-    }
+    if (modelWrapper() && model.is_object())
+        report.add(rootDocName(model), "orientation", "note",
+                   "placed upright: the file's up axis is " + fileUp + " and Fusion is " + (zUp ? "Z" : "Y") +
+                       "-up, so the model is in one component (" + modelWrapper()->component()->name() +
+                       ") turned to Fusion's up axis; inside it the model keeps the file's coordinates");
+    setMeasureContext(nullptr);
     out["report"] = report.entries;
     out["verification"] = verification;
     out["jointFrames"] = jointFrames();

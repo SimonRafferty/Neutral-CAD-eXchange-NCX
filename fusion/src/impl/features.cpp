@@ -268,6 +268,316 @@ Ptr<Base> Replayer::refObject(const json& r, std::string& why)
     return nullptr;
 }
 
+// ---------------------------------------------------------------------------------------- region boundaries
+// A region's `boundary` (FORMAT-SPEC 4, regions): per loop, the ids of the sketch segments it runs along and, for a
+// piece on no sketch segment, its curve ({line: [a, b]} or {arc: [centre, radius]}, sketch mm). The pieces on no
+// segment are the face's own edges: Fusion bounds profiles by sketch curves only, so the model edges in the sketch
+// plane that lie on those pieces are projected into the sketch. Then the region is the profile containing the
+// region's point, checked by its area (profilesFor).
+//
+// SolidWorks add-in 0.6.0 writes `line` pieces displaced along their own direction (ISSUES 37: P49's chord of s1
+// on s2, truly (92.584, 42)-(107.416, 42), is written (185.168, 42)-(200, 42)): each written point is the true start
+// plus the line parameter of that end, measured from the foot of the perpendicular from the origin. A line piece
+// that lies on nothing as written is tried decoded that way (true start = W0 - ((W0.d + c) / 2) d, where d is the
+// piece's direction and c the frame origin along it; true end = start + (W1 - W0)); only a piece that then lies on
+// a sketch segment or on a model edge is used, and the region is still checked by point and area.
+// Whether a file's boundary `line` pieces are displaced as SolidWorks add-in 0.6.0 wrote them before its fix
+// (ISSUES 37): then most pieces, decoded, lie on a line of their own sketch (the folding step before the fix: 331 of
+// 388), which a fixed exporter writes as that line's id instead. Decided once per file; a file written after the fix takes every piece as written.
+static bool boundaryLinesDisplaced(const json& model)
+{
+    // most pieces (not just one: a piece along a straight sketch line still lies on it when shifted along itself)
+    int total = 0, onDecoded = 0;
+    auto onSeg = [](const json& e, double px, double py) {
+        double ax = e["start"][0].get<double>(), ay = e["start"][1].get<double>(), bx = e["end"][0].get<double>(), by = e["end"][1].get<double>();
+        double dx = bx - ax, dy = by - ay, L = std::hypot(dx, dy);
+        if (L < 1e-9) return false;
+        double d = std::fabs((px - ax) * dy - (py - ay) * dx) / L, t = ((px - ax) * dx + (py - ay) * dy) / (L * L);
+        return d < 2e-3 && t > -1e-4 && t < 1 + 1e-4;
+    };
+    for (auto& d : model.value("documents", json::array()))
+    {
+        std::map<std::string, const json*> sk;
+        for (auto& f : d.value("features", json::array())) sk[f.value("id", "")] = &f;
+        for (auto& f : d.value("features", json::array()))
+        {
+            if (!f.contains("def") || !f["def"].contains("regions") || !f["def"].contains("profile")) continue;
+            auto it = sk.find(f["def"]["profile"].value("id", ""));
+            if (it == sk.end() || !it->second->contains("def")) continue;
+            for (auto& rg : f["def"]["regions"])
+                for (auto& loop : rg.value("boundary", json::array()))
+                    for (auto& pc : loop)
+                    {
+                        if (!pc.is_object() || !pc.contains("line")) continue;
+                        double ax = pc["line"][0][0].get<double>(), ay = pc["line"][0][1].get<double>();
+                        double bx = pc["line"][1][0].get<double>(), by = pc["line"][1][1].get<double>();
+                        double L = std::hypot(bx - ax, by - ay);
+                        if (L < 1e-9) continue;
+                        double dx = (bx - ax) / L, dy = (by - ay) / L, h = (ax * dx + ay * dy) / 2;
+                        double sx = ax - h * dx, sy = ay - h * dy, ex = sx + bx - ax, ey = sy + by - ay;
+                        bool asWritten = false, decoded = false;
+                        for (auto& e : (*it->second)["def"].value("entities", json::array()))
+                            if (e.value("type", "") == "line" && e.contains("start"))
+                            {
+                                if (onSeg(e, ax, ay) && onSeg(e, bx, by)) asWritten = true;
+                                if (onSeg(e, sx, sy) && onSeg(e, ex, ey)) decoded = true;
+                            }
+                        total++;
+                        if (decoded && !asWritten) onDecoded++;
+                    }
+        }
+    }
+    return total > 0 && 2 * onDecoded > total;
+}
+
+int Replayer::regionBoundary(SketchMap& m, const json& rg, std::string& note)
+{
+    if (!rg.contains("boundary") || !rg["boundary"].is_array() || m.space == "3d") return 0;
+    char key[200];
+    std::snprintf(key, sizeof key, "%s|%.6f,%.6f", m.id.c_str(), rg["point"][0].get<double>(), rg["point"][1].get<double>());
+    if (!boundaryDone_.insert(key).second) return 0;
+    const Frame& F = m.src;
+    auto toUV = [&](const V3& p) { V3 d = sub(p, F.o); return std::array<double, 3>{dot(d, F.x), dot(d, F.y), dot(d, F.z)}; };
+    const double tol = 2e-3;   // mm
+    // the sketch's own lines and circles/arcs, in payload coordinates (the payload's entities)
+    struct Seg { bool line; double ax, ay, bx, by, r; };
+    std::vector<Seg> segs;
+    if (const json* sd = sketchDef(m.id))
+            for (auto& e : sd->value("entities", json::array()))
+            {
+                std::string t = e.value("type", "");
+                if (t == "line" && e.contains("start") && e.contains("end"))
+                    segs.push_back({true, e["start"][0].get<double>(), e["start"][1].get<double>(), e["end"][0].get<double>(), e["end"][1].get<double>(), 0});
+                else if ((t == "arc" || t == "circle") && e.contains("center"))
+                    segs.push_back({false, e["center"][0].get<double>(), e["center"][1].get<double>(), 0, 0, e.value("radius", 0.0)});
+            }
+    auto onLine = [&](double ax, double ay, double bx, double by, double px, double py, bool within) {
+        double dx = bx - ax, dy = by - ay, L = std::hypot(dx, dy);
+        if (L < 1e-9) return false;
+        double dist = std::fabs((px - ax) * dy - (py - ay) * dx) / L, t = ((px - ax) * dx + (py - ay) * dy) / (L * L);
+        return dist < tol && (!within || (t > -tol / L && t < 1 + tol / L));
+    };
+    // in-plane straight and circular model edges, in payload coordinates
+    struct Edge { Ptr<BRepEdge> e; bool line; std::vector<std::array<double, 3>> pts; std::vector<V3> model; bool closed; };
+    std::vector<Edge> edges;
+    bool edgesRead = false;
+    auto readEdges = [&]() {
+        if (edgesRead) return;
+        edgesRead = true;
+        for (auto& b : bodies(true))
+            for (size_t i = 0; i < b->edges()->count(); i++)
+            {
+                Ptr<BRepEdge> e = b->edges()->item(i);
+                Ptr<Curve3D> g = e->geometry();
+                bool line = (bool)Ptr<Line3D>(g), circ = Ptr<Circle3D>(g) || Ptr<Arc3D>(g);
+                if (!line && !circ) continue;
+                Edge ed{e, line, {}, {}, false};
+                bool inPlane = true;
+                for (auto& q : edgePoints(e, {0.0, 0.37, 0.73, 1.0}))
+                {
+                    auto uvw = toUV(q);
+                    if (std::fabs(uvw[2]) > tol) inPlane = false;
+                    ed.pts.push_back(uvw);
+                    ed.model.push_back(q);
+                }
+                ed.closed = ed.model.size() == 4 && norm(sub(ed.model[0], ed.model[3])) < 1e-6;
+                if (inPlane && ed.pts.size() == 4) edges.push_back(ed);
+            }
+    };
+    int projected = 0, unplaced = 0, decoded = 0, refused = 0, drawn = 0;
+    std::string refusedWhy;
+    auto project = [&](const Edge& ed) {
+        const Ptr<BRepEdge>& e = ed.e;
+        Ptr<ObjectCollection> pr = m.sketch->project(e);
+        if (!pr || pr->count() == 0)
+        {
+            // Fusion refuses an edge a later feature made from this same sketch (measured: "Circular dependency
+            // found: from Sketch29 to Boss-Extrude6"): the edge is drawn where it lies, fixed
+            refusedWhy = lastError();
+            Ptr<SketchCurve> c;
+            Ptr<SketchCurves> cs = m.sketch->sketchCurves();
+            if (ed.line) c = cs->sketchLines()->addByTwoPoints(m.toSketch(ed.model[0]), m.toSketch(ed.model[3]));
+            else if (ed.closed)
+            {
+                // a full circle: centre from three points
+                V3 a = ed.model[0], b = ed.model[1], d = ed.model[2];
+                V3 ab = sub(b, a), ad = sub(d, a), n = cross(ab, ad);
+                double nn = dot(n, n);
+                if (nn > 1e-12)
+                {
+                    V3 ctr = add(a, mul(add(mul(cross(n, ab), dot(ad, ad)), mul(cross(ad, n), dot(ab, ab))), 0.5 / nn));
+                    c = cs->sketchCircles()->addByCenterRadius(m.toSketch(ctr), mm2cm(norm(sub(a, ctr))));
+                }
+            }
+            else
+                c = cs->sketchArcs()->addByThreePoints(m.toSketch(ed.model[0]), m.toSketch(ed.model[1]), m.toSketch(ed.model[3]));
+            if (!c)
+            {
+                refused++;
+                return;
+            }
+            c->isFixed(true);
+            boundaryCurves_.push_back(c);
+            drawn++;
+            return;
+        }
+        for (size_t k = 0; k < pr->count(); k++)
+            if (Ptr<SketchEntity> se = pr->item(k))
+            {
+                if (Ptr<SketchCurve> sc = se) sc->isConstruction(false);
+                boundaryCurves_.push_back(se);
+                projected++;
+            }
+    };
+    // line pieces on no sketch segment or model edge (one variant per reading), and the ends of the placed ones
+    std::vector<std::vector<std::array<double, 4>>> pending;
+    std::vector<std::array<double, 2>> known;
+    for (auto& s : segs)
+        if (s.line)
+        {
+            known.push_back({s.ax, s.ay});
+            known.push_back({s.bx, s.by});
+        }
+    for (auto& loop : rg["boundary"])
+        for (auto& piece : loop)
+        {
+            if (!piece.is_object()) continue;   // a segment id: the sketch has it
+            if (piece.contains("arc"))
+            {
+                double cx = piece["arc"][0][0].get<double>(), cy = piece["arc"][0][1].get<double>(), r = piece["arc"][1].get<double>();
+                bool onSeg = false;
+                for (auto& s : segs)
+                    if (!s.line && std::hypot(s.ax - cx, s.ay - cy) < tol && std::fabs(s.r - r) < tol) onSeg = true;
+                if (onSeg) continue;
+                readEdges();
+                bool hit = false;
+                for (auto& ed : edges)
+                {
+                    if (ed.line) continue;
+                    bool on = true;
+                    for (auto& q : ed.pts)
+                        if (std::fabs(std::hypot(q[0] - cx, q[1] - cy) - r) > tol) on = false;
+                    if (on)
+                    {
+                        project(ed);
+                        hit = true;
+                    }
+                }
+                if (!hit) unplaced++;
+            }
+            else if (piece.contains("line"))
+            {
+                double ax = piece["line"][0][0].get<double>(), ay = piece["line"][0][1].get<double>();
+                double bx = piece["line"][1][0].get<double>(), by = piece["line"][1][1].get<double>();
+                // as written, then decoded (see above; c from the model origin, then from the sketch origin)
+                std::vector<std::array<double, 4>> tries{{ax, ay, bx, by}};
+                double L = std::hypot(bx - ax, by - ay);
+                if (L > 1e-9 && (displaced_ < 0 ? (displaced_ = boundaryLinesDisplaced(model_) ? 1 : 0) : displaced_) == 1)
+                {
+                    double dx = (bx - ax) / L, dy = (by - ay) / L;
+                    double cModel = dot(F.o, F.dirToModel(dx, dy));
+                    for (double c : {cModel, 0.0})
+                    {
+                        double h = (ax * dx + ay * dy + c) / 2;
+                        double sx = ax - h * dx, sy = ay - h * dy;
+                        tries.push_back({sx, sy, sx + (bx - ax), sy + (by - ay)});
+                    }
+                }
+                bool done = false;
+                for (size_t ti = 0; ti < tries.size() && !done; ti++)
+                {
+                    auto& t = tries[ti];
+                    for (auto& s : segs)
+                        if (s.line && onLine(s.ax, s.ay, s.bx, s.by, t[0], t[1], true) && onLine(s.ax, s.ay, s.bx, s.by, t[2], t[3], true))
+                            done = true;
+                    if (!done)
+                    {
+                        readEdges();
+                        for (auto& ed : edges)
+                        {
+                            if (!ed.line) continue;
+                            // the edge on the piece's line, overlapping it
+                            if (!onLine(t[0], t[1], t[2], t[3], ed.pts[0][0], ed.pts[0][1], false) ||
+                                !onLine(t[0], t[1], t[2], t[3], ed.pts[3][0], ed.pts[3][1], false))
+                                continue;
+                            double dx = t[2] - t[0], dy = t[3] - t[1], LL = dx * dx + dy * dy;
+                            double u0 = ((ed.pts[0][0] - t[0]) * dx + (ed.pts[0][1] - t[1]) * dy) / LL;
+                            double u1 = ((ed.pts[3][0] - t[0]) * dx + (ed.pts[3][1] - t[1]) * dy) / LL;
+                            if (std::max(u0, u1) < 1e-6 || std::min(u0, u1) > 1 - 1e-6) continue;
+                            project(ed);
+                            done = true;
+                        }
+                    }
+                    if (done && ti > 0) decoded++;
+                    if (done)
+                    {
+                        known.push_back({t[0], t[1]});
+                        known.push_back({t[2], t[3]});
+                    }
+                }
+                if (!done) pending.push_back(tries);
+            }
+        }
+    // A line piece on neither is still on the region's boundary (spec): it is drawn where it lies, fixed, in the
+    // reading whose ends meet the ends of the other pieces and segments (the pieces run in loop order)
+    std::vector<std::array<double, 4>> drawnPieces;
+    for (auto& tries : pending)
+    {
+        int best = -1, bestN = 0;
+        for (size_t ti = 0; ti < tries.size(); ti++)
+        {
+            int n = 0;
+            for (int k = 0; k < 2; k++)
+                for (auto& q : known)
+                    if (std::hypot(q[0] - tries[ti][2 * k], q[1] - tries[ti][2 * k + 1]) < 1e-3)
+                    {
+                        n++;
+                        break;
+                    }
+            if (n > bestN)
+            {
+                bestN = n;
+                best = static_cast<int>(ti);
+            }
+        }
+        if (best < 0)
+        {
+            unplaced++;
+            continue;
+        }
+        auto& t = tries[best];
+        bool dup = false;
+        for (auto& d : drawnPieces)
+            if ((std::hypot(d[0] - t[0], d[1] - t[1]) < 1e-6 && std::hypot(d[2] - t[2], d[3] - t[3]) < 1e-6) ||
+                (std::hypot(d[0] - t[2], d[1] - t[3]) < 1e-6 && std::hypot(d[2] - t[0], d[3] - t[1]) < 1e-6))
+                dup = true;
+        if (dup) continue;
+        Ptr<SketchLine> l = m.sketch->sketchCurves()->sketchLines()->addByTwoPoints(m.toSketch(F.toModel(t[0], t[1])), m.toSketch(F.toModel(t[2], t[3])));
+        if (!l)
+        {
+            unplaced++;
+            continue;
+        }
+        l->isFixed(true);
+        boundaryCurves_.push_back(l);
+        drawnPieces.push_back(t);
+        drawn++;
+        if (best > 0) decoded++;
+    }
+    if (projected || unplaced || decoded || refused || drawn)
+    {
+        char buf[120];
+        std::snprintf(buf, sizeof buf, "region at (%.3f, %.3f) from its boundary: ", rg["point"][0].get<double>(), rg["point"][1].get<double>());
+        std::string t = std::string(buf) + std::to_string(projected) + " model edge(s) projected into the sketch";
+        if (decoded) t += ", " + std::to_string(decoded) + " line piece(s) read displaced as SolidWorks add-in 0.6.0 writes them (ISSUES 37)";
+        if (unplaced) t += ", " + std::to_string(unplaced) + " piece(s) on no sketch segment or model edge";
+        if (drawn) t += ", " + std::to_string(drawn) + " drawn fixed (an edge a later feature of this sketch makes, which Fusion refuses to project as circular, or a piece on no edge found)";
+        if (refused) t += ", " + std::to_string(refused) + " edge(s) neither projected nor drawn (" + refusedWhy.substr(0, 120) + ")";
+        note += (note.empty() ? "" : "; ") + t;
+    }
+    return projected + drawn;
+}
+
 // ---------------------------------------------------------------------------------------- profiles
 // The sketch's regions as the source extrudes a whole sketch: a region is material when an odd number of
 // the sketch's closed contours enclose it (nested contours make holes, islands inside holes are material).
@@ -290,6 +600,14 @@ Ptr<ObjectCollection> Replayer::profilesFor(const json& def, std::string& why)
         return nullptr;
     }
     SketchMap& m = sit->second;
+    // regions with a `boundary`: the model edges they run along go into the sketch first
+    if (regionRetry_ == 0 && def.contains("regions"))
+        for (auto& rg : def["regions"]) regionBoundary(m, rg, regionNote_);
+    auto isBoundaryCurve = [&](const Ptr<SketchEntity>& se) {
+        for (auto& b : boundaryCurves_)
+            if (b == se) return true;
+        return false;
+    };
     Ptr<Profiles> all0 = m.sketch->profiles();
     if (!all0 || all0->count() == 0)
     {
@@ -389,7 +707,7 @@ Ptr<ObjectCollection> Replayer::profilesFor(const json& def, std::string& why)
                             bool mine = false;
                             for (auto& kv : m.ents)
                                 if (kv.second == se) mine = true;
-                            if (!mine) v.push_back(se);
+                            if (!mine && !isBoundaryCurve(se)) v.push_back(se);
                         }
                     }
                     return v;
@@ -456,7 +774,7 @@ Ptr<ObjectCollection> Replayer::profilesFor(const json& def, std::string& why)
                     bool mine = false;
                     for (auto& kv : m.ents)
                         if (kv.second == Ptr<SketchEntity>(c)) mine = true;
-                    if (!mine && c->isConstruction(true)) made++;
+                    if (!mine && !isBoundaryCurve(c) && c->isConstruction(true)) made++;
                 }
                 if (made > 0)
                 {
@@ -642,7 +960,9 @@ Ptr<ObjectCollection> Replayer::profilesFor(const json& def, std::string& why)
 std::string Replayer::replayExtrude(json& nf, const json& def, bool cut)
 {
     std::string why;
+    regionNote_.clear();
     Ptr<ObjectCollection> prof = profilesFor(def, why);
+    if (!regionNote_.empty()) nf["info"] = regionNote_;
     Ptr<Base> profile = prof;
     if (!prof && def.contains("thin") && def["profile"].value("kind", "") == "feature")
     {
@@ -654,10 +974,10 @@ std::string Replayer::replayExtrude(json& nf, const json& def, bool cut)
             Ptr<SketchCurves> cs = it->second.sketch->sketchCurves();
             for (size_t i = 0; i < cs->count(); i++)
                 if (!cs->item(i)->isConstruction() && !cs->item(i)->isReference()) curves->add(cs->item(i));
-            if (curves->count() > 0) profile = Path::create(curves, connectedChainedCurves);
+            if (curves->count() > 0) profile = pathOf(curves, it->second.sketch);
         }
     }
-    if (!profile) return "profile: " + why;
+    if (!profile) return "profile: " + why + (regionNote_.empty() ? "" : " (" + regionNote_ + ")");
     bool mirrored = false;
     {
         const json& pr = def["profile"];
@@ -691,6 +1011,31 @@ std::string Replayer::replayExtrude(json& nf, const json& def, bool cut)
     std::string lastErrorSeen;
     // the order: as recorded first, then the blind cut past every body in the recorded direction (5) before the
     // other direction is tried, so a through-all Fusion refuses is not made on the wrong side
+    // the volume of every other component's bodies (cm^3), to see a cut reach into another part
+    auto othersVolume = [&]() {
+        double v = 0;
+        Ptr<Components> cs = design_->allComponents();
+        for (size_t i = 0; cs && i < cs->count(); i++)
+        {
+            Ptr<Component> c = cs->item(i);
+            if (c == comp_) continue;
+            for (size_t k = 0; k < c->bRepBodies()->count(); k++) v += c->bRepBodies()->item(k)->volume();
+        }
+        return v;
+    };
+    const double othersBefore = (cut && !asmOccs) ? othersVolume() : 0.0;
+    std::map<std::string, double> othersEach;   // per component, for the report
+    if (cut && !asmOccs)
+    {
+        Ptr<Components> cs = design_->allComponents();
+        for (size_t i = 0; cs && i < cs->count(); i++)
+        {
+            Ptr<Component> c = cs->item(i);
+            double v = 0;
+            for (size_t k = 0; k < c->bRepBodies()->count(); k++) v += c->bRepBodies()->item(k)->volume();
+            othersEach[c->entityToken()] = v;
+        }
+    }
     static const int order[] = {0, 1, 5, 2, 3, 4, 6};
     for (int ai = 0; ai < 7; ai++)
     {
@@ -857,6 +1202,41 @@ std::string Replayer::replayExtrude(json& nf, const json& def, bool cut)
         if (!lastTry && (msg.find("No target body") != std::string::npos || msg.find("body not found") != std::string::npos)) continue;
         return std::string(cut ? "cut" : "extrude") + " failed: " + msg;
     }
+    // A cut made without naming its bodies cuts every body it meets, other parts' too (measured on the folding step:
+    // every part is built at the origin, and the Top Hanger Cheek's Cut-Extrude12, a blind cut past every body,
+    // took 1003 mm^3 out of the Step Plate built before it, after that part's own check; the feature's
+    // participantBodies() then reads empty). Other parts' volume is compared before and after: if it changed, the cut
+    // is limited to this part's bodies; if Fusion refuses that, the attempt is dropped.
+    if (cut && !asmOccs && std::fabs(othersVolume() - othersBefore) > 1e-9)
+    {
+        std::vector<Ptr<BRepBody>> own;
+        for (auto& b : bodies(true)) own.push_back(b);
+        bool fixed = !own.empty() && f->participantBodies(own) && std::fabs(othersVolume() - othersBefore) <= 1e-9 &&
+                     !(f->timelineObject() && f->timelineObject()->healthState() == ErrorFeatureHealthState);
+        if (!fixed)
+        {
+            std::string m2 = f->timelineObject() ? f->timelineObject()->errorOrWarningMessage() : "";
+            // which parts it reached (for the report)
+            std::string whom;
+            {
+                Ptr<Components> cs = design_->allComponents();
+                for (size_t i = 0; cs && i < cs->count(); i++)
+                {
+                    Ptr<Component> c = cs->item(i);
+                    if (c == comp_) continue;
+                    double v = 0;
+                    for (size_t k = 0; k < c->bRepBodies()->count(); k++) v += c->bRepBodies()->item(k)->volume();
+                    auto it = othersEach.find(c->entityToken());
+                    double v0 = it == othersEach.end() ? 0 : it->second;
+                    if (std::fabs(v - v0) > 1e-9) whom += (whom.empty() ? "" : ", ") + c->name();
+                }
+            }
+            f->deleteMe();
+            if (!lastTry) continue;
+            return "cut failed: made without naming its bodies it also cut other parts (" + whom +
+                   "), and limited to this part's bodies Fusion refused it" + (m2.empty() ? std::string() : " (" + m2 + ")");
+        }
+    }
     if (attempt >= 5)
     {
         nf["status"] = "approximate";
@@ -870,9 +1250,9 @@ std::string Replayer::replayExtrude(json& nf, const json& def, bool cut)
                                   : "cut made through all in both directions: the recorded direction finds no material in Fusion";
     }
     else if (attempt == 1)
-        nf["info"] = "cut without naming its target bodies (Fusion does not cut a sheet-metal body named as a participant)";
+        nf["info"] = (nf.contains("info") ? nf["info"].get<std::string>() + "; " : std::string()) + "cut without naming its target bodies (Fusion does not cut a sheet-metal body named as a participant)";
     else if (f->timelineObject() && f->timelineObject()->healthState() == WarningFeatureHealthState)
-        nf["info"] = "Fusion warns: " + msg;
+        nf["info"] = (nf.contains("info") ? nf["info"].get<std::string>() + "; " : std::string()) + "Fusion warns: " + msg;
     name(f, nf.value("name", ""));
     // the feature's dimensions as SolidWorks names them (D1 = direction 1 depth, D2 = direction 2 depth)
     {
@@ -1049,7 +1429,7 @@ int Replayer::axisSense(const json& r, const Ptr<Base>& ax)
         if (l) got = unit(vecOf(l->direction()));
     }
     else if (Ptr<SketchLine> sl = ax)
-        got = unit(sub(ptMm(sl->endSketchPoint()->worldGeometry()), ptMm(sl->startSketchPoint()->worldGeometry())));
+        got = unit(sub(modelPointMm(sl->endSketchPoint()), modelPointMm(sl->startSketchPoint())));
     else if (Ptr<BRepEdge> ed = ax)
     {
         Ptr<CurveEvaluator3D> ev = ed->evaluator();

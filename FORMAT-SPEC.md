@@ -86,6 +86,10 @@ split into consecutive chunks of <= 8000 characters
 2. Insert the new records immediately before the DATA section's `ENDSEC;`, with entity ids above
    the file's current maximum.
 3. Keep the file's line-ending style.
+4. Each part's STEP PRODUCT should carry the name of its payload document (`name`), so a reader can find a
+   document's plain geometry when its rebuild fails. Readers MUST NOT rely on it: some systems write their own
+   product names (Fusion writes time stamps), so a reader that finds no product by name matches the document's
+   body fingerprints against the products' geometry instead.
 
 ### 2.5 Reading
 
@@ -209,8 +213,9 @@ other systems may use them where they understand them, and otherwise ignore them
 **Top level:**
 - `format: "ncx"`, `schema`, `generator`, `units`;
 - `orientation` (optional): `{up}`, the axis of the model frame the source system shows as up (`x`, `y` or `z`,
-  optionally signed: `-z`). Informative: an importer may turn its view, or place the model under one transform, so
-  that this axis is up in its own convention, but the model's coordinates, references and checks stay in the file's
+  optionally signed: `-z`). Informative: an importer places the model under one transform so that this axis is up
+  in its own convention (turning only the view leaves its standard views and home view showing the model on its
+  side), but the model's coordinates, references and checks stay in the file's
   frame, and an exporter writing the model back keeps that frame. SolidWorks is Y-up (its Top plane is XZ); Fusion
   and Onshape are usually Z-up. Without it, assume `y`;
 - `root` (a document id);
@@ -228,7 +233,9 @@ other systems may use them where they understand them, and otherwise ignore them
   assembly, so its own mates move with this assembly's motion. Without it the sub-assembly is rigid here: its parts
   keep their places relative to each other and move as one piece. Either way the sub-assembly's own mates define
   where its parts are: an importer keeps them (as joints, constraints or its system's equivalent) and, for a rigid
-  sub-assembly, also holds its parts to it (a rigid group, or each part grounded to its parent).
+  sub-assembly, also holds its parts to it (a rigid group, or each part grounded to its parent). In a flexible
+  sub-assembly its `fixed` parts stay fixed to it, and a parent mate that names a part inside it (by its `path`)
+  acts on that part, not on the sub-assembly as a whole.
 - Every document reachable from `root` MUST be in the same payload. The layout part, its derived
   parts and the assembly travel together: one file.
 
@@ -294,9 +301,12 @@ that meets a field it does not understand reports the feature `approximate` rath
     again); contours that cross are united.
   - A region is bounded by the sketch's curves and, for a sketch on a face, by that face's edges lying in the sketch
     plane. A region may carry its **`boundary`**: per loop of the region, in loop order, the ids of the sketch
-    segments it runs along (each once for consecutive edges along one segment), and for a boundary piece on no sketch
-    segment its curve in sketch coordinates, `{line: [start, end]}` or `{arc: [centre, radius]}` (mm). An importer
-    that can build the region from its boundary does so, then checks the point and area.
+    segments it runs along (each once for consecutive edges along one segment, so a segment that runs into the
+    region and stops - a slit, bounding it on both sides - is listed once), and for a boundary piece on no sketch
+    segment (an edge of the face) its curve in sketch coordinates, `{line: [start, end]}` with its ends in loop
+    order or `{arc: [centre, radius]}` (mm). A piece lying on a sketch segment is always written as that segment's id.
+    An importer that can build the region from its boundary does so (the face's edges projected or drawn into the
+    sketch), then checks the point and area.
   - `start` (optional; absent: the sketch plane): `{type: "offset", distance, reverse}` starts the feature
     `distance` mm along the sketch plane's normal (`frame.z`), or against it with `reverse`, whichever way the
     feature itself runs; `{type: "surface" | "vertex", target}` starts it at that face or vertex.
@@ -517,7 +527,9 @@ with the rest of the history.
   solve to the same configuration.
 - A `spline` carries its fit `points` (the editable intent) and `nurbs`, the exact curve: `degree`, `knots` (the
   full knot vector), `controlPoints` (sketch coordinates, mm) and, for a rational spline, `weights`. A system whose
-  spline through the same fit points comes out differently builds the curve from `nurbs`.
+  spline through the same fit points comes out differently builds the curve from `nurbs`. Fit points are the writer's
+  own fit: an importer builds another system's spline from `nurbs` (a spline with fewer than three `points`, such as
+  a fixed spline whose only points are its ends, always).
 - `constraints` use a closed list of types; others keep their native name with `supported: false`.
 - `hidden` (optional, default false): the sketch is hidden in the source; an importer hides it too.
 - **`converted`** (Convert Entities / Project / Use): `entities: [own, source]`, the sketch's own segment and the
@@ -571,6 +583,9 @@ feature. A system without derived parts can rebuild the source's sketches in the
 linked to the source's parameters: the source then still drives the part, and the flex probes (§6.4) prove it.
 
 **Directions and orientation** (as the SolidWorks exporter writes them; `frame` is the sketch's frame):
+- A `reverse` on a direction or axis given by a geometric reference (a pattern's `dir1`/`dir2` edge, a circular
+  pattern's `axis`) is against the `direction` or `axis` that reference's descriptor records, not against the
+  importer's own idea of the entity's direction (systems orient the same edge either way).
 - `extrude`: along the sketch normal (`frame.z`); `cut`: against it. `reverse` flips either. `end2` runs the
   other way.
 - A one-direction thin wall lies to the right of an open profile's direction (start to end), looking down
@@ -632,7 +647,9 @@ color, optical?, file?, mapping?}`.
   scope);
 - every reference resolves (`root`, `insertPart.source` must be a part, `component.document`,
   sketch entity ids in constraints and dimensions);
-- there are no cycles in the document dependency graph;
+- there are no cycles in the document dependency graph. Writers list documents in dependency order (a document after
+  every document it names: an `insertPart` source, a component's document); importers order them themselves all
+  the same;
 - `opaque` features need a `reason`;
 - units are mm and deg.
 
@@ -826,10 +843,11 @@ An importer verifies each part it rebuilt, and reports every check:
 A mass `mismatch` replaces the part by its reference B-rep (the other checks are then not run).
 The others are reported, not acted on.
 
-**When the target cannot measure exactly.** Two kernels measure the same freeform surface differently (measured:
-9e-5 relative in volume for one spline extrusion, SolidWorks against Onshape), which fails `native` even for a perfect
-rebuild. For a body the payload marks `freeform`, the mass check also passes when the rebuild matches the importer's
-own measurement of the file's B-rep (the stale check's reference) at `native` *and* the payload at `exchange`. Some
+**When the target cannot measure exactly.** Two kernels measure the same body differently (measured: 9e-5 relative
+in volume for one spline extrusion, SolidWorks against Onshape; 5.6e-5 for a fillet-and-torus nut with no spline at
+all, SolidWorks against Fusion), which fails `native` even for a perfect rebuild. For any body, the mass check also
+passes when the rebuild matches the importer's own measurement of the file's B-rep (the stale check's reference) at
+`native` *and* the payload at `exchange`; the report says so (the part is `approximate`, not `exact`). Some
 systems give exact volume and area but centroid and moments only from a mesh, or only after assigning a material that
 would change the user's model. Volume and area must then still meet `native`. Centroid and moments may be compared at
 `exchange` instead, and the report says so (for example `mass: match (centroid, moments at exchange: mesh)`).

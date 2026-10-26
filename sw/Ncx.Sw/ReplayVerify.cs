@@ -42,7 +42,10 @@ namespace Ncx.Sw
                 if (nf.Str("status") == "opaque") continue;   // reported as a fallback already
                 n++;
                 var f = part.FeatureByName(nf.Str("name")) as IFeature;
-                string want = nf.Obj("native")?.Str("type");
+                // the type name is compared only when SolidWorks wrote it (another system's names mean nothing here)
+                var native = nf.Obj("native");
+                string want = native != null && string.Equals(native.Str("app"), "SOLIDWORKS", StringComparison.OrdinalIgnoreCase)
+                    ? native.Str("type") : null;
                 if (f == null) missing.Add(nf.Str("name"));
                 else if (want != null && f.GetTypeName2() != want)
                     wrongType.Add(new JObj { { "feature", nf.Str("name") }, { "expected", want }, { "actual", f.GetTypeName2() } });

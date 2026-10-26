@@ -656,6 +656,11 @@ std::string Replayer::replaySketch(json& nf, const json& def, const Ptr<Base>& p
     // the source's visibility (FORMAT-SPEC 4, sketch `hidden`)
     if (def.value("hidden", false)) sk->isLightBulbOn(false);
     features[nf.value("id", "")] = sk;
+    // provenance: each entity keeps its payload id (attribute NCX/id), so an export writes the same ids and the source's
+    // references to them (contours, region boundaries, axes) stay valid
+    for (auto& kv : m.ents)
+        if (kv.second)
+            if (Ptr<Attributes> as = kv.second->attributes()) as->add("NCX", "id", kv.first);
     sketches_[nf.value("id", "")] = m;
     sketchDefs_[nf.value("id", "")] = def;
     if (!infos.empty())
@@ -772,8 +777,39 @@ std::string Replayer::replaySketch3D(json& nf, const json& def)
             std::string why;
             Ptr<Base> o = c["entities"].size() == 1 ? sketchEntityFor(m, c["entities"][0], why) : nullptr;
             Ptr<SketchCurve> cv = o;
-            if (!cv || !sk->geometricConstraints()->addPerpendicularToSurface(cv, comp_->xYConstructionPlane()))
-                w = "relation alongZ refused: " + lastError();
+            // the line must then run along the part's z. In the upright wrapper Fusion's perpendicular-to-surface
+            // relation with the XY plane laid P45's rising line down in the plane (it takes the plane in another frame):
+            // each origin plane is tried, the one that leaves the line along z kept; with none, no relation
+            auto alongZ = [&]() {
+                Ptr<SketchLine> l = cv;
+                if (!l) return true;
+                V3 d = unit(sub(modelPointMm(l->endSketchPoint()), modelPointMm(l->startSketchPoint())));
+                return std::fabs(std::fabs(d[2]) - 1) < 1e-6;
+            };
+            // where the line's ends are drawn (sketch space), to put them back after a relation that moved them
+            Ptr<SketchLine> ln = cv;
+            Ptr<Point3D> s0 = ln ? ln->startSketchPoint()->geometry() : nullptr, e0 = ln ? ln->endSketchPoint()->geometry() : nullptr;
+            auto putBack = [&]() {
+                if (!ln) return;
+                for (auto pr : {std::make_pair(ln->startSketchPoint(), s0), std::make_pair(ln->endSketchPoint(), e0)})
+                {
+                    Ptr<Point3D> now = pr.first->geometry();
+                    pr.first->move(Vector3D::create(pr.second->x() - now->x(), pr.second->y() - now->y(), pr.second->z() - now->z()));
+                }
+            };
+            Ptr<GeometricConstraint> made;
+            for (Ptr<ConstructionPlane> pl : {comp_->xYConstructionPlane(), comp_->xZConstructionPlane(), comp_->yZConstructionPlane()})
+            {
+                if (!cv || made) break;
+                made = sk->geometricConstraints()->addPerpendicularToSurface(cv, pl);
+                if (made && !alongZ())
+                {
+                    made->deleteMe();
+                    made = nullptr;
+                    putBack();
+                }
+            }
+            if (!made) w = "relation alongZ not carried (Fusion's perpendicular-to-surface relation moved the line off z): the line is drawn along z, unconstrained";
         }
         else
             w = addConstraint(m, c);
@@ -787,6 +823,11 @@ std::string Replayer::replaySketch3D(json& nf, const json& def)
     // the source's visibility (FORMAT-SPEC 4, sketch `hidden`)
     if (def.value("hidden", false)) sk->isLightBulbOn(false);
     features[nf.value("id", "")] = sk;
+    // provenance: each entity keeps its payload id (attribute NCX/id), so an export writes the same ids and the source's
+    // references to them (contours, region boundaries, axes) stay valid
+    for (auto& kv : m.ents)
+        if (kv.second)
+            if (Ptr<Attributes> as = kv.second->attributes()) as->add("NCX", "id", kv.first);
     sketches_[nf.value("id", "")] = m;
     sketchDefs_[nf.value("id", "")] = def;
     if (!notes.empty())

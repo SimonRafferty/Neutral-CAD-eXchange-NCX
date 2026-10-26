@@ -89,6 +89,14 @@ namespace Ncx.Sw
             foreach (JObj b in def.Arr("bends"))
             {
                 var bend = Bend(b);
+                if (bend == null && b.Obj("face") != null)
+                {
+                    // a system without bend sub-features (FORMAT-SPEC 4: found by its face): the bend's face
+                    // selects the bend, as a click on it does
+                    string w = SelectRef(b.Obj("face"), true, 4);
+                    if (w != null) return "bend " + (b.Str("name") ?? "") + ": " + w;
+                    continue;
+                }
                 if (bend == null) return "bend " + b.Str("name") + " was not rebuilt";
                 if (!bend.Select2(true, 4)) return "could not select bend " + bend.Name;
             }
@@ -102,7 +110,7 @@ namespace Ncx.Sw
         IFeature Bend(JObj b)
         {
             IFeature owner;
-            if (!features.TryGetValue(b.Str("feature"), out owner)) return null;
+            if (b.Str("feature") == null || !features.TryGetValue(b.Str("feature"), out owner)) return null;   // none: found by its face
             int i = 0, want = (int)b.Num("sub");
             for (var sub = (IFeature)owner.GetFirstSubFeature(); sub != null; sub = (IFeature)sub.GetNextSubFeature(), i++)
                 if (i == want) return sub;

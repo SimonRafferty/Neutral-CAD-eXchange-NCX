@@ -16,6 +16,7 @@
 #include "host.h"
 #include "replay.h"
 
+#include <functional>
 #include <sstream>
 
 namespace ncxf {
@@ -42,8 +43,20 @@ struct DocWriter
     int n = 0;
     std::vector<std::string> notes;
 
-    std::string fid() { return "f:" + std::to_string(++n); }
-    bool extrudeNegative = false;   // the extrude being written went against its profile's normal
+    // a new feature id: none the source's features use (walk keeps those for the objects an NCX import made)
+    std::set<std::string> reservedIds, usedIds;
+    bool passthrough = true;   // feature passthrough (walk); off with the export's {"passthrough": false}
+    std::string fid()
+    {
+        std::string id;
+        do
+            id = "f:" + std::to_string(++n);
+        while (reservedIds.count(id) || usedIds.count(id));
+        return id;
+    }
+    bool extrudeNegative = false;
+    std::vector<std::pair<V3, V3>> holeAxes;   // the hole being written: its drilled cylinders' axes (point, direction)
+    json holeDiameters = json::array();         // and the distinct diameters of its cylinders, ascending   // the extrude being written went against its profile's normal
 
     // where an extrude's side faces lie relative to its profile plane (the extent objects do not say:
     // isPositiveDirection reads true for a negative through-all, measured); call with the feature computed
@@ -55,10 +68,16 @@ struct DocWriter
         Ptr<BRepFaces> sf = f->sideFaces();
         if (!p0 || !sf || !sf->count()) return false;
         Ptr<Sketch> sk = p0->parentSketch();
+        if (sk->nativeObject()) sk = sk->nativeObject();   // both in the component's own frame (upright wrapper)
         V3 nrm = unit(cross(vecOf(sk->xDirection()), vecOf(sk->yDirection())));
         V3 o = ptMm(sk->origin());
         double sum = 0;
-        for (size_t k = 0; k < sf->count(); k++) sum += dot(sub(ptMm(sf->item(k)->pointOnFace()), o), nrm);
+        for (size_t k = 0; k < sf->count(); k++)
+        {
+            Ptr<BRepFace> fk = sf->item(k);
+            if (fk->nativeObject()) fk = fk->nativeObject();
+            sum += dot(sub(ptMm(fk->pointOnFace()), o), nrm);
+        }
         return sum < 0;
     }
 
@@ -94,7 +113,13 @@ struct DocWriter
 
     json planeRef(const Ptr<Base>& p)
     {
-        if (Ptr<ConstructionPlane> cp = p)
+        // a proxy (the model in the upright wrapper, common.h) is read as its native entity, in its component's frame
+        Ptr<Base> pn = p;
+        if (Ptr<ConstructionPlane> c0 = p)
+            if (c0->nativeObject()) pn = c0->nativeObject();
+        if (Ptr<BRepFace> f0 = p)
+            if (f0->nativeObject()) pn = f0->nativeObject();
+        if (Ptr<ConstructionPlane> cp = pn)
         {
             if (cp == comp->xYConstructionPlane()) return json{{"kind", "originPlane"}, {"by", "id"}, {"plane", "front"}};
             if (cp == comp->xZConstructionPlane()) return json{{"kind", "originPlane"}, {"by", "id"}, {"plane", "top"}};
@@ -103,7 +128,7 @@ struct DocWriter
             if (!id.empty()) return json{{"kind", "feature"}, {"by", "id"}, {"id", id}};
             return json{{"kind", "frame"}};
         }
-        if (Ptr<BRepFace> f = p) return descriptor(f);
+        if (Ptr<BRepFace> f = pn) return descriptor(f);
         notes.push_back(std::string("a sketch plane of type ") + (p ? p->objectType() : "null") + " is written as its frame only");
         return json{{"kind", "frame"}};
     }
@@ -180,8 +205,11 @@ struct DocWriter
                 e["end"] = P(a->endSketchPoint());
                 e["radius"] = cm2mm(a->radius());
                 // Fusion runs an arc counter-clockwise from its start to its end about its normal
-                Ptr<Arc3D> g = a->worldGeometry();
-                e["normal"] = vj(g ? unit(vecOf(g->normal())) : V3{0, 0, 1});
+                // its normal in the component's space (world geometry is turned by the upright wrapper)
+                Ptr<Arc3D> g = a->geometry();
+                Ptr<Vector3D> nv = g ? g->normal() : nullptr;
+                if (nv) nv->transformBy((sk->nativeObject() ? sk->nativeObject() : sk)->transform());
+                e["normal"] = vj(nv ? unit(vecOf(nv)) : V3{0, 0, 1});
                 e["ccw"] = true;
             }
             else
@@ -215,6 +243,21 @@ struct DocWriter
     }
 
     // ---------------------------------------------------------------------------------- sketch
+    // the planar face of the part lying in this plane (point, unit normal; mm), or null
+    Ptr<BRepFace> faceInPlane(const V3& o, const V3& nz)
+    {
+        for (auto& b : solids())
+            for (size_t i = 0; i < b->faces()->count(); i++)
+            {
+                Ptr<BRepFace> f = b->faces()->item(i);
+                Ptr<Plane> g = f->geometry();
+                if (!g) continue;
+                V3 nn = unit(vecOf(g->normal()));
+                if (std::fabs(std::fabs(dot(nn, nz)) - 1) < 1e-9 && std::fabs(dot(sub(o, ptMm(g->origin())), nn)) < 1e-6) return f;
+            }
+        return nullptr;
+    }
+
     json sketchDef(const Ptr<Sketch>& sk, const std::string& id)
     {
         auto& ids = sketchIds[id];
@@ -222,24 +265,12 @@ struct DocWriter
         V3 o = ptMm(sk->origin()), x = unit(vecOf(sk->xDirection())), y = unit(vecOf(sk->yDirection()));
         json plane = planeRef(sk->referencePlane());
         if (plane.value("kind", "") == "frame")
-        {
-            // Fusion gives no reference plane for some face sketches: the face lying in the sketch plane
-            V3 nz = unit(cross(x, y));
-            for (auto& b : solids())
-                for (size_t i = 0; i < b->faces()->count(); i++)
-                {
-                    Ptr<BRepFace> f = b->faces()->item(i);
-                    Ptr<Plane> g = f->geometry();
-                    if (!g) continue;
-                    V3 nn = unit(vecOf(g->normal()));
-                    if (std::fabs(std::fabs(dot(nn, nz)) - 1) < 1e-9 && std::fabs(dot(sub(o, ptMm(g->origin())), nn)) < 1e-6)
-                    {
-                        plane = descriptor(f);
-                        notes.pop_back();
-                        break;
-                    }
-                }
-        }
+            if (Ptr<BRepFace> f = faceInPlane(o, unit(cross(x, y))))
+            {
+                // Fusion gives no reference plane for some face sketches: the face lying in the sketch plane
+                plane = descriptor(f);
+                notes.pop_back();
+            }
         json d{{"plane", plane},
                {"frame", {{"origin", vj(o)}, {"x", vj(x)}, {"z", vj(unit(cross(x, y)))}}},
                {"entities", json::array()}, {"constraints", json::array()}, {"dimensions", json::array()},
@@ -247,12 +278,31 @@ struct DocWriter
         auto uv = [&](const Ptr<Point3D>& p) { return json::array({cm2mm(p->x()), cm2mm(p->y())}); };
         int np = 0, ns = 0;
         Ptr<SketchPoint> originPt = sk->originPoint();
+        // Entities an NCX import made keep their payload ids (attribute NCX/id, sketch.cpp), so the source's references
+        // to them (contours, region boundaries, axes, a passed-through feature's definition) stay valid; new entities
+        // get ids none of those use.
+        auto recorded = [](const Ptr<SketchEntity>& e) -> std::string {
+            Ptr<Attribute> a = e ? e->attributes()->itemByName("NCX", "id") : nullptr;
+            return a ? a->value() : "";
+        };
+        std::set<std::string> reserved, used;
+        for (size_t i = 0; i < sk->sketchCurves()->count(); i++) reserved.insert(recorded(sk->sketchCurves()->item(i)));
+        for (size_t i = 0; i < sk->sketchPoints()->count(); i++) reserved.insert(recorded(sk->sketchPoints()->item(i)));
+        auto idFor = [&](const Ptr<SketchEntity>& e, const char* pre, int& n) {
+            std::string r = recorded(e);
+            if (r.empty() || used.count(r))
+                do
+                    r = pre + std::to_string(++n);
+                while (reserved.count(r) || used.count(r));
+            used.insert(r);
+            return r;
+        };
         auto pointId = [&](const Ptr<SketchPoint>& p) -> std::string {
             if (!p) return "";
             std::string tok = p->entityToken();
             auto it = ids.find(tok);
             if (it != ids.end()) return it->second;
-            std::string pid = "p" + std::to_string(++np);
+            std::string pid = idFor(p, "p", np);
             ids[tok] = pid;
             d["entities"].push_back(json{{"id", pid}, {"type", "point"}, {"p", uv(p->geometry())}});
             return pid;
@@ -262,7 +312,7 @@ struct DocWriter
         {
             Ptr<SketchCurve> c = cs->item(i);
             if (c->isReference()) continue;
-            std::string sid = "s" + std::to_string(++ns);
+            std::string sid = idFor(c, "s", ns);
             json e{{"id", sid}};
             if (Ptr<SketchLine> l = c)
             {
@@ -362,8 +412,36 @@ struct DocWriter
                 Ptr<ConstructionPoint> nat = cp->nativeObject() ? cp->nativeObject() : cp;
                 if (nat == o || cp == o) return json{{"kind", "origin"}, {"by", "id"}};
             }
+            // a model edge or vertex projected into the sketch: the relation is to that geometry (FORMAT-SPEC 4: a
+            // relation entity may be a face/edge/vertex descriptor, as the SolidWorks exporter writes them)
+            if (Ptr<BRepEdge> be = re) return descriptor(be);
+            if (Ptr<BRepVertex> bv = re) return descriptor(bv);
             Ptr<SketchEntity> src = re;
             if (!src) return nullptr;
+            // an entity of an Insert Part copy (attribute NCX/transferred): the source document's own entity
+            if (Ptr<Sketch> ps = src->parentSketch())
+            {
+                Ptr<Sketch> nps = ps->nativeObject() ? ps->nativeObject() : ps;
+                Ptr<Attribute> tr = nps->attributes()->itemByName("NCX", "transferred");
+                Ptr<Attribute> eid = src->attributes()->itemByName("NCX", "id");
+                if (!eid)
+                {
+                    // a proxy: the attribute is on its native entity
+                    Ptr<SketchEntity> nat;
+                    if (Ptr<SketchPoint> x = src) nat = x->nativeObject();
+                    else if (Ptr<SketchLine> x = src) nat = x->nativeObject();
+                    else if (Ptr<SketchCircle> x = src) nat = x->nativeObject();
+                    else if (Ptr<SketchArc> x = src) nat = x->nativeObject();
+                    if (nat) eid = nat->attributes()->itemByName("NCX", "id");
+                }
+                if (tr && eid)
+                {
+                    json r = json::parse(tr->value(), nullptr, false);
+                    if (r.is_object())
+                        return json{{"kind", "sketchEntity"}, {"by", "id"}, {"document", r.value("document", "")}, {"feature", r.value("feature", "")},
+                                    {"id", eid->value()}};
+                }
+            }
             // in an assembly the source comes back as a proxy (another token): its native entity is the one written
             std::vector<std::string> toks{src->entityToken()};
             if (Ptr<SketchPoint> sp = src)
@@ -503,8 +581,17 @@ struct DocWriter
     }
 
     // ---------------------------------------------------------------------------------- profiles
+    json regionsOut = json::array();   // profileRef: the regions of the last profile read
     json profileRef(const Ptr<Base>& prof, json& contours)
     {
+        regionsOut = json::array();
+        // one sketch curve (a loft rail): its sketch
+        if (Ptr<SketchCurve> c = prof)
+        {
+            std::string id = idOf(c->parentSketch());
+            if (id.empty()) return nullptr;
+            return json{{"kind", "feature"}, {"by", "id"}, {"id", id}};
+        }
         // open curves (a surface extrude or revolve): the sketch they all come from, as a whole
         if (Ptr<Path> path = prof)
         {
@@ -519,6 +606,25 @@ struct DocWriter
             if (sid.empty()) return nullptr;
             return json{{"kind", "feature"}, {"by", "id"}, {"id", sid}};
         }
+        // a feature made while its component's occurrence was active keeps its profiles as proxies (measured: the
+        // model in the upright wrapper, common.h): they are read as their native profiles, in the sketch's own space
+        auto natProfile = [](const Ptr<Profile>& q) -> Ptr<Profile> { return q && q->nativeObject() ? q->nativeObject() : q; };
+        Ptr<Base> prof0 = prof;
+        if (Ptr<ObjectCollection> oc = prof)
+        {
+            Ptr<ObjectCollection> n = ObjectCollection::create();
+            for (size_t i = 0; i < oc->count(); i++)
+                if (Ptr<Profile> q = oc->item(i)) n->add(natProfile(q));
+                else n->add(oc->item(i));
+            prof0 = n;
+        }
+        else if (Ptr<Profile> q = prof)
+            prof0 = natProfile(q);
+        return profileRefNative(prof0, contours);
+    }
+
+    json profileRefNative(const Ptr<Base>& prof, json& contours)
+    {
         Ptr<Profile> p = prof;
         if (!p)
             if (Ptr<ObjectCollection> oc = prof)
@@ -527,10 +633,16 @@ struct DocWriter
         Ptr<Sketch> sk = p->parentSketch();
         std::string sid = idOf(sk);
         if (sid.empty()) return nullptr;
-        // selected regions when the feature uses fewer than the odd-even set: write their outer loops as contours
-        size_t used = 1;
-        if (Ptr<ObjectCollection> oc = prof) used = oc->count();
-        if (used != sk->profiles()->count())
+        // Selected regions when the feature uses fewer than the odd-even set (FORMAT-SPEC 4). A profile whose loops
+        // are whole sketch curves goes out as `contours` (every loop: an inner one is a hole by nesting); any other
+        // as a `region`: a point inside it, its area and clearance, and its `boundary` (per loop the ids of the
+        // segments it runs along, a curve on no segment as {line} / {arc}). (Round 7: P49's circle segment went out
+        // as the contour [s2, s1], which an importer reads as the circle's other part, and a ring as its outer
+        // circle only.)
+        // Written explicitly whenever the sketch has more than one profile: Fusion's "every profile" is not a whole
+        // sketch by the odd-even rule when profiles share curves (adjacent regions, a revolve axis on the boundary:
+        // the Dome Head's Revolve1 then failed in SolidWorks).
+        if (sk->profiles()->count() > 1)
         {
             auto& ids = sketchIds[sid];
             std::vector<Ptr<Profile>> ps;
@@ -538,20 +650,134 @@ struct DocWriter
                 for (size_t i = 0; i < oc->count(); i++) ps.push_back(oc->item(i));
             else
                 ps.push_back(p);
+            auto idOfEntity = [&](const Ptr<SketchEntity>& se) -> std::string {
+                if (!se) return "";
+                auto it = ids.find(se->entityToken());
+                return it == ids.end() ? "" : it->second;
+            };
+            // a profile curve's points in sketch space (mm); the geometry comes in model space, except on some
+            // planes where it is already in sketch space (importer finding, round 6)
+            auto curvePts = [&](const Ptr<ProfileCurve>& pc, int n) {
+                std::vector<std::array<double, 2>> pts, raw;
+                Ptr<Curve3D> g = pc->geometry();
+                if (!g) return pts;
+                Ptr<CurveEvaluator3D> ev = g->evaluator();
+                double s0 = 0, s1 = 0;
+                if (!ev->getParameterExtents(s0, s1)) return pts;
+                bool off = false;
+                for (int k = 0; k <= n; k++)
+                {
+                    Ptr<Point3D> q;
+                    if (!ev->getPointAtParameter(s0 + (s1 - s0) * k / n, q)) continue;
+                    Ptr<Point3D> t = sk->modelToSketchSpace(q);
+                    if (std::fabs(t->z()) > 1e-6) off = true;
+                    pts.push_back({cm2mm(t->x()), cm2mm(t->y())});
+                    raw.push_back({cm2mm(q->x()), cm2mm(q->y())});
+                }
+                return off ? raw : pts;
+            };
+            auto curveLen = [](const Ptr<Curve3D>& g) {
+                double s0 = 0, s1 = 0, L = -1;
+                if (g && g->evaluator()->getParameterExtents(s0, s1)) g->evaluator()->getLengthAtParameter(s0, s1, L);
+                return L;
+            };
             for (auto& q : ps)
             {
-                json c = json::array();
                 Ptr<ProfileLoops> ls = q->profileLoops();
-                for (size_t i = 0; i < ls->count(); i++)
-                    if (ls->item(i)->isOuter())
+                bool whole = true;
+                for (size_t i = 0; i < ls->count() && whole; i++)
+                    for (size_t k = 0; k < ls->item(i)->profileCurves()->count() && whole; k++)
+                    {
+                        Ptr<ProfileCurve> pc = ls->item(i)->profileCurves()->item(k);
+                        Ptr<SketchCurve> sc = pc->sketchEntity();
+                        if (!sc || idOfEntity(sc).empty() || std::fabs(curveLen(pc->geometry()) - sc->length()) > 1e-7) whole = false;
+                    }
+                if (whole)
+                {
+                    for (size_t i = 0; i < ls->count(); i++)
+                    {
+                        json c = json::array();
                         for (size_t k = 0; k < ls->item(i)->profileCurves()->count(); k++)
+                            c.push_back(idOfEntity(ls->item(i)->profileCurves()->item(k)->sketchEntity()));
+                        contours.push_back(c);
+                    }
+                    continue;
+                }
+                json boundary = json::array();
+                std::vector<std::vector<std::array<double, 2>>> polys;
+                for (size_t i = 0; i < ls->count(); i++)
+                {
+                    json loop = json::array();
+                    std::string last;
+                    for (size_t k = 0; k < ls->item(i)->profileCurves()->count(); k++)
+                    {
+                        Ptr<ProfileCurve> pc = ls->item(i)->profileCurves()->item(k);
+                        auto pts = curvePts(pc, 32);
+                        polys.push_back(pts);
+                        std::string id = idOfEntity(pc->sketchEntity());
+                        if (!id.empty())
                         {
-                            Ptr<SketchEntity> se = ls->item(i)->profileCurves()->item(k)->sketchEntity();
-
-                            auto it = se ? ids.find(se->entityToken()) : ids.end();
-                            if (it != ids.end()) c.push_back(it->second);
+                            if (id != last) loop.push_back(id);
+                            last = id;
+                            continue;
                         }
-                contours.push_back(c);
+                        last.clear();
+                        if (pts.size() < 2) continue;
+                        Ptr<Curve3D> g = pc->geometry();
+                        if (Ptr<Line3D>(g))
+                            loop.push_back(json{{"line", json::array({json::array({pts.front()[0], pts.front()[1]}), json::array({pts.back()[0], pts.back()[1]})})}});
+                        else
+                        {
+                            // centre and radius from three points of the arc
+                            auto& A = pts.front();
+                            auto& B = pts[pts.size() / 2];
+                            auto& C = pts.back();
+                            double d = 2 * (A[0] * (B[1] - C[1]) + B[0] * (C[1] - A[1]) + C[0] * (A[1] - B[1]));
+                            if (std::fabs(d) < 1e-12) continue;
+                            double a2 = A[0] * A[0] + A[1] * A[1], b2 = B[0] * B[0] + B[1] * B[1], c2 = C[0] * C[0] + C[1] * C[1];
+                            double ux = (a2 * (B[1] - C[1]) + b2 * (C[1] - A[1]) + c2 * (A[1] - B[1])) / d;
+                            double uy = (a2 * (C[0] - B[0]) + b2 * (A[0] - C[0]) + c2 * (B[0] - A[0])) / d;
+                            loop.push_back(json{{"arc", json::array({json::array({ux, uy}), std::hypot(A[0] - ux, A[1] - uy)})}});
+                        }
+                    }
+                    boundary.push_back(loop);
+                }
+                // a point well inside: on the row where the region is widest, the middle of the widest span
+                double y0 = 1e300, y1 = -1e300, px = 0, py = 0, bestW = 0;
+                for (auto& pl : polys)
+                    for (auto& t : pl)
+                    {
+                        y0 = std::min(y0, t[1]);
+                        y1 = std::max(y1, t[1]);
+                    }
+                for (int k = 1; k < 40 && y1 > y0; k++)
+                {
+                    double yy = y0 + (y1 - y0) * (k + 0.37) / 40.5;
+                    std::vector<double> xs;
+                    for (auto& pl : polys)
+                        for (size_t i = 1; i < pl.size(); i++)
+                            if ((pl[i][1] > yy) != (pl[i - 1][1] > yy))
+                                xs.push_back(pl[i][0] + (yy - pl[i][1]) * (pl[i - 1][0] - pl[i][0]) / (pl[i - 1][1] - pl[i][1]));
+                    std::sort(xs.begin(), xs.end());
+                    for (size_t i = 0; i + 1 < xs.size(); i += 2)
+                        if (xs[i + 1] - xs[i] > bestW)
+                        {
+                            bestW = xs[i + 1] - xs[i];
+                            px = 0.5 * (xs[i] + xs[i + 1]);
+                            py = yy;
+                        }
+                }
+                double clearance = 1e300;
+                for (auto& pl : polys)
+                    for (size_t i = 1; i < pl.size(); i++)
+                    {
+                        double ax = pl[i - 1][0], ay = pl[i - 1][1], dx = pl[i][0] - ax, dy = pl[i][1] - ay, L2 = dx * dx + dy * dy;
+                        double t = L2 > 0 ? std::clamp(((px - ax) * dx + (py - ay) * dy) / L2, 0.0, 1.0) : 0.0;
+                        clearance = std::min(clearance, std::hypot(px - ax - t * dx, py - ay - t * dy));
+                    }
+                Ptr<AreaProperties> ap = q->areaProperties();
+                regionsOut.push_back(json{{"point", json::array({px, py})}, {"area", ap ? cm2mm(cm2mm(ap->area())) : 0.0},
+                                          {"clearance", clearance}, {"boundary", boundary}});
             }
         }
         return json{{"kind", "feature"}, {"by", "id"}, {"id", sid}};
@@ -561,6 +787,7 @@ struct DocWriter
     {
         if (Ptr<DistanceExtentDefinition> d = x) return json{{"type", "blind"}, {"depth", cm2mm(d->distance()->value())}};
         if (Ptr<ThroughAllExtentDefinition> t = x) return json{{"type", "throughAll"}};
+        if (Ptr<AllExtentDefinition> t = x) return json{{"type", "throughAll"}};   // Fusion's "All"
         if (Ptr<ToEntityExtentDefinition> t = x)
         {
             json r{{"type", "upToSurface"}};
@@ -576,6 +803,236 @@ struct DocWriter
             return r;
         }
         return nullptr;
+    }
+
+    // a body by its mass properties (FORMAT-SPEC 5 body references), measured as the native body in the part's frame
+    json bodyRef(Ptr<BRepBody> b)
+    {
+        if (b->nativeObject()) b = b->nativeObject();
+        json fp = bodyFingerprint(b);
+        return json{{"kind", "body"}, {"by", "geom"}, {"geom", {{"volume", fp["volume"]}, {"centroid", fp["centroid"]}, {"bbox", fp["bbox"]}}}};
+    }
+
+    // a written feature's payload id (a proxy is looked up as its native feature)
+    std::string featureId(Ptr<Feature> f)
+    {
+        if (f && f->assemblyContext())
+            if (Ptr<Feature> nf = f->parentComponent()->features()->itemByName(f->name())) f = nf;
+        return f ? idOf(f) : "";
+    }
+
+    // a pattern's or mirror's input entities: features as `seeds`, bodies as `bodies`
+    bool seedsJson(const Ptr<ObjectCollection>& in, json& d, std::string& why)
+    {
+        json seeds = json::array(), bodies = json::array();
+        for (size_t i = 0; in && i < in->count(); i++)
+        {
+            Ptr<Base> o = in->item(i);
+            if (Ptr<BRepBody> b = o) bodies.push_back(bodyRef(b));
+            else if (Ptr<Feature> f = o)
+            {
+                std::string id = featureId(f);
+                if (id.empty())
+                {
+                    why = "its seed feature " + f->name() + " was not written";
+                    return false;
+                }
+                seeds.push_back(json{{"kind", "feature"}, {"by", "id"}, {"id", id}});
+            }
+            else
+            {
+                why = std::string("a seed of type ") + (o ? o->objectType() : "?") + " is not carried";
+                return false;
+            }
+        }
+        d["seeds"] = seeds;
+        if (!bodies.empty()) d["bodies"] = bodies;
+        return true;
+    }
+
+    // A direction or axis reference (a pattern's direction, a circular pattern's axis) and its direction in the part's
+    // frame. Fusion's origin axes have no counterpart in the spec's references: the origin plane they are normal to
+    // stands for them (SolidWorks takes a plane as a pattern direction: its normal).
+    json directionRef(Ptr<Base> ent, V3& dir, std::string& why)
+    {
+        if (Ptr<BRepEdge> ed = ent)
+        {
+            if (ed->nativeObject()) ed = ed->nativeObject();
+            json r = descriptor(ed);
+            if (r["geom"].contains("params") && r["geom"]["params"].contains("direction")) dir = v3(r["geom"]["params"]["direction"]);
+            else if (r["geom"].contains("params") && r["geom"]["params"].contains("axis")) dir = v3(r["geom"]["params"]["axis"]);
+            else
+            {
+                why = "its direction edge is not straight or circular";
+                return nullptr;
+            }
+            return r;
+        }
+        if (Ptr<BRepFace> fc = ent)
+        {
+            if (fc->nativeObject()) fc = fc->nativeObject();
+            json r = descriptor(fc);
+            const json& p = r["geom"]["params"];
+            if (p.contains("axis")) dir = v3(p["axis"]);
+            else if (p.contains("normal")) dir = v3(p["normal"]);
+            else
+            {
+                why = "its direction face is neither planar nor turned";
+                return nullptr;
+            }
+            return r;
+        }
+        if (Ptr<ConstructionAxis> ax = ent)
+        {
+            if (ax->nativeObject()) ax = ax->nativeObject();
+            const char* plane = ax == comp->xConstructionAxis() ? "right" : ax == comp->yConstructionAxis() ? "top" : ax == comp->zConstructionAxis() ? "front" : nullptr;
+            if (Ptr<InfiniteLine3D> g = ax->geometry()) dir = unit(vecOf(g->direction()));
+            if (plane) return json{{"kind", "originPlane"}, {"by", "id"}, {"plane", plane}};
+            // an axis the import made on a cylindrical face (a pattern axis): the face
+            if (Ptr<ConstructionAxisCircularFaceDefinition> cd = ax->definition())
+                if (Ptr<BRepFace> fc = cd->circularFace()) return directionRef(fc, dir, why);
+            std::string id = idOf(ax);
+            if (!id.empty()) return json{{"kind", "feature"}, {"by", "id"}, {"id", id}};
+            why = "its axis is not carried";
+            return nullptr;
+        }
+        if (Ptr<ConstructionPlane> cp = ent)
+        {
+            json r = planeRef(cp);
+            if (Ptr<Plane> g = (cp->nativeObject() ? cp->nativeObject() : cp)->geometry()) dir = unit(vecOf(g->normal()));
+            if (r.value("kind", "") == "frame")
+            {
+                why = "its direction plane cannot be referenced";
+                return nullptr;
+            }
+            return r;
+        }
+        if (Ptr<SketchLine> l = ent)
+        {
+            if (l->nativeObject()) l = l->nativeObject();
+            std::string sid = idOf(l->parentSketch());
+            auto it = sketchIds[sid].find(l->entityToken());
+            if (sid.empty() || it == sketchIds[sid].end())
+            {
+                why = "its direction line is not in a written sketch";
+                return nullptr;
+            }
+            dir = unit(sub(modelPointMm(l->endSketchPoint()), modelPointMm(l->startSketchPoint())));
+            return json{{"kind", "sketchEntity"}, {"by", "id"}, {"feature", sid}, {"id", it->second}};
+        }
+        why = std::string("a direction of type ") + (ent ? ent->objectType() : "?") + " is not carried";
+        return nullptr;
+    }
+
+    // ---- sheet metal helpers (edge flanges)
+    bool sheetMetalWritten = false;      // the part's `sheetMetal` (its rule) is written before its first flange
+    json preFeatures = json::array();    // features featureDef writes before the one it returns (a rule, flange profiles)
+    std::vector<V3> flangeRise;          // the edge flange being written: per edge, the way its web rises (walk)
+
+    static V3 outwardNormalOf(const Ptr<BRepFace>& f)
+    {
+        Ptr<Vector3D> n;
+        if (f->evaluator()->getNormalAtPoint(f->pointOnFace(), n) && n) return unit(vecOf(n));
+        Ptr<Plane> p = f->geometry();
+        return p ? unit(vecOf(p->normal())) : V3{0, 0, 0};
+    }
+    // the outward normal of the broad planar face at a sheet's edge (the larger of its two faces)
+    static V3 broadNormal(const Ptr<BRepEdge>& e)
+    {
+        Ptr<BRepFace> best;
+        for (size_t i = 0; i < e->faces()->count(); i++)
+        {
+            Ptr<BRepFace> f = e->faces()->item(i);
+            if (!Ptr<Plane>(f->geometry())) continue;
+            if (!best || f->area() > best->area()) best = f;
+        }
+        return best ? outwardNormalOf(best) : V3{0, 0, 0};
+    }
+    // the outward normal of the planar face at the edge that lies across this direction (the face a flange rises
+    // from, or the one opposite), or zero
+    static V3 risingFaceNormal(const Ptr<BRepEdge>& e, const V3& y)
+    {
+        for (size_t i = 0; i < e->faces()->count(); i++)
+        {
+            Ptr<BRepFace> f = e->faces()->item(i);
+            if (!Ptr<Plane>(f->geometry())) continue;
+            V3 n = outwardNormalOf(f);
+            if (std::fabs(dot(n, y)) > 0.9) return n;
+        }
+        return {0, 0, 0};
+    }
+    // a straight edge of the part parallel to this one with its middle at this point
+    Ptr<BRepEdge> parallelEdge(const Ptr<BRepEdge>& e, const V3& mid)
+    {
+        V3 d = unit(sub(ptMm(e->endVertex()->geometry()), ptMm(e->startVertex()->geometry())));
+        for (auto& b : solids())
+            for (size_t i = 0; i < b->edges()->count(); i++)
+            {
+                Ptr<BRepEdge> c = b->edges()->item(i);
+                if (!Ptr<Line3D>(c->geometry())) continue;
+                V3 a = ptMm(c->startVertex()->geometry()), z = ptMm(c->endVertex()->geometry());
+                if (std::fabs(std::fabs(dot(unit(sub(z, a)), d)) - 1) > 1e-9) continue;
+                if (dist(mul(add(a, z), 0.5), mid) < 1e-4) return c;
+            }
+        return nullptr;
+    }
+    // walk, for an edge flange: each edge's broad-face normal before it, then (with the flange computed) the side its
+    // web lies on, by probing points beyond the bend just across the edge
+    void readFlangeRise(const Ptr<TimelineObject>& t, const Ptr<FlangeFeature>& fl)
+    {
+        flangeRise.clear();
+        Ptr<EdgeFlangeFeatureDefinition> ed = fl->definition();
+        Ptr<SheetMetalRule> rule = comp->activeSheetMetalRule();
+        if (!ed || !rule) return;
+        double th = cm2mm(rule->thickness()->value()), r = cm2mm(rule->bendRadius()->value());
+        double len = ed->distance() ? cm2mm(ed->distance()->value()) : 0;
+        Ptr<Timeline> tl = des->timeline();
+        t->rollTo(true);
+        struct E
+        {
+            V3 mid, dir, n;
+        };
+        std::vector<E> es;
+        Ptr<FlangeEdgeDefinitions> eds = ed->edgeDefinitions();
+        for (size_t i = 0; eds && i < eds->count(); i++)
+        {
+            Ptr<BRepEdge> edge = eds->item(i)->edge();
+            if (edge && edge->nativeObject()) edge = edge->nativeObject();
+            if (!edge) return;
+            V3 a = ptMm(edge->startVertex()->geometry()), b = ptMm(edge->endVertex()->geometry());
+            es.push_back(E{mul(add(a, b), 0.5), unit(sub(b, a)), broadNormal(edge)});
+        }
+        t->rollTo(false);
+        std::vector<Ptr<BRepBody>> bodies = solids();
+        auto inside = [&](const V3& p) {
+            for (auto& b : bodies)
+                if (b->pointContainment(ptCm(p)) == PointInsidePointContainment) return true;
+            return false;
+        };
+        for (auto& x : es)
+        {
+            V3 w = unit(cross(x.dir, x.n)), rise{0, 0, 0};
+            for (double s : {1.0, -1.0})
+            {
+                V3 y = mul(x.n, s);
+                bool hit = false;
+                for (double h : {r + th + 0.5 * std::max(len - r - th, 0.5), r + th + 0.25})
+                    for (double o : {0.5 * th, -0.5 * th, 1.5 * th, -1.5 * th, r + 0.5 * th, -(r + 0.5 * th), r + 1.5 * th, -(r + 1.5 * th)})
+                        if (!hit && inside(add(x.mid, add(mul(y, h), mul(w, o))))) hit = true;
+                if (hit)
+                {
+                    rise = y;
+                    break;
+                }
+            }
+            if (norm(rise) < 0.5)
+            {
+                flangeRise.clear();
+                break;
+            }
+            flangeRise.push_back(rise);
+        }
+        tl->moveToEnd();
     }
 
     // ---------------------------------------------------------------------------------- features
@@ -594,7 +1051,9 @@ struct DocWriter
                 return nullptr;
             }
             json d{{"profile", prof}, {"merge", f->operation() == JoinFeatureOperation}};
+            if (cut) d.erase("merge");   // a cut has no merge (SolidWorks' import passed false on and the cut failed)
             if (!contours.empty()) d["contours"] = contours;
+            if (!regionsOut.empty()) d["regions"] = regionsOut;
             if (f->isSolid() == false)
             {
                 type = "extrudedSurface";
@@ -644,8 +1103,21 @@ struct DocWriter
             }
             if (f->isThinExtrude())
             {
-                why = "a thin extrude is not exported yet";
-                return nullptr;
+                // FORMAT-SPEC 4 `thin`, as the importer reads it (features.cpp): SolidWorks' one-direction wall is
+                // Fusion's Side2 for the same path and normal (measured on P19), the opposite direction Side1
+                ThinExtrudeWallLocation l1 = f->thinExtrudeWallLocationOne();
+                double k1 = f->thinExtrudeWallThicknessOne() ? cm2mm(f->thinExtrudeWallThicknessOne()->value()) : 0;
+                double k2 = f->thinExtrudeWallThicknessTwo() ? cm2mm(f->thinExtrudeWallThicknessTwo()->value()) : 0;
+                json th{{"thickness", k1}, {"thickness2", 0}, {"capEnds", false}, {"capThickness", 0}};
+                if (l1 == Center) th["type"] = "midPlane";
+                else if (k2 > 1e-9)
+                {
+                    th["type"] = "twoDirection";
+                    th["thickness"] = l1 == Side2 ? k1 : k2;
+                    th["thickness2"] = l1 == Side2 ? k2 : k1;
+                }
+                else th["type"] = l1 == Side2 ? "oneDirection" : "oppositeDirection";
+                d["thin"] = th;
             }
             return d;
         }
@@ -672,6 +1144,9 @@ struct DocWriter
             }
             json d{{"profile", prof}, {"axis", {{"kind", "sketchEntity"}, {"by", "id"}, {"feature", sid}, {"id", it->second}}},
                    {"merge", f->operation() == JoinFeatureOperation}, {"mode", "oneDirection"}};
+            if (cut) d.erase("merge");   // a cut has no merge (P03's revolve cut failed in SolidWorks with merge false)
+            if (!contours.empty()) d["contours"] = contours;
+            if (!regionsOut.empty()) d["regions"] = regionsOut;
             if (!f->isSolid()) type = "revolvedSurface";
             Ptr<AngleExtentDefinition> a = f->extentDefinition();
             if (!a)
@@ -732,22 +1207,67 @@ struct DocWriter
         }
         if (Ptr<FilletFeature> f = e)
         {
+            // FORMAT-SPEC 4 `fillet`: constant edge sets as one constant fillet (`radii` one per edge when they
+            // differ); one variable set on one edge as a variable fillet, its law from the intermediate radii the
+            // importer places (straight: none; smooth: on r0 + (r1 - r0)(3s^2 - 2s^3))
             type = "fillet";
             Ptr<FilletEdgeSets> sets = f->edgeSets();
-            if (!sets || sets->count() != 1)
+            if (!sets || sets->count() == 0)
             {
-                why = "a fillet with several edge sets is not carried yet";
+                why = "a fillet without edge sets";
                 return nullptr;
             }
-            Ptr<ConstantRadiusFilletEdgeSet> cr = sets->item(0);
-            if (!cr)
+            json edges = json::array(), radii = json::array();
+            bool allConstant = true;
+            for (size_t k = 0; k < sets->count(); k++)
             {
-                why = "only constant-radius fillets are carried";
+                Ptr<ConstantRadiusFilletEdgeSet> cr = sets->item(k);
+                if (!cr)
+                {
+                    allConstant = false;
+                    break;
+                }
+                for (size_t i = 0; i < cr->edges()->count(); i++)
+                {
+                    edges.push_back(descriptor(cr->edges()->item(i)));
+                    radii.push_back(cm2mm(cr->radius()->value()));
+                }
+            }
+            if (allConstant)
+            {
+                json d{{"filletType", "constant"}, {"radius", radii[0]}, {"edges", edges}, {"propagate", false}};
+                for (auto& r : radii)
+                    if (std::fabs(r.get<double>() - radii[0].get<double>()) > 1e-9) d["radii"] = radii;
+                return d;
+            }
+            Ptr<VariableRadiusFilletEdgeSet> vr = sets->count() == 1 ? Ptr<VariableRadiusFilletEdgeSet>(sets->item(0)) : nullptr;
+            if (!vr || !vr->edges() || vr->edges()->count() != 1)
+            {
+                why = "only constant fillets and a variable fillet on one edge are carried yet";
                 return nullptr;
             }
-            json d{{"filletType", "constant"}, {"radius", cm2mm(cr->radius()->value())}, {"edges", json::array()}, {"propagate", false}};
-            for (size_t i = 0; i < cr->edges()->count(); i++) d["edges"].push_back(descriptor(cr->edges()->item(i)));
-            return d;
+            Ptr<BRepEdge> ed = vr->edges()->item(0);
+            if (ed->nativeObject()) ed = ed->nativeObject();
+            double r0 = cm2mm(vr->startRadius()->value()), r1 = cm2mm(vr->endRadius()->value());
+            std::string transition = "straight";
+            Ptr<ParameterList> mr = vr->midRadii(), mp = vr->midPositions();
+            if (mr && mr->count() > 0)
+            {
+                transition = "smooth";
+                for (size_t i = 0; i < mr->count() && mp && i < mp->count(); i++)
+                {
+                    double t = mp->item(i)->value(), r = cm2mm(mr->item(i)->value());
+                    if (std::fabs(r - (r0 + (r1 - r0) * (3 * t * t - 2 * t * t * t))) > 1e-6 * std::max(1.0, std::fabs(r1)))
+                    {
+                        why = "a variable fillet whose intermediate radii follow neither law the spec names";
+                        return nullptr;
+                    }
+                }
+            }
+            return json{{"filletType", "variable"}, {"radius", 0}, {"edges", json::array({descriptor(ed)})},
+                        {"vertexRadii", json::array({json{{"vertex", descriptor(ed->startVertex())}, {"radius", r0}},
+                                                     json{{"vertex", descriptor(ed->endVertex())}, {"radius", r1}}})},
+                        {"propagate", false}, {"transition", transition}};
         }
         if (Ptr<ChamferFeature> f = e)
         {
@@ -799,6 +1319,9 @@ struct DocWriter
                 why = "it removes something other than a body";
                 return nullptr;
             }
+            // a proxy (the model in the upright wrapper) is measured in the root's turned frame, the native body in the
+            // part's own (P22's deleted bodies went out turned by the wrapper's 90 degrees and were not found)
+            if (b->nativeObject()) b = b->nativeObject();
             json fp = bodyFingerprint(b);
             return json{{"bodies", {{{"kind", "body"}, {"by", "geom"}, {"geom", {{"volume", fp["volume"]}, {"centroid", fp["centroid"]}, {"bbox", fp["bbox"]}}}}}},
                         {"keep", false}};
@@ -827,6 +1350,586 @@ struct DocWriter
             return json{{"references", {{{"ref", base}, {"constraint", "distance"}, {"value", std::fabs(off)}, {"flip", off < 0}}}},
                         {"origin", vj(ptMm(g->origin()))}, {"normal", vj(unit(vecOf(g->normal())))}};
         }
+        // ---- patterns, mirrors, shell, draft, combine, split: as the importer reads them (features2.cpp), which
+        // follows the SolidWorks exporter (FORMAT-SPEC 4: a definition not described there is as it writes it)
+        if (Ptr<HoleFeature> f = e)
+        {
+            // FORMAT-SPEC 4 `hole`: the face it starts on, its centres, type, end and sizes, as the importer reads
+            // them (features3.cpp). The centres are where the drilled cylinders' axes (read with the hole computed,
+            // walk) meet the start face; that holds however Fusion positioned them.
+            type = "hole";
+            if (holeAxes.empty())
+            {
+                why = "its drilled cylinders were not found";
+                return nullptr;
+            }
+            Ptr<HolePositionDefinition> pd = f->holePositionDefinition();
+            Ptr<Base> start;
+            if (Ptr<PointHolePositionDefinition> d = pd) start = d->planarEntity();
+            else if (Ptr<AtCenterHolePositionDefinition> d = pd) start = d->planarEntity();
+            else if (Ptr<OnEdgeHolePositionDefinition> d = pd) start = d->planarEntity();
+            else if (Ptr<PlaneAndOffsetsHolePositionDefinition> d = pd) start = d->planarEntity();
+            else
+            {
+                Ptr<SketchPoint> sp;
+                if (Ptr<SketchPointHolePositionDefinition> d = pd) sp = d->sketchPoint();
+                else if (Ptr<SketchPointsHolePositionDefinition> d = pd)
+                    if (d->sketchPoints() && d->sketchPoints()->count() > 0) sp = d->sketchPoints()->item(0);
+                if (sp)
+                {
+                    Ptr<Sketch> sk = sp->parentSketch();
+                    if (sk->nativeObject()) sk = sk->nativeObject();
+                    start = sk->referencePlane();
+                    // a face sketch may report no reference plane: the face lying in the sketch plane
+                    if (!Ptr<BRepFace>(start))
+                        if (Ptr<BRepFace> f = faceInPlane(ptMm(sk->origin()), unit(cross(vecOf(sk->xDirection()), vecOf(sk->yDirection())))))
+                            start = f;
+                }
+            }
+            json face = start ? planeRef(start) : json(nullptr);
+            if (face.is_null() || face.value("kind", "") != "face")
+            {
+                why = "the face the hole starts on cannot be referenced";
+                return nullptr;
+            }
+            Ptr<BRepFace> sf = start;
+            if (sf && sf->nativeObject()) sf = sf->nativeObject();
+            Ptr<Plane> pl = sf ? Ptr<Plane>(sf->geometry()) : nullptr;
+            if (!pl)
+            {
+                why = "only holes on planar faces are carried";
+                return nullptr;
+            }
+            V3 po = ptMm(pl->origin()), pn = unit(vecOf(pl->normal()));
+            json points = json::array();
+            for (auto& ax : holeAxes)
+            {
+                double den = dot(ax.second, pn);
+                if (std::fabs(den) < 1e-9) continue;
+                double t = dot(sub(po, ax.first), pn) / den;
+                points.push_back(vj(add(ax.first, mul(ax.second, t))));
+            }
+            std::string kind = f->holeType() == CounterboreHoleType ? "counterbore" : f->holeType() == CountersinkHoleType ? "countersink" : "simple";
+            auto mm = [](const Ptr<ModelParameter>& p) { return p ? cm2mm(p->value()) : 0.0; };
+            auto deg = [](const Ptr<ModelParameter>& p) { return p ? rad2deg(p->value()) : 0.0; };
+            json sizes{{"holeDiameter", mm(f->holeDiameter())}, {"drillAngle", deg(f->tipAngle())}, {"measuredDiameters", holeDiameters}};
+            if (kind == "counterbore")
+            {
+                sizes["counterBoreDiameter"] = mm(f->counterboreDiameter());
+                sizes["counterBoreDepth"] = mm(f->counterboreDepth());
+            }
+            if (kind == "countersink")
+            {
+                sizes["counterSinkDiameter"] = mm(f->countersinkDiameter());
+                sizes["counterSinkAngle"] = deg(f->countersinkAngle());
+            }
+            json end;
+            Ptr<ExtentDefinition> x = f->extentDefinition();
+            if (Ptr<DistanceExtentDefinition> dd = x) end = json{{"type", "blind"}, {"depth", cm2mm(dd->distance()->value())}};
+            else if (Ptr<ThroughAllExtentDefinition> ta = x) end = json{{"type", "throughAll"}, {"depth", 0}};
+            else if (Ptr<AllExtentDefinition> al = x) end = json{{"type", "throughAll"}, {"depth", 0}};   // Fusion's "All"
+            else
+            {
+                why = std::string("only blind and through-all holes are carried yet (this one ends by ") + (x ? x->objectType() : "nothing") + ")";
+                return nullptr;
+            }
+            return json{{"face", face}, {"points", points}, {"holeType", kind}, {"end", end}, {"sizes", sizes}};
+        }
+        if (Ptr<FlangeFeature> f = e)
+        {
+            // Sheet metal (FORMAT-SPEC 4): the component's rule goes out as a `sheetMetal` feature before its first
+            // flange; base and contour flanges as `baseFlange`, as the importer reads them (sheetmetal.cpp)
+            Ptr<SheetMetalRule> rule = comp->activeSheetMetalRule();
+            if (!rule)
+            {
+                why = "a flange without a sheet-metal rule";
+                return nullptr;
+            }
+            double t = cm2mm(rule->thickness()->value()), r = cm2mm(rule->bendRadius()->value()), k = rule->kFactor();
+            auto ruleFirst = [&]() {
+                if (sheetMetalWritten) return;
+                sheetMetalWritten = true;
+                preFeatures.push_back(json{{"id", fid()}, {"name", "Sheet-Metal"}, {"type", "sheetMetal"}, {"status", "mapped"},
+                                           {"native", {{"app", "Fusion"}, {"type", "adsk::fusion::SheetMetalRule"}}},
+                                           {"def", {{"thickness", t}, {"bendRadius", r}, {"bendAllowanceType", "kFactor"}, {"kFactor", k},
+                                                    {"bendAllowance", 0}, {"autoRelief", true}, {"reliefType", "rectangular"}, {"reliefRatio", 0.5}}}});
+            };
+            if (Ptr<BaseFlangeFeatureDefinition> bd = f->definition())
+            {
+                type = "baseFlange";
+                Ptr<ObjectCollection> oc = ObjectCollection::create();
+                for (auto& p : bd->profiles()) oc->add(p);
+                json contours = json::array();
+                json prof = profileRef(oc, contours);
+                if (prof.is_null())
+                {
+                    why = "its profile is not a written sketch";
+                    return nullptr;
+                }
+                // importer: thickness along the sketch normal (SideOne) = reverseThickness
+                json d{{"profile", prof}, {"thickness", t}, {"reverseThickness", bd->orientation() == SideOneFlangeOrientation},
+                       {"bendRadius", r}, {"reverse", false}, {"kFactor", k}};
+                if (!contours.empty()) d["contours"] = contours;
+                if (!regionsOut.empty()) d["regions"] = regionsOut;
+                ruleFirst();
+                return d;
+            }
+            if (Ptr<ContourFlangeFeatureDefinition> cd = f->definition())
+            {
+                type = "baseFlange";
+                std::vector<Ptr<Profile>> ps = cd->profiles();
+                Ptr<Sketch> sk = ps.empty() ? nullptr : ps[0]->parentSketch();
+                // an open profile may report no sketch: its curves' sketch
+                if (!sk && !ps.empty())
+                    if (Ptr<ProfileLoops> pl = ps[0]->profileLoops())
+                        if (pl->count() > 0 && pl->item(0)->profileCurves()->count() > 0)
+                            if (Ptr<SketchEntity> se = pl->item(0)->profileCurves()->item(0)->sketchEntity()) sk = se->parentSketch();
+                if (sk && sk->nativeObject()) sk = sk->nativeObject();
+                std::string sid = sk ? idOf(sk) : "";
+                // Fusion's open profile may report neither its sketch nor its curves: the profile the source named
+                // (provenance), else the written sketch whose box is the profile's
+                if (sid.empty())
+                {
+                    json src = json::parse(attrOf(f, "def"), nullptr, false);
+                    if (src.is_object() && src.contains("def") && src["def"].contains("profile"))
+                    {
+                        std::string pid = src["def"]["profile"].value("id", "");
+                        if (usedIds.count(pid)) sid = pid;
+                    }
+                }
+                if (sid.empty() && !ps.empty())
+                    if (Ptr<BoundingBox3D> pb = ps[0]->boundingBox())
+                        for (size_t i = 0; i < comp->sketches()->count() && sid.empty(); i++)
+                        {
+                            Ptr<Sketch> c = comp->sketches()->item(i);
+                            Ptr<BoundingBox3D> cb = c->boundingBox();
+                            std::string cid = idOf(c);
+                            if (!cb || cid.empty()) continue;
+                            if (dist(ptMm(cb->minPoint()), ptMm(pb->minPoint())) < 1e-4 && dist(ptMm(cb->maxPoint()), ptMm(pb->maxPoint())) < 1e-4) sid = cid;
+                        }
+                if (sid.empty())
+                {
+                    why = std::string("its profile is not a written sketch (") + (ps.empty() ? "no profiles" : !sk ? "no sketch" : "sketch " + sk->name() + " not written") + ")";
+                    return nullptr;
+                }
+                double d1 = cd->distance() ? cm2mm(cd->distance()->value()) : 0;
+                json d{{"profile", {{"kind", "feature"}, {"by", "id"}, {"id", sid}}}, {"thickness", t},
+                       {"reverseThickness", cd->orientation() == SideTwoFlangeOrientation}, {"bendRadius", r}, {"kFactor", k}, {"reverse", d1 < 0}};
+                if (cd->direction() == SymmetricFlangeDirection) d["end"] = json{{"type", "midPlane"}, {"depth", std::fabs(d1)}};
+                else
+                {
+                    d["end"] = json{{"type", "blind"}, {"depth", std::fabs(d1)}};
+                    if (cd->direction() == TwoSidesFlangeDirection && cd->distanceTwo())
+                        d["end2"] = json{{"type", "blind"}, {"depth", std::fabs(cm2mm(cd->distanceTwo()->value()))}};
+                }
+                ruleFirst();
+                return d;
+            }
+            if (Ptr<EdgeFlangeFeatureDefinition> ed = f->definition())
+            {
+                // An edge flange with the profile sketch SolidWorks needs: a rectangle on a plane the flange generates,
+                // its base on the edge of the face the flange rises from, as wide as the edge and as high as the
+                // flange's length from that face (90 degrees: outer virtual sharp t below it, inner virtual sharp at
+                // it, bend tangent r above it). The rise direction was read with the flange computed (walk).
+                type = "edgeFlange";
+                double ang = ed->angle() ? rad2deg(ed->angle()->value()) : 90;
+                if (std::fabs(std::fabs(ang) - 90) > 1e-6)
+                {
+                    why = "only 90-degree edge flanges are carried yet";
+                    return nullptr;
+                }
+                if (ed->extentType() != DistanceFlangeExtentType)
+                {
+                    why = "an edge flange up to an object is not carried yet";
+                    return nullptr;
+                }
+                double len = cm2mm(ed->distance()->value());
+                FlangeHeightDatumTypes dt = ed->heightDatumType();
+                double H = dt == OuterFacesFlangeHeightDatumType ? len - t : dt == InnerFacesFlangeHeightDatumType ? len : len + r;
+                std::string datum = dt == OuterFacesFlangeHeightDatumType ? "outerVirtualSharp" : dt == InnerFacesFlangeHeightDatumType ? "innerVirtualSharp" : "bendTangent";
+                BendPositionTypes bp = ed->bendPositionType();
+                std::string position = bp == OutsideBendPositionType ? "materialOutside" : bp == StartEdgeBendPositionType ? "bendOutside"
+                                     : bp == TangentToSideBendPositionType ? "bendTangent" : "materialInside";
+                double br = r;
+                if (Ptr<BendRadiusOverride> bo = f->bendRadiusOverride())
+                    if (bo->isOverridden() && bo->bendRadius()) br = cm2mm(bo->bendRadius()->value());
+                Ptr<FlangeEdgeDefinitions> eds = ed->edgeDefinitions();
+                if (!eds || eds->count() == 0 || flangeRise.size() != eds->count())
+                {
+                    why = "its edges or their rise could not be read";
+                    return nullptr;
+                }
+                json edgesJ = json::array(), profilesJ = json::array();
+                for (size_t i = 0; i < eds->count(); i++)
+                {
+                    Ptr<FlangeEdgeDefinition> fe = eds->item(i);
+                    if (fe->widthType() != FullEdgeWidthFlangeWidthType)
+                    {
+                        why = "only full-edge-width edge flanges are carried yet";
+                        return nullptr;
+                    }
+                    Ptr<BRepEdge> edge = fe->edge();
+                    if (edge && edge->nativeObject()) edge = edge->nativeObject();
+                    Ptr<Line3D> ln = edge ? Ptr<Line3D>(edge->geometry()) : nullptr;
+                    if (!ln)
+                    {
+                        why = "an edge flange on a curved edge is not carried";
+                        return nullptr;
+                    }
+                    V3 a = ptMm(edge->startVertex()->geometry()), b = ptMm(edge->endVertex()->geometry());
+                    V3 y = flangeRise[i];
+                    // the edge of the face the flange rises from: this one, or its twin a thickness along the rise
+                    V3 n = risingFaceNormal(edge, y);
+                    if (dot(n, y) < 0.5)
+                    {
+                        Ptr<BRepEdge> twin = parallelEdge(edge, add(mul(add(a, b), 0.5), mul(y, t)));
+                        if (!twin)
+                        {
+                            why = "the edge on the face the flange rises from was not found";
+                            return nullptr;
+                        }
+                        edge = twin;
+                        a = ptMm(edge->startVertex()->geometry());
+                        b = ptMm(edge->endVertex()->geometry());
+                    }
+                    double L = dist(a, b);
+                    V3 x = unit(sub(b, a)), z = unit(cross(x, y));
+                    std::string skId = fid();
+                    usedIds.insert(skId);
+                    std::string skName = f->name() + (eds->count() > 1 ? " profile " + std::to_string(i + 1) : " profile");
+                    json ents = json::array({json{{"id", "p1"}, {"type", "point"}, {"p", {0, 0}}}, json{{"id", "p2"}, {"type", "point"}, {"p", {L, 0}}},
+                                             json{{"id", "p3"}, {"type", "point"}, {"p", {L, H}}}, json{{"id", "p4"}, {"type", "point"}, {"p", {0, H}}},
+                                             json{{"id", "s1"}, {"type", "line"}, {"start", {0, 0}}, {"end", {L, 0}}, {"startPoint", "p1"}, {"endPoint", "p2"}},
+                                             json{{"id", "s2"}, {"type", "line"}, {"start", {L, 0}}, {"end", {L, H}}, {"startPoint", "p2"}, {"endPoint", "p3"}},
+                                             json{{"id", "s3"}, {"type", "line"}, {"start", {L, H}}, {"end", {0, H}}, {"startPoint", "p3"}, {"endPoint", "p4"}},
+                                             json{{"id", "s4"}, {"type", "line"}, {"start", {0, H}}, {"end", {0, 0}}, {"startPoint", "p4"}, {"endPoint", "p1"}}});
+                    json cons = json::array({json{{"type", "horizontal"}, {"entities", {"s1"}}}, json{{"type", "vertical"}, {"entities", {"s2"}}},
+                                             json{{"type", "horizontal"}, {"entities", {"s3"}}}, json{{"type", "vertical"}, {"entities", {"s4"}}}});
+                    json dims = json::array({json{{"id", "d1"}, {"name", "D1"}, {"fullName", "D1@" + skName}, {"kind", "distance"}, {"entities", {"p1", "p4"}},
+                                                  {"value", H}, {"driving", true}, {"textPosition", {L / 2, H / 2}}}});
+                    preFeatures.push_back(json{{"id", skId}, {"name", skName}, {"type", "sketch"}, {"status", "mapped"},
+                                               {"native", {{"app", "Fusion"}, {"type", "flange profile (written for the flange)"}}},
+                                               {"def", {{"plane", {{"kind", "generated"}, {"by", f->name()}}},
+                                                        {"frame", {{"origin", vj(a)}, {"x", vj(x)}, {"z", vj(z)}}},
+                                                        {"entities", ents}, {"constraints", cons}, {"dimensions", dims}, {"constrained", "under"}, {"hidden", true}}}});
+                    edgesJ.push_back(descriptor(edge));
+                    profilesJ.push_back(json{{"kind", "feature"}, {"by", "id"}, {"id", skId}});
+                }
+                ruleFirst();
+                json d{{"edge", edgesJ[0]}, {"profile", profilesJ[0]}, {"angle", 90}, {"useDefaultRadius", std::fabs(br - r) < 1e-9}, {"bendRadius", br},
+                       {"position", position}, {"useDefaultRelief", true}, {"reliefType", "rectangular"}, {"useReliefRatio", true}, {"reliefRatio", 0.5},
+                       {"reliefWidth", 1}, {"reliefDepth", 1}, {"length", {{"type", "blind"}, {"distance", len}, {"datum", datum}, {"reverse", false}}}};
+                if (edgesJ.size() > 1)
+                {
+                    d["edges"] = edgesJ;
+                    d["profiles"] = profilesJ;
+                }
+                return d;
+            }
+            why = "a flange of another kind is not carried yet";
+            return nullptr;
+        }
+        if (Ptr<UnfoldFeature> f = e)
+        {
+            // FORMAT-SPEC 4 `unfold`: the fixed face and the bends by their inner cylindrical faces, in the state the
+            // feature saw (Fusion has no bend sub-features: `feature` and `sub` are left out)
+            type = "unfold";
+            Ptr<BRepFace> fixed = f->stationaryFace();
+            if (fixed && fixed->nativeObject()) fixed = fixed->nativeObject();
+            if (!fixed)
+            {
+                why = "its stationary face is gone";
+                return nullptr;
+            }
+            std::vector<Ptr<BRepFace>> bends = f->bendFaces();
+            if (f->isUnfoldAllBends() || bends.empty())
+            {
+                // every bend: the inner cylinders of the rule's bend radius
+                bends.clear();
+                Ptr<SheetMetalRule> rule = comp->activeSheetMetalRule();
+                double r = rule ? cm2mm(rule->bendRadius()->value()) : 0;
+                for (auto& b : solids())
+                    for (size_t i = 0; i < b->faces()->count(); i++)
+                        if (Ptr<Cylinder> cy = b->faces()->item(i)->geometry())
+                            if (std::fabs(cm2mm(cy->radius()) - r) < 1e-6) bends.push_back(b->faces()->item(i));
+            }
+            json bj = json::array();
+            int k = 0;
+            for (auto& bf : bends)
+            {
+                Ptr<BRepFace> nb = bf->nativeObject() ? bf->nativeObject() : bf;
+                bj.push_back(json{{"name", "Bend" + std::to_string(++k)}, {"face", descriptor(nb)}});
+            }
+            return json{{"fixedFace", descriptor(fixed)}, {"bends", bj}};
+        }
+        if (Ptr<SweepFeature> f = e)
+        {
+            // FORMAT-SPEC 4 `sweep` / `sweepCut`, with the SolidWorks exporter's defaults for what Fusion's sweep
+            // does not have; the path and guide (sketches as a whole) before the profile, whose regions profileRef
+            // leaves in regionsOut
+            bool cut = f->operation() == CutFeatureOperation;
+            type = cut ? "sweepCut" : "sweep";
+            json dummy = json::array();
+            json path = profileRef(f->path(), dummy);
+            if (path.is_null())
+            {
+                why = "its path is not one written sketch";
+                return nullptr;
+            }
+            json guides = json::array();
+            if (Ptr<Path> g = f->guideRail())
+            {
+                json gr = profileRef(g, dummy);
+                if (gr.is_null())
+                {
+                    why = "its guide rail is not one written sketch";
+                    return nullptr;
+                }
+                guides.push_back(gr);
+            }
+            if (f->twistAngle() && std::fabs(f->twistAngle()->value()) > 1e-12)
+            {
+                why = "a twisted sweep is not carried yet";
+                return nullptr;
+            }
+            json contours = json::array();
+            json prof = profileRef(f->profile(), contours);
+            if (prof.is_null())
+            {
+                why = "its profile is not a written sketch";
+                return nullptr;
+            }
+            json d{{"profile", prof}, {"path", path}, {"twistControl", 0}, {"pathAlignment", 0}, {"twistAngle", 0},
+                   {"tangentPropagation", false}, {"maintainTangency", false}, {"advancedSmoothing", false}, {"mergeSmoothFaces", true},
+                   {"alignWithEndFaces", false}, {"startTangency", 0}, {"endTangency", 0}, {"direction", -1}};
+            if (!cut) d["merge"] = f->operation() == JoinFeatureOperation;
+            if (!guides.empty()) d["guides"] = guides;
+            if (!contours.empty()) d["contours"] = contours;
+            if (!regionsOut.empty()) d["regions"] = regionsOut;
+            return d;
+        }
+        if (Ptr<LoftFeature> f = e)
+        {
+            // FORMAT-SPEC 4 `loft` / `loftCut`: sections are whole sketches; the feature's result goes with it (walk),
+            // as systems align sections with different segment counts differently
+            bool cut = f->operation() == CutFeatureOperation;
+            type = cut ? "loftCut" : "loft";
+            json sections = json::array(), guides = json::array(), centerline;
+            json dummy = json::array();
+            Ptr<LoftSections> ls = f->loftSections();
+            for (size_t i = 0; ls && i < ls->count(); i++)
+            {
+                json r = profileRef(ls->item(i)->entity(), dummy);
+                if (r.is_null() || !regionsOut.empty())
+                {
+                    why = "a loft section that is not a whole written sketch";
+                    return nullptr;
+                }
+                sections.push_back(r);
+            }
+            Ptr<LoftCenterLineOrRails> rails = f->centerLineOrRails();
+            for (size_t i = 0; rails && i < rails->count(); i++)
+            {
+                Ptr<LoftCenterLineOrRail> rl = rails->item(i);
+                json r = profileRef(rl->entity(), dummy);
+                if (r.is_null())
+                {
+                    why = "a loft rail that is not a written sketch";
+                    return nullptr;
+                }
+                if (rl->isCenterLine()) centerline = r;
+                else guides.push_back(r);
+            }
+            json d{{"sections", sections}, {"closed", f->isClosed()}, {"maintainTangency", true}, {"startTangency", 0}, {"endTangency", 0},
+                   {"startTangentLength", 1}, {"endTangentLength", 1}, {"reverseStartTangent", false}, {"reverseEndTangent", false}};
+            if (!cut) d["merge"] = f->operation() == JoinFeatureOperation;
+            if (!guides.empty()) d["guides"] = guides;
+            if (!centerline.is_null()) d["centerline"] = centerline;
+            return d;
+        }
+        if (Ptr<RectangularPatternFeature> f = e)
+        {
+            type = "linearPattern";
+            json d{{"geometryPattern", false}};
+            if (!seedsJson(f->inputEntities(), d, why)) return nullptr;
+            Ptr<PatternElements> els = f->patternElements();
+            bool spacing = f->patternDistanceType() == SpacingPatternDistanceType;
+            struct Dir
+            {
+                const char* key;
+                Ptr<Base> ent;
+                Ptr<ModelParameter> q, dist;
+                bool symmetric;
+            };
+            std::vector<Dir> dirs{{"dir1", f->directionOneEntity(), f->quantityOne(), f->distanceOne(), f->isSymmetricInDirectionOne()},
+                                  {"dir2", f->directionTwoEntity(), f->quantityTwo(), f->distanceTwo(), f->isSymmetricInDirectionTwo()}};
+            for (auto& dd : dirs)
+            {
+                int n = dd.q ? static_cast<int>(std::lround(dd.q->value())) : 1;
+                if (!dd.ent || n <= 1) continue;
+                if (dd.symmetric)
+                {
+                    why = "a pattern symmetric about its seed is not carried yet";
+                    return nullptr;
+                }
+                V3 dir{0, 0, 0};
+                json ref = directionRef(dd.ent, dir, why);
+                if (ref.is_null()) return nullptr;
+                double dist = dd.dist ? std::fabs(cm2mm(dd.dist->value())) : 0;
+                double sp = spacing ? dist : (n > 1 ? dist / (n - 1) : 0);
+                // which way the instances run: from an instance moved along this direction only
+                bool reverse = false;
+                for (size_t i = 0; els && i < els->count(); i++)
+                {
+                    Ptr<Matrix3D> m = els->item(i)->transform();
+                    if (!m) continue;
+                    std::vector<double> a = m->asArray();
+                    V3 t{cm2mm(a[3]), cm2mm(a[7]), cm2mm(a[11])};
+                    double along = dot(t, unit(dir));
+                    if (std::fabs(along) < 1e-6 || norm(sub(t, mul(unit(dir), along))) > 1e-6) continue;
+                    reverse = along < 0;
+                    break;
+                }
+                d[dd.key] = json{{"ref", ref}, {"reverse", reverse}, {"spacing", sp}, {"count", n}};
+            }
+            if (!d.contains("dir1"))
+            {
+                why = "a pattern without a first direction";
+                return nullptr;
+            }
+            json skipped = json::array();
+            for (size_t i = 0; els && i < els->count(); i++)
+                if (els->item(i)->isSuppressed()) skipped.push_back(static_cast<int>(i));
+            if (!skipped.empty()) d["skipped"] = skipped;
+            return d;
+        }
+        if (Ptr<CircularPatternFeature> f = e)
+        {
+            type = "circularPattern";
+            json d{{"geometryPattern", false}, {"equalSpacing", true}};
+            if (!seedsJson(f->inputEntities(), d, why)) return nullptr;
+            if (f->isSymmetric())
+            {
+                why = "a circular pattern symmetric about its seed is not carried yet";
+                return nullptr;
+            }
+            V3 dir{0, 0, 0};
+            json ax = directionRef(f->axis(), dir, why);
+            if (ax.is_null()) return nullptr;
+            double total = f->totalAngle() ? rad2deg(f->totalAngle()->value()) : 360.0;
+            d["axis"] = ax;
+            d["count"] = f->quantity() ? static_cast<int>(std::lround(f->quantity()->value())) : 1;
+            d["angle"] = std::fabs(total);
+            d["reverse"] = total < 0;   // importer: a reversed pattern turns by -angle
+            json skipped = json::array();
+            Ptr<PatternElements> els = f->patternElements();
+            for (size_t i = 0; els && i < els->count(); i++)
+                if (els->item(i)->isSuppressed()) skipped.push_back(static_cast<int>(i));
+            if (!skipped.empty()) d["skipped"] = skipped;
+            return d;
+        }
+        if (Ptr<MirrorFeature> f = e)
+        {
+            json d;
+            if (!seedsJson(f->inputEntities(), d, why)) return nullptr;
+            json plane = planeRef(f->mirrorPlane());
+            if (plane.value("kind", "") == "frame")
+            {
+                why = "its mirror plane is not a plane or face that can be referenced";
+                return nullptr;
+            }
+            d["plane"] = plane;
+            if (d.contains("bodies") && !d["bodies"].empty())
+            {
+                if (!d["seeds"].empty())
+                {
+                    why = "a mirror of features and bodies together is not carried";
+                    return nullptr;
+                }
+                type = "mirrorBody";
+                d.erase("seeds");
+                d["merge"] = f->isCombine();
+                d["knit"] = false;
+            }
+            else
+            {
+                type = "mirror";
+                d["geometryPattern"] = false;
+            }
+            return d;
+        }
+        if (Ptr<ShellFeature> f = e)
+        {
+            type = "shell";
+            json faces = json::array();
+            Ptr<ObjectCollection> in = f->inputEntities();
+            for (size_t i = 0; in && i < in->count(); i++)
+                if (Ptr<BRepFace> fc = in->item(i)) faces.push_back(descriptor(fc));
+            double inside = f->insideThickness() ? cm2mm(f->insideThickness()->value()) : 0;
+            double outside = f->outsideThickness() ? cm2mm(f->outsideThickness()->value()) : 0;
+            if (inside > 1e-9 && outside > 1e-9)
+            {
+                why = "a shell with both inside and outside thickness is not carried";
+                return nullptr;
+            }
+            return json{{"thickness", inside > 1e-9 ? inside : outside}, {"outward", inside > 1e-9 ? 0 : 1}, {"faces", faces}};
+        }
+        if (Ptr<DraftFeature> f = e)
+        {
+            type = "draft";
+            Ptr<AngleExtentDefinition> ad = f->draftDefinition();
+            if (!ad || !ad->angle())
+            {
+                why = "only a draft by one angle is carried";
+                return nullptr;
+            }
+            json neutral = planeRef(f->plane());
+            if (neutral.value("kind", "") == "frame")
+            {
+                why = "its neutral plane cannot be referenced";
+                return nullptr;
+            }
+            json faces = json::array();
+            for (auto& fc : f->inputFaces()) faces.push_back(descriptor(fc));
+            return json{{"neutral", neutral}, {"faces", faces}, {"angle", std::fabs(rad2deg(ad->angle()->value()))},
+                        {"reverse", f->isDirectionFlipped() != (ad->angle()->value() < 0)}};
+        }
+        if (Ptr<CombineFeature> f = e)
+        {
+            type = "combine";
+            if (f->isKeepToolBodies())
+            {
+                why = "a combine that keeps its tool bodies is not carried yet";
+                return nullptr;
+            }
+            Ptr<BRepBody> target = f->targetBody();
+            if (!target)
+            {
+                why = "its target body is gone";
+                return nullptr;
+            }
+            json tools = json::array();
+            Ptr<ObjectCollection> tb = f->toolBodies();
+            for (size_t i = 0; tb && i < tb->count(); i++)
+                if (Ptr<BRepBody> b = tb->item(i)) tools.push_back(bodyRef(b));
+            FeatureOperations op = f->operation();
+            return json{{"operation", op == CutFeatureOperation ? "subtract" : op == IntersectFeatureOperation ? "common" : "add"},
+                        {"main", bodyRef(target)}, {"bodies", tools}};
+        }
+        if (Ptr<SplitBodyFeature> f = e)
+        {
+            type = "split";
+            Ptr<Base> tool = f->splittingTool();
+            json t;
+            if (Ptr<ConstructionPlane> cp = tool) t = planeRef(cp);
+            else if (Ptr<BRepFace> fc = tool) t = descriptor(fc);
+            if (t.is_null() || t.value("kind", "") == "frame")
+            {
+                why = "its splitting tool is not a plane or face that can be referenced";
+                return nullptr;
+            }
+            return json{{"tools", json::array({t})}, {"consume", false}};
+        }
         why = std::string(e ? e->objectType() : "?") + " has no NCX mapping in this exporter yet";
         return nullptr;
     }
@@ -846,31 +1949,133 @@ struct DocWriter
         return true;
     }
 
+    // Provenance (replay.cpp): the NCX feature a timeline object was built from, {id, type, k}, or null
+    static Ptr<Attributes> attributesOfEntity(const Ptr<Base>& e)
+    {
+        if (Ptr<Feature> f = e) return f->attributes();
+        if (Ptr<Sketch> s = e) return s->attributes();
+        if (Ptr<ConstructionPlane> c = e) return c->attributes();
+        return nullptr;
+    }
+    static std::string attrOf(const Ptr<Base>& e, const char* name)
+    {
+        Ptr<Attributes> as = attributesOfEntity(e);
+        Ptr<Attribute> a = as ? as->itemByName("NCX", name) : nullptr;
+        return a ? a->value() : "";
+    }
+    static json sourceTag(const Ptr<Base>& e)
+    {
+        json j = json::parse(attrOf(e, "source"), nullptr, false);
+        return j.is_object() ? j : json(nullptr);
+    }
+    // the source types a Fusion object of this type writes natively as (anything else built it as an equivalent)
+    static bool nativeFamily(const std::string& srcType, const std::string& fusionType)
+    {
+        static const std::map<std::string, std::string> fam{
+            {"sketch", "adsk::fusion::Sketch"}, {"sketch3d", "adsk::fusion::Sketch"}, {"extrude", "adsk::fusion::ExtrudeFeature"},
+            {"cut", "adsk::fusion::ExtrudeFeature"}, {"extrudedSurface", "adsk::fusion::ExtrudeFeature"},
+            {"revolve", "adsk::fusion::RevolveFeature"}, {"revolveCut", "adsk::fusion::RevolveFeature"},
+            {"revolvedSurface", "adsk::fusion::RevolveFeature"}, {"fillet", "adsk::fusion::FilletFeature"},
+            {"chamfer", "adsk::fusion::ChamferFeature"}, {"plane", "adsk::fusion::ConstructionPlane"},
+            {"planarSurface", "adsk::fusion::PatchFeature"}, {"knit", "adsk::fusion::StitchFeature"},
+            {"deleteBody", "adsk::fusion::RemoveFeature"}};
+        auto it = fam.find(srcType);
+        return it != fam.end() && it->second == fusionType;
+    }
+
     void walk()
     {
         Ptr<Timeline> tl = des->timeline();
-        std::vector<Ptr<TimelineObject>> items;
-        for (size_t i = 0; i < tl->count(); i++) items.push_back(tl->item(i));
-        for (auto& t : items)
+        // this component's timeline objects (native: a feature of a nested component comes as a proxy in the root's
+        // context, the model in the upright wrapper; read in its component's own frame), with their provenance
+        struct Item
         {
+            Ptr<TimelineObject> t;
+            Ptr<Base> e;
+            json tag;
+        };
+        std::vector<Item> items;
+        for (size_t i = 0; i < tl->count(); i++)
+        {
+            Ptr<TimelineObject> t = tl->item(i);
             Ptr<Base> e = t->entity();
             if (!e) continue;
-            // only this component's features
+            if (Ptr<Feature> f = e)
+            {
+                if (f->assemblyContext())
+                    if (Ptr<Feature> nf = f->parentComponent()->features()->itemByName(f->name())) e = nf;
+            }
+            else if (Ptr<Sketch> s = e)
+            {
+                if (s->nativeObject()) e = s->nativeObject();
+            }
+            else if (Ptr<ConstructionPlane> p = e)
+            {
+                if (p->nativeObject()) e = p->nativeObject();
+            }
             Ptr<Component> owner;
             if (Ptr<Feature> f = e) owner = f->parentComponent();
             else if (Ptr<Sketch> s = e) owner = s->parentComponent();
             else if (Ptr<ConstructionPlane> p = e) owner = p->component();
             else continue;   // occurrences, joints: the assembly's business
             if (owner != comp) continue;
+            items.push_back(Item{t, e, sourceTag(e)});
+        }
+        // ids: an object an NCX import made keeps its feature's payload id, so the source's references stay valid
+        for (auto& it : items)
+            if (it.tag.is_object()) reservedIds.insert(it.tag.value("id", ""));
+        auto tokenOf = [](const Ptr<Base>& e) {
+            return Ptr<Feature>(e) ? Ptr<Feature>(e)->entityToken() : Ptr<Sketch>(e) ? Ptr<Sketch>(e)->entityToken() : Ptr<ConstructionPlane>(e)->entityToken();
+        };
+        for (size_t ii = 0; ii < items.size(); ii++)
+        {
+            Ptr<TimelineObject> t = items[ii].t;
+            Ptr<Base> e = items[ii].e;
+            const json tag = items[ii].tag;
             // between two features: the timeline is at its end and every feature in its own suppression state,
             // so a cancel here leaves the design as it was
             progressStep(docName + ": reading " + t->name());
             ProgressNoCancel finishThisFeature;
-            std::string id = fid();
+            // Feature passthrough: the objects one source feature became (its group), when Fusion built it as something
+            // else (an equivalent: Insert Part as sketch copies, a convert to sheet metal as a body and a conversion, a
+            // carried result), or as several objects, or when it is not written natively below: written as the source's
+            // definition while the part's shape right after the group is what the import left (NCX/after).
+            size_t groupEnd = ii + 1;
+            json srcDef;
+            if (tag.is_object() && tag.value("k", 0) == 0 && passthrough)
+            {
+                while (groupEnd < items.size() && items[groupEnd].tag.is_object() && items[groupEnd].tag.value("id", "") == tag.value("id", "") &&
+                       items[groupEnd].tag.value("k", 0) > 0)
+                    groupEnd++;
+                srcDef = json::parse(attrOf(e, "def"), nullptr, false);
+                if (!srcDef.is_object() || srcDef.value("status", "") == "opaque" || !srcDef.contains("def")) srcDef = nullptr;
+            }
+            auto passedThrough = [&]() -> bool {
+                if (srcDef.is_null()) return false;
+                json after = json::parse(attrOf(e, "after"), nullptr, false);
+                items[groupEnd - 1].t->rollTo(false);
+                bool same = sameShape(after, shapeSignature(solids()));
+                tl->moveToEnd();
+                if (!same) return false;
+                std::string sid = srcDef.value("id", "");
+                usedIds.insert(sid);
+                for (size_t k = ii; k < groupEnd; k++) idOfToken[tokenOf(items[k].e)] = sid;
+                features.push_back(srcDef);
+                notes.push_back(docName + ": " + srcDef.value("name", "") + " written as the source's own definition (Fusion built it as " +
+                                std::to_string(groupEnd - ii) + " object(s), first " + e->objectType() + "; the part is as imported there)");
+                ii = groupEnd - 1;
+                return true;
+            };
+            bool nativeFirst = srcDef.is_null() || (groupEnd == ii + 1 && nativeFamily(srcDef.value("type", ""), e->objectType()));
+            if (!nativeFirst && passedThrough()) continue;
+            std::string id;
+            if (tag.is_object() && tag.value("k", 0) == 0 && !usedIds.count(tag.value("id", ""))) id = tag.value("id", "");
+            else id = fid();
+            usedIds.insert(id);
             std::string name = t->name();
             if (Ptr<Sketch> s = e) name = s->name();
             else if (Ptr<Feature> f = e) name = f->name();
-            idOfToken[Ptr<Feature>(e) ? Ptr<Feature>(e)->entityToken() : Ptr<Sketch>(e) ? Ptr<Sketch>(e)->entityToken() : Ptr<ConstructionPlane>(e)->entityToken()] = id;
+            idOfToken[tokenOf(e)] = id;
             // A suppressed feature is read as it is when active: unsuppressed for the moment (Fusion does not compute
             // a suppressed feature, so neither its definition's geometry nor its result could be read), written with
             // its suppression state, and suppressed again before the next feature.
@@ -891,6 +2096,36 @@ struct DocWriter
                 t->rollTo(false);
                 extrudeNegative = sideFacesBelow(ex);
             }
+            // a hole's drilled cylinders exist only with it computed: their axes and diameters, read here
+            holeAxes.clear();
+            holeDiameters = json::array();
+            if (Ptr<HoleFeature> hf = e)
+            {
+                t->rollTo(false);
+                double r0 = hf->holeDiameter() ? cm2mm(hf->holeDiameter()->value()) / 2 : 0;
+                std::vector<double> ds;
+                Ptr<BRepFaces> sfs = hf->sideFaces();
+                for (size_t i = 0; sfs && i < sfs->count(); i++)
+                {
+                    Ptr<BRepFace> fc = sfs->item(i);
+                    if (fc->nativeObject()) fc = fc->nativeObject();
+                    Ptr<Cylinder> cy = fc->geometry();
+                    if (!cy) continue;
+                    double r = cm2mm(cy->radius());
+                    if (std::none_of(ds.begin(), ds.end(), [&](double x) { return std::fabs(x - 2 * r) < 1e-6; })) ds.push_back(2 * r);
+                    if (std::fabs(r - r0) > 1e-6) continue;
+                    V3 o = ptMm(cy->origin()), a = unit(vecOf(cy->axis()));
+                    bool dup = false;
+                    for (auto& h : holeAxes)
+                        if (norm(cross(sub(o, h.first), h.second)) < 1e-6) dup = true;
+                    if (!dup) holeAxes.push_back({o, a});
+                }
+                std::sort(ds.begin(), ds.end());
+                for (double x : ds) holeDiameters.push_back(x);
+                tl->moveToEnd();
+            }
+            flangeRise.clear();
+            if (Ptr<FlangeFeature> fl = e) readFlangeRise(t, fl);
             // descriptors are measured in the state the feature saw: roll back to just before it
             t->rollTo(true);
             std::vector<json> before;
@@ -914,14 +2149,39 @@ struct DocWriter
                 }
             }
             else
+            {
+                bool smBefore = sheetMetalWritten;
+                preFeatures = json::array();
                 def = featureDef(e, type, why);
+                if (def.is_null())
+                {
+                    sheetMetalWritten = smBefore;
+                    preFeatures = json::array();
+                }
+            }
             tl->moveToEnd();
+            // not written natively: the source's definition, if the part is still as imported there
+            if (def.is_null() && !wasSuppressed && passedThrough())
+            {
+                usedIds.erase(id);
+                continue;
+            }
             if (!def.is_null())
             {
+                for (auto& pf : preFeatures) features.push_back(pf);   // the part's rule, a flange's profiles
+                preFeatures = json::array();
                 nf["type"] = type;
                 nf["status"] = "mapped";
                 nf["def"] = def;
                 if (Ptr<Feature> ft = e) featureOfId[id] = ft;
+                // a loft and a variable fillet carry their result (FORMAT-SPEC 4: systems differ there)
+                if (type == "loft" || type == "loftCut" || (type == "fillet" && def.value("filletType", "") == "variable"))
+                {
+                    t->rollTo(false);
+                    json result;
+                    if (resultStep(result, before)) nf["result"] = result;
+                    tl->moveToEnd();
+                }
             }
             else
             {
@@ -953,7 +2213,127 @@ struct DocWriter
                {"features", features}, {"bodies", json::array()}};
         int k = 0;
         for (auto& b : solids()) d["bodies"].push_back(json{{"id", "body:" + std::to_string(++k)}, {"name", b->name()}, {"fingerprint", bodyFingerprint(b)}});
+        d["materials"] = materialsJson();
+        json apps = appearancesJson();
+        if (!apps.empty()) d["appearances"] = apps;
+        json props = propertiesJson();
+        if (!props.empty()) d["customProperties"] = props;
         return d;
+    }
+
+    // FORMAT-SPEC 4 materials: the component's material. One an NCX import chose for a source material is written
+    // under the source's name and database (attribute NCX/material) while the component keeps it, so the source
+    // system gets its own material back; any other under Fusion's name and library.
+    json materialsJson()
+    {
+        json out = json::array();
+        Ptr<Material> m = comp->material();
+        if (!m) return out;
+        json src;
+        if (Ptr<Attribute> a = comp->attributes()->itemByName("NCX", "material")) src = json::parse(a->value(), nullptr, false);
+        if (src.is_object() && src.value("fusion", "") == m->name())
+        {
+            // the source's material, or none when the source had none (Fusion's default stood in for it)
+            if (!src.value("name", "").empty())
+                out.push_back(json{{"configuration", "Default"}, {"name", src["name"]}, {"database", src.value("database", "")}});
+        }
+        else
+        {
+            std::string lib;
+            if (Ptr<MaterialLibrary> l = m->parent()) lib = l->name();
+            out.push_back(json{{"configuration", "Default"}, {"name", m->name()}, {"database", lib.empty() ? "Fusion" : lib}});
+        }
+        return out;
+    }
+
+    // FORMAT-SPEC 4 appearances: colours a body or face has of its own (not its material's). Every solid with the
+    // same body appearance -> the document's. A colour an NCX import made is written with the source's exact
+    // values (root attribute group NCX.appearance, by appearance name); any other as Fusion's colour and opacity.
+    json appearancesJson()
+    {
+        json out = json::array();
+        Ptr<Component> rootComp = des->rootComponent();
+        auto colour = [&](const Ptr<Appearance>& a, json item) -> json {
+            if (!a) return nullptr;
+            if (Ptr<Attribute> rec = rootComp->attributes()->itemByName("NCX.appearance", a->name()))
+            {
+                json r = json::parse(rec->value(), nullptr, false);
+                if (r.is_object() && r.contains("color"))
+                {
+                    item["kind"] = "color";
+                    item["color"] = r["color"];
+                    if (r.contains("optical") && !r["optical"].empty()) item["optical"] = r["optical"];
+                    return item;
+                }
+            }
+            Ptr<Color> c = a->color();
+            if (!c)
+            {
+                notes.push_back(docName + ": appearance \"" + a->name() + "\" has no plain colour: not written");
+                return nullptr;
+            }
+            item["kind"] = "color";
+            item["color"] = json::array({c->red() / 255.0, c->green() / 255.0, c->blue() / 255.0});
+            item["optical"] = json{{"transparency", 1.0 - c->opacity() / 255.0}};
+            return item;
+        };
+        std::vector<Ptr<BRepBody>> ss = solids(), own;
+        for (auto& b : ss)
+            if (b->appearanceSourceType() == BodyAppearanceSource && b->appearance()) own.push_back(b);
+        bool whole = !own.empty() && own.size() == ss.size();
+        for (auto& b : own)
+            if (b->appearance()->name() != own[0]->appearance()->name()) whole = false;
+        if (whole)
+        {
+            json it = colour(own[0]->appearance(), json{{"target", {{"kind", "document"}, {"by", "id"}}}});
+            if (!it.is_null()) out.push_back(it);
+        }
+        else
+            for (auto& b : own)
+            {
+                json fp = bodyFingerprint(b);
+                json it = colour(b->appearance(), json{{"target", {{"kind", "body"}, {"by", "geom"},
+                                                                    {"geom", {{"volume", fp["volume"]}, {"centroid", fp["centroid"]}, {"bbox", fp["bbox"]}}}}}});
+                if (!it.is_null()) out.push_back(it);
+            }
+        for (auto& b : ss)
+            for (size_t i = 0; i < b->faces()->count(); i++)
+            {
+                Ptr<BRepFace> f = b->faces()->item(i);
+                if (f->appearanceSourceType() != FaceAppearanceSource || !f->appearance()) continue;
+                json it = colour(f->appearance(), json{{"target", descriptor(f)}});
+                if (!it.is_null()) out.push_back(it);
+            }
+        return out;
+    }
+
+    // FORMAT-SPEC 4 custom properties: those an NCX import kept as attributes (group NCX.properties, with their
+    // typed and resolved values), else Fusion's description and a part number other than the component's name.
+    json propertiesJson()
+    {
+        json out = json::array();
+        Ptr<Attributes> as = comp->attributes();
+        std::set<std::string> have;
+        for (size_t i = 0; as && i < as->count(); i++)
+        {
+            Ptr<Attribute> a = as->item(i);
+            if (a->groupName() != "NCX.properties") continue;
+            json p = json::parse(a->value(), nullptr, false);
+            if (!p.is_object()) continue;
+            have.insert(p.value("name", ""));
+            out.push_back(p);
+        }
+        auto has = [&](std::initializer_list<const char*> names) {
+            for (auto n : names)
+                for (auto& h : have)
+                    if (_stricmp(h.c_str(), n) == 0) return true;
+            return false;
+        };
+        if (!comp->description().empty() && !has({"Description"}))
+            out.push_back(json{{"name", "Description"}, {"type", "text"}, {"value", comp->description()}, {"resolved", comp->description()}});
+        if (!comp->partNumber().empty() && comp->partNumber() != comp->name() && !has({"PartNo", "Part Number", "PartNumber"}))
+            out.push_back(json{{"name", "PartNo"}, {"type", "text"}, {"value", comp->partNumber()}, {"resolved", comp->partNumber()}});
+        return out;
     }
 };
 
@@ -969,9 +2349,10 @@ struct DocWriter
 //   planar       -> one coincident face pair along the plane's normal
 // Ball and pin-slot joints, and joints whose faces cannot be found, are written `opaque` (the components still
 // arrive in place). A joint to the assembly itself uses the assembly's origin planes.
+std::string sanitizeId(const std::string& s);   // below
+
 struct MateWriter
 {
-    std::map<std::string, std::string> compIdOfOcc;   // occurrence full path name -> component id
     std::vector<std::string>& notes;
     json mates = json::array();
     int n = 0;
@@ -989,11 +2370,47 @@ struct MateWriter
         V3 p, axis;
     };
 
+    // The assembly being written: its Fusion component, the ids of the components written in it, and one occurrence
+    // of it in the design's root context (null for the design root) through which its parts' faces are measured.
+    Ptr<Component> asmComp;
+    std::set<std::string> written;
+    Ptr<Occurrence> asmCtx;
+
+    // An occurrence as a mate side of this assembly (FORMAT-SPEC 5, Mates: {component, path?}): the chain of
+    // occurrences below the assembly, each id written as its occurrence's name ("c:<name>", unique in its parent).
+    // Null when the occurrence is not below the assembly or its first level was not written.
+    json who(const Ptr<Occurrence>& o)
+    {
+        if (!o) return nullptr;
+        std::vector<std::string> segs;
+        Ptr<Occurrence> p = o;
+        for (; p; p = p->assemblyContext())
+        {
+            if (p->component() == asmComp) break;
+            segs.push_back("c:" + sanitizeId(p->name()));
+        }
+        if (segs.empty()) return nullptr;
+        std::reverse(segs.begin(), segs.end());
+        if (!written.count(segs[0])) return nullptr;
+        json s{{"component", segs[0]}};
+        if (segs.size() > 1) s["path"] = json(std::vector<std::string>(segs.begin() + 1, segs.end()));
+        return s;
+    }
     std::string idOf(const Ptr<Occurrence>& o)
     {
-        if (!o) return "";
-        auto it = compIdOfOcc.find(o->fullPathName());
-        return it == compIdOfOcc.end() ? "?" : it->second;
+        json s = who(o);
+        return s.is_null() ? "?" : s["component"].get<std::string>();
+    }
+
+    // the bodies of an occurrence and of every occurrence under it (a joint on a sub-assembly occurrence: its
+    // faces are its parts'); each face proxy's assemblyContext() names the part it belongs to
+    static void bodiesUnder(const Ptr<Occurrence>& o, std::vector<Ptr<BRepBody>>& out)
+    {
+        if (!o) return;
+        Ptr<BRepBodies> bs = o->bRepBodies();
+        for (size_t i = 0; bs && i < bs->count(); i++) out.push_back(bs->item(i));
+        Ptr<OccurrenceList> ch = o->childOccurrences();
+        for (size_t i = 0; ch && i < ch->count(); i++) bodiesUnder(ch->item(i), out);
     }
 
     std::vector<PlaneFace> planes(const Ptr<Occurrence>& o)
@@ -1006,11 +2423,12 @@ struct MateWriter
             v.push_back({nullptr, "right", {0, 0, 0}, {1, 0, 0}});
             return v;
         }
-        Ptr<BRepBodies> bs = o->bRepBodies();
-        for (size_t i = 0; bs && i < bs->count(); i++)
-            for (size_t k = 0; k < bs->item(i)->faces()->count(); k++)
+        std::vector<Ptr<BRepBody>> bs;
+        bodiesUnder(o, bs);
+        for (size_t i = 0; i < bs.size(); i++)
+            for (size_t k = 0; k < bs[i]->faces()->count(); k++)
             {
-                Ptr<BRepFace> f = bs->item(i)->faces()->item(k);
+                Ptr<BRepFace> f = bs[i]->faces()->item(k);
                 Ptr<Plane> g = f->geometry();
                 if (!g) continue;
                 // the outward normal (the plane's own normal ignores the face's orientation)
@@ -1026,11 +2444,12 @@ struct MateWriter
     {
         std::vector<CylFace> v;
         if (!o) return v;
-        Ptr<BRepBodies> bs = o->bRepBodies();
-        for (size_t i = 0; bs && i < bs->count(); i++)
-            for (size_t k = 0; k < bs->item(i)->faces()->count(); k++)
+        std::vector<Ptr<BRepBody>> bs;
+        bodiesUnder(o, bs);
+        for (size_t i = 0; i < bs.size(); i++)
+            for (size_t k = 0; k < bs[i]->faces()->count(); k++)
             {
-                Ptr<BRepFace> f = bs->item(i)->faces()->item(k);
+                Ptr<BRepFace> f = bs[i]->faces()->item(k);
                 Ptr<Cylinder> g = f->geometry();
                 if (g) v.push_back({f, ptMm(g->origin()), unit(vecOf(g->axis()))});
             }
@@ -1038,13 +2457,21 @@ struct MateWriter
     }
 
     // the reference of one side: a face descriptor in its component's own frame, or an assembly origin plane
-    json side(const Ptr<Occurrence>& o, const Ptr<BRepFace>& face, const std::string& originPlane)
+    json side(const Ptr<Occurrence>& o0, const Ptr<BRepFace>& face, const std::string& originPlane)
     {
-        if (!o) return json{{"ref", {{"kind", "originPlane"}, {"by", "id"}, {"plane", originPlane}}}};
-        setMeasureContext(o);
+        if (!o0) return json{{"ref", {{"kind", "originPlane"}, {"by", "id"}, {"plane", originPlane}}}};
+        // the part the face belongs to (a sub-assembly occurrence's face is its part's: the side is the sub-assembly
+        // with the path down to that part); measured in the design's root context (the upright wrapper, or the
+        // sub-assembly's place in it)
+        Ptr<Occurrence> o = (face && face->assemblyContext()) ? face->assemblyContext() : o0;
+        Ptr<Occurrence> ctx = asmCtx ? o->createForAssemblyContext(asmCtx) : nullptr;
+        setMeasureContext(ctx ? ctx : o);
         json d = descriptor(face->nativeObject() ? face->nativeObject() : face);
         setMeasureContext(nullptr);
-        return json{{"component", idOf(o)}, {"ref", d}};
+        json s = who(o);
+        if (s.is_null()) s = json{{"component", "?"}};
+        s["ref"] = d;
+        return s;
     }
 
     // coincident face pairs between the two sides whose normal is along `along` (or, with across, perpendicular
@@ -1166,8 +2593,17 @@ struct MateWriter
         opaque("a motion link between these joint types has no NCX mate");
     }
 
-    void joint(const std::string& name, Ptr<Occurrence> a, Ptr<Occurrence> b, const Ptr<JointMotion>& motion, const V3& origin)
+    // axisOverride: the joint's axis (revolute, cylindrical, slider) or plane normal (planar) when Fusion does not
+    // report it (a sub-assembly's joint read back without its occurrences: the import's record, joints.cpp)
+    void joint(const std::string& name, Ptr<Occurrence> a, Ptr<Occurrence> b, const Ptr<JointMotion>& motion, const V3& origin,
+               const V3* axisOverride = nullptr, bool fastener = false)
     {
+        auto vecOr = [&](const Ptr<Vector3D>& v) { return axisOverride ? *axisOverride : v ? unit(vecOf(v)) : V3{0, 0, 1}; };
+        V3 jaxis = axisOverride ? *axisOverride : V3{0, 0, 1};
+        if (Ptr<RevoluteJointMotion> r = motion) jaxis = vecOr(r->rotationAxisVector());
+        if (Ptr<CylindricalJointMotion> c = motion) jaxis = vecOr(c->rotationAxisVector());
+        if (Ptr<SliderJointMotion> sl = motion) jaxis = vecOr(sl->slideDirectionVector());
+        if (Ptr<PlanarJointMotion> pl = motion) jaxis = vecOr(pl->normalDirectionVector());
         if (!a && b) std::swap(a, b);
         if (!a)
         {
@@ -1176,21 +2612,27 @@ struct MateWriter
         }
         if (idOf(a) == "?" || (b && idOf(b) == "?"))
         {
-            add(json{{"type", "other"}, {"refs", json::array()}}, name, "opaque", "a joint to a component that is not exported (a sub-assembly)");
+            add(json{{"type", "other"}, {"refs", json::array()}}, name, "opaque", "a joint to a component that is not exported (hidden, or outside this assembly)");
             return;
         }
         JointTypes t = motion->jointType();
         {
-            JointInfo ji{t, a, b, origin, {0, 0, 1}};
-            if (Ptr<RevoluteJointMotion> r = motion) ji.axis = unit(vecOf(r->rotationAxisVector()));
-            if (Ptr<CylindricalJointMotion> c = motion) ji.axis = unit(vecOf(c->rotationAxisVector()));
-            if (Ptr<SliderJointMotion> sl = motion) ji.axis = unit(vecOf(sl->slideDirectionVector()));
+            JointInfo ji{t, a, b, origin, jaxis};
             info[name] = ji;
         }
         auto lockTo = [&]() {
-            json refs = json::array({json{{"component", idOf(a)}, {"ref", {{"kind", "originPlane"}, {"by", "id"}, {"plane", "front"}}}}});
-            refs.push_back(b ? json{{"component", idOf(b)}, {"ref", {{"kind", "originPlane"}, {"by", "id"}, {"plane", "front"}}}}
-                             : json{{"ref", {{"kind", "originPlane"}, {"by", "id"}, {"plane", "front"}}}});
+            json front{{"kind", "originPlane"}, {"by", "id"}, {"plane", "front"}};
+            json ra = who(a);
+            ra["ref"] = front;
+            json refs = json::array({ra});
+            if (b)
+            {
+                json rb = who(b);
+                rb["ref"] = front;
+                refs.push_back(rb);
+            }
+            else
+                refs.push_back(json{{"ref", front}});
             return json{{"type", "lock"}, {"refs", refs}};
         };
         if (t == RigidJointType)
@@ -1200,9 +2642,7 @@ struct MateWriter
         }
         if (t == RevoluteJointType || t == CylindricalJointType)
         {
-            V3 axis{0, 0, 1};
-            if (Ptr<RevoluteJointMotion> r = motion) axis = unit(vecOf(r->rotationAxisVector()));
-            if (Ptr<CylindricalJointMotion> c = motion) axis = unit(vecOf(c->rotationAxisVector()));
+            V3 axis = jaxis;
             json con = concentric(a, b, origin, axis);
             if (con.is_null())
             {
@@ -1213,6 +2653,17 @@ struct MateWriter
             if (t == RevoluteJointType)
             {
                 auto cc = coincidentPairs(a, b, axis, false, 1);
+                if (cc.empty() && fastener)
+                {
+                    // a fastener the import seated on another part (attribute NCX/joint): held on this partner by a
+                    // lock, so it cannot slide off; it loses only its spin
+                    mates.erase(mates.size() - 1);
+                    n--;
+                    add(lockTo(), name, "approximate",
+                        "a fastener's revolute joint with no faces meeting across its axis on its partner: written as a lock, so it "
+                        "stays on its partner (it does not spin)");
+                    return;
+                }
                 if (cc.empty())
                     notes.push_back("joint " + name + ": no faces meet across its axis: written as a concentric mate only (it may also slide)");
                 else
@@ -1222,8 +2673,7 @@ struct MateWriter
         }
         if (t == SliderJointType)
         {
-            Ptr<SliderJointMotion> s = motion;
-            V3 d = unit(vecOf(s->slideDirectionVector()));
+            V3 d = jaxis;
             auto cc = coincidentPairs(a, b, d, true, 2);
             if (cc.size() < 2)
             {
@@ -1235,8 +2685,7 @@ struct MateWriter
         }
         if (t == PlanarJointType)
         {
-            Ptr<PlanarJointMotion> p = motion;
-            auto cc = coincidentPairs(a, b, unit(vecOf(p->normalDirectionVector())), false, 1);
+            auto cc = coincidentPairs(a, b, jaxis, false, 1);
             if (cc.empty())
             {
                 add(json{{"type", "other"}, {"refs", json::array()}}, name, "opaque", "no faces meet in its plane");
@@ -1259,6 +2708,65 @@ std::string sanitizeId(const std::string& s)
 } // namespace
 
 json exportFileInner(const fs::path& out, const json& opts);
+
+// A parameter's name as the file it came from wrote it: a global variable an NCX import made (its comment "NCX: global
+// variable W of <document>": Fusion refuses unit symbols as names, so W became W_), a dimension it named ("D1@SK_Base"),
+// else Fusion's own name.
+std::string nativeParamName(const Ptr<Parameter>& p)
+{
+    std::string c = p->comment();
+    const std::string pre = "NCX: global variable ";
+    if (c.rfind(pre, 0) == 0)
+    {
+        std::string r = c.substr(pre.size());
+        size_t of = r.rfind(" of ");
+        return of == std::string::npos ? r : r.substr(0, of);
+    }
+    if (c.find('@') != std::string::npos && c.find(' ') == std::string::npos) return c;
+    return p->name();
+}
+
+// A Fusion expression in the neutral grammar (FORMAT-SPEC 4, Equations): parameter names quoted under their native
+// names, lengths in mm and angles in degrees ("( W_ ) * 1 mm" -> ( "W" ), "10 cm" -> 10 * 10).
+std::string neutralExpression(const Ptr<Design>& des, const std::string& ex)
+{
+    static const std::map<std::string, std::string> units{{"mm", ""}, {"cm", " * 10"}, {"m", " * 1000"}, {"in", " * 25.4"}, {"ft", " * 304.8"},
+                                                          {"deg", ""}, {"rad", " * 180 / pi"}};
+    static const std::set<std::string> fns{"sin", "cos", "tan", "asin", "acos", "atan", "sqrt", "abs", "min", "max", "pi", "round", "floor", "ceil", "exp", "ln", "log"};
+    std::string out;
+    for (size_t k = 0; k < ex.size();)
+    {
+        if (std::isalpha(static_cast<unsigned char>(ex[k])) || ex[k] == '_')
+        {
+            size_t j = k;
+            while (j < ex.size() && (std::isalnum(static_cast<unsigned char>(ex[j])) || ex[j] == '_')) j++;
+            std::string w = ex.substr(k, j - k);
+            auto u = units.find(w);
+            if (u != units.end())
+            {
+                // "( x ) * 1 mm": the factor of one is dropped with its unit
+                size_t e = out.find_last_not_of(' ');
+                if (e != std::string::npos && e >= 2 && out.compare(e - 2, 3, "* 1") == 0 && (e < 3 || !std::isdigit(static_cast<unsigned char>(out[e - 3])) && out[e - 3] != '.'))
+                    out = out.substr(0, e - 2);
+                while (!out.empty() && out.back() == ' ') out.pop_back();
+                out += u->second;
+            }
+            else if (fns.count(w))
+                out += w;
+            else
+            {
+                Ptr<Parameter> q = des->allParameters()->itemByName(w);
+                out += "\"" + (q ? nativeParamName(q) : w) + "\"";
+            }
+            k = j;
+        }
+        else
+            out += ex[k++];
+    }
+    // trim
+    size_t a = out.find_first_not_of(' '), b = out.find_last_not_of(' ');
+    return a == std::string::npos ? "" : out.substr(a, b - a + 1);
+}
 
 // The export with progress and cancel: a cancelled export writes no file and leaves the design as it was (the
 // walk is only cancelled between two features, with the timeline at its end).
@@ -1290,7 +2798,9 @@ json exportFileInner(const fs::path& out, const json& opts)
     Ptr<Design> des = app->activeProduct();
     if (!des) return json{{"ok", false}, {"error", "the active document is not a design"}};
     if (des->designType() != ParametricDesignType) return json{{"ok", false}, {"error", "only parametric designs carry a history to export"}};
-    Ptr<Component> root = des->rootComponent();
+    // an imported model placed upright (common.h) is written from its wrapper component, in the file's frame
+    Ptr<Occurrence> wrapOcc = findModelWrapper(des);
+    Ptr<Component> root = wrapOcc ? wrapOcc->component() : des->rootComponent();
     std::string rootName = root->name();
     if (rootName.empty() || rootName[0] == '(')
     {
@@ -1301,22 +2811,83 @@ json exportFileInner(const fs::path& out, const json& opts)
     }
     json model{{"format", "ncx"}, {"schema", "0.1"}, {"generator", {{"app", "Fusion"}, {"version", app->version()}, {"exporter", std::string("ncx-fusion ") + kImplVersion}}},
                {"units", {{"length", "mm"}, {"angle", "deg"}, {"mass", "kg"}}}, {"documents", json::array()}};
+    // which way is up (FORMAT-SPEC 4): a design imported from NCX keeps its file's frame and up axis (the import
+    // records it on the root component); a design made in Fusion is up along Fusion's own up axis (its default
+    // modelling orientation)
+    {
+        std::string up;
+        if (Ptr<Attribute> a = des->rootComponent()->attributes()->itemByName("NCX", "orientation")) up = a->value();
+        if (up.empty())
+        {
+            bool zUp = app->preferences() && app->preferences()->generalPreferences() &&
+                       app->preferences()->generalPreferences()->defaultModelingOrientation() == ZUpModelingOrientation;
+            up = zUp ? "z" : "y";
+        }
+        model["orientation"] = json{{"up", up}};
+    }
     json notes = json::array();
     // the component definitions: every component with bodies or features is a part document
     std::vector<Ptr<Component>> parts;
     std::map<std::string, std::string> docOf;   // component entity token -> document id
+    std::map<std::string, std::string> subAsmDoc;   // sub-assembly component entity token -> its document id
+    // Document passthrough: a document an NCX import made that Fusion has left as it was (its state as recorded,
+    // host.h recordDocument) is written as the source's own document, history, mates and all; a document an import made
+    // keeps the source's id whichever way it is written, so references between documents stay valid. Off with
+    // {"passthrough": false} (to test the native export of imported models).
+    const bool passthrough = opts.value("passthrough", true);
+    std::set<std::string> idsUsed;
+    std::map<std::string, Ptr<Component>> subAsmComp;   // sub-assembly component entity token -> the component
+    auto docIdFor = [&](const Ptr<Component>& c, const std::string& name) {
+        std::string id;
+        if (Ptr<Attribute> a = c->attributes()->itemByName("NCX", "documentId")) id = a->value();
+        if (id.empty()) id = "doc:" + sanitizeId(name);
+        // a second Fusion component built from one document (a sub-assembly placed rigid and flexible) gets its own id
+        std::string base = id;
+        for (int k = 2; idsUsed.count(id); k++) id = base + "#" + std::to_string(k);
+        idsUsed.insert(id);
+        return id;
+    };
+    // the recorded source document when the component is as the import left it, else null
+    auto unchangedSource = [&](const Ptr<Component>& c) -> json {
+        if (!passthrough) return nullptr;
+        Ptr<Attribute> st = c->attributes()->itemByName("NCX", "state");
+        Ptr<Attribute> dd = c->attributes()->itemByName("NCX", "document");
+        if (!st || !dd) return nullptr;
+        if (!sameState(json::parse(st->value(), nullptr, false), documentState(c))) return nullptr;
+        json d = json::parse(dd->value(), nullptr, false);
+        return d.is_object() ? d : json(nullptr);
+    };
     Ptr<OccurrenceList> occs = root->allOccurrences();
     for (size_t i = 0; occs && i < occs->count(); i++)
     {
         Ptr<Component> c = occs->item(i)->component();
         if (docOf.count(c->entityToken())) continue;
+        // an import's partial rebuild of a part that fell back (hidden, for diagnosis) is not part of the model
+        if (c->attributes()->itemByName("NCX", "partialRebuild") || c->name().size() > 18 &&
+                                                                         c->name().compare(c->name().size() - 18, 18, " (partial rebuild)") == 0)
+            continue;
         if (c->occurrences()->count() > 0)
         {
-            notes.push_back("sub-assembly " + c->name() + ": nested assemblies are exported flattened");
+            // a sub-assembly: its own assembly document (written below, when an assembly places it)
+            if (c->bRepBodies()->count() > 0)
+                notes.push_back("sub-assembly " + c->name() + ": its own bodies (beside its components) are not written");
+            subAsmDoc[c->entityToken()] = "";   // its id below, rigid builds first
+            subAsmComp[c->entityToken()] = c;
+            continue;
         }
-        docOf[c->entityToken()] = "doc:" + sanitizeId(c->name());
+        docOf[c->entityToken()] = docIdFor(c, c->name());
         parts.push_back(c);
     }
+    for (int pass = 0; pass < 2; pass++)   // sub-assembly ids: the rigid builds first, then " (flexible)" copies
+        for (auto& kv : subAsmDoc)
+        {
+            if (!kv.second.empty()) continue;
+            Ptr<Component> c = subAsmComp[kv.first];
+            if (!c) continue;
+            bool flexCopy = c->name().size() > 11 && c->name().compare(c->name().size() - 11, 11, " (flexible)") == 0;
+            if (flexCopy != (pass == 1)) continue;
+            kv.second = docIdFor(c, c->name());
+        }
     bool assembly = !parts.empty();
     if (!assembly) parts.push_back(root);
     progressSetTotal(static_cast<int>(des->timeline()->count() + (occs ? occs->count() : 0)) + 6);
@@ -1324,24 +2895,40 @@ json exportFileInner(const fs::path& out, const json& opts)
     for (size_t i = 0; i < des->userParameters()->count(); i++)
     {
         Ptr<UserParameter> p = des->userParameters()->item(i);
-        userParams.push_back(json{{"name", p->name()}, {"value", p->unit().empty() ? p->value() : (p->unit() == "deg" ? rad2deg(p->value()) : cm2mm(p->value()))},
-                                  {"unit", p->unit().empty() ? "none" : (p->unit() == "deg" ? "deg" : "mm")}, {"expression", p->expression()}});
+        userParams.push_back(json{{"name", nativeParamName(p)}, {"value", p->unit().empty() ? p->value() : (p->unit() == "deg" ? rad2deg(p->value()) : cm2mm(p->value()))},
+                                  {"unit", p->unit().empty() ? "none" : (p->unit() == "deg" ? "deg" : "mm")}, {"expression", neutralExpression(des, p->expression())},
+                                  {"native", p->expression()}});
     }
     for (size_t pi = 0; pi < parts.size(); pi++)
     {
         DocWriter w;
         w.des = des;
         w.comp = parts[pi];
+        w.passthrough = passthrough;
         Ptr<Occurrence> ctx;
         for (size_t i = 0; occs && i < occs->count() && !ctx; i++)
             if (occs->item(i)->component() == parts[pi] && !occs->item(i)->assemblyContext()) ctx = occs->item(i);
+        if (wrapOcc)
+        {
+            Ptr<Occurrence> p = ctx ? ctx->createForAssemblyContext(wrapOcc) : nullptr;
+            ctx = p ? p : (parts[pi] == root ? wrapOcc : ctx);
+        }
         setMeasureContext(ctx);
         w.docName = parts[pi] == root ? rootName : parts[pi]->name();
-        w.docId = parts[pi] == root ? "doc:" + sanitizeId(w.docName) : docOf[parts[pi]->entityToken()];
+        w.docId = parts[pi] == root ? docIdFor(root, w.docName) : docOf[parts[pi]->entityToken()];
+        json src = unchangedSource(parts[pi]);
+        if (!src.is_null())
+        {
+            src["id"] = w.docId;
+            model["documents"].push_back(src);
+            notes.push_back(w.docName + ": as its NCX import left it: written as the source's own document");
+            setMeasureContext(nullptr);
+            continue;
+        }
         progressStep(w.docName + ": reading its parameters");
         w.walk();
         json d = w.document();
-        if (pi == 0) d["parameters"] = userParams;   // design-wide in Fusion: written with the first part
+        // user parameters are design-wide in Fusion: written with the part whose equations use them (below)
         // equations: dimension parameters whose expression is not a plain number
         for (auto& nf : d["features"])
             if (nf.value("type", "") == "sketch")
@@ -1361,104 +2948,246 @@ json exportFileInner(const fs::path& out, const json& opts)
                             continue;
                         }
                         std::string ex = p->expression();
-                        // neutral grammar: parameter names quoted, units dropped ("W_ * 1 mm" -> "W_")
-                        std::string neutral;
-                        std::istringstream is(ex);
-                        std::string tok, outEx;
-                        size_t pos = ex.find(" * 1 ");
-                        std::string core = pos != std::string::npos ? ex.substr(0, pos) : ex;
-                        if (!core.empty() && core.front() == '(' && core.back() == ')') core = core.substr(1, core.size() - 2);
-                        for (size_t k = 0; k < core.size();)
-                        {
-                            if (std::isalpha(static_cast<unsigned char>(core[k])) || core[k] == '_')
-                            {
-                                size_t j = k;
-                                while (j < core.size() && (std::isalnum(static_cast<unsigned char>(core[j])) || core[j] == '_')) j++;
-                                std::string w2 = core.substr(k, j - k);
-                                static const std::set<std::string> fns{"sin", "cos", "tan", "sqrt", "abs", "min", "max", "mm", "cm", "deg", "rad"};
-                                outEx += fns.count(w2) ? w2 : "\"" + w2 + "\"";
-                                k = j;
-                            }
-                            else
-                                outEx += core[k++];
-                        }
-                        d["equations"].push_back(json{{"target", dm.value("fullName", "")}, {"expression", outEx}, {"native", ex}, {"status", "mapped"}});
+                        d["equations"].push_back(json{{"target", dm.value("fullName", "")}, {"expression", neutralExpression(des, ex)}, {"native", ex}, {"status", "mapped"}});
                     }
         setMeasureContext(nullptr);
         for (auto& n : w.notes) notes.push_back(n);
         model["documents"].push_back(d);
     }
+    // The design's user parameters go with the document whose equations name them (the layout of an imported
+    // layout-driven model; L01's re-export put them on the first part, and the layout's equations then named
+    // parameters of another document); none names them: the first part.
+    {
+        // a global variable a passed-through document carries already is not written again
+        std::set<std::string> carried;
+        for (auto& d : model["documents"])
+            for (auto& p : d.value("parameters", json::array())) carried.insert(p.value("name", ""));
+        json rest = json::array();
+        for (auto& up : userParams)
+            if (!carried.count(up.value("name", ""))) rest.push_back(up);
+        userParams = rest;
+    }
+    if (!userParams.empty() && !model["documents"].empty())
+    {
+        size_t best = 0;
+        int bestN = 0;
+        for (size_t i = 0; i < model["documents"].size(); i++)
+        {
+            int n = 0;
+            for (auto& eq : model["documents"][i].value("equations", json::array()))
+                for (auto& up : userParams)
+                    if (eq.value("expression", "").find("\"" + up.value("name", "") + "\"") != std::string::npos) n++;
+            if (n > bestN)
+            {
+                bestN = n;
+                best = i;
+            }
+        }
+        model["documents"][best]["parameters"] = userParams;
+    }
     // the assembly
     json fp = json{{"bodies", json::array()}};
     if (assembly)
     {
-        json a{{"id", "doc:" + sanitizeId(rootName)}, {"kind", "assembly"}, {"name", rootName}, {"sourceFile", rootName + ".f3d"},
-               {"configurations", {{{"id", "cfg:Default"}, {"name", "Default"}}}}, {"activeConfiguration", "cfg:Default"},
-               {"features", json::array()}, {"components", json::array()}, {"mates", json::array()}};
-        int k = 0;
+        // The file's fingerprint: every solid of every part shown, where the design places it (in the file's frame)
         for (size_t i = 0; i < occs->count(); i++)
         {
             Ptr<Occurrence> o = occs->item(i);
-            progressStep(rootName + ": component " + o->name());
             if (!o->isLightBulbOn() || o->childOccurrences()->count() > 0) continue;
-            a["components"].push_back(json{{"id", "c:" + sanitizeId(o->name())}, {"document", docOf[o->component()->entityToken()]},
-                                           {"configuration", "Default"}, {"name", o->name()}, {"transform", rowMajorMm(o->transform2())},
-                                           {"fixed", o->isGrounded()}});
+            bool shown = true;
+            for (Ptr<Occurrence> p = o->assemblyContext(); p; p = p->assemblyContext())
+                if (!p->isLightBulbOn()) shown = false;
+            if (!shown || !docOf.count(o->component()->entityToken())) continue;
             for (size_t b = 0; b < o->component()->bRepBodies()->count(); b++)
                 if (o->component()->bRepBodies()->item(b)->isSolid())
                     fp["bodies"].push_back(bodyFingerprint(o->component()->bRepBodies()->item(b), o->transform2()));
-            k++;
         }
-        // joints -> mates; a suppressed joint's mates go out suppressed (FORMAT-SPEC 5, Mates). Assemblies list no
-        // configurations, so the key is "cfg:active", as the SolidWorks exporter writes it
+        // Assemblies are written nested, as the design holds them (FORMAT-SPEC 5): the root (or the upright
+        // wrapper, which is transparent) and each sub-assembly it shows, once per Fusion component, each with its
+        // own components (transforms relative to it) and its own joints as mates. A component held to its parent
+        // (Ground to Parent, as the import holds a rigid sub-assembly's parts and the wrapper's fixed ones) or
+        // grounded is `fixed`. A sub-assembly whose parts are not all held to it moves with the parent's joints:
+        // `flexible`. (Written flat, the parts held only by Ground to Parent had no mate at all and came apart in
+        // SolidWorks; measured on the folding step.)
+        std::set<std::string> asmWritten;
+        auto heldToParent = [](const Ptr<Occurrence>& o) { return o->isGrounded() || o->isGroundToParent(); };
         auto markSuppressed = [&](MateWriter& w, size_t from, bool supp, const std::string& jn) {
             if (!supp) return;
             for (size_t k = from; k < w.mates.size(); k++) w.mates[k]["suppressed"] = {{"cfg:active", true}};
             notes.push_back(jn + ": suppressed joint written as suppressed mate(s)");
         };
-        std::vector<std::string> mnotes;
-        MateWriter mw(mnotes);
-        for (size_t i = 0; i < occs->count(); i++)
-            mw.compIdOfOcc[occs->item(i)->fullPathName()] = "c:" + sanitizeId(occs->item(i)->name());
-        for (size_t i = 0; i < root->joints()->count(); i++)
-        {
-            Ptr<Joint> j = root->joints()->item(i);
-            progressTick(rootName + ": joint " + j->name());
-            V3 origin{0, 0, 0};
-            Ptr<Base> g1 = j->geometryOrOriginOne();
-            if (Ptr<JointGeometry> g = g1) origin = ptMm(g->origin());
-            else if (Ptr<JointOrigin> jo = g1) origin = ptMm(jo->geometry()->origin());
-            size_t n0 = mw.mates.size();
-            mw.joint(j->name(), j->occurrenceOne(), j->occurrenceTwo(), j->jointMotion(), origin);
-            markSuppressed(mw, n0, j->isSuppressed(), j->name());
-        }
-        for (size_t i = 0; i < root->asBuiltJoints()->count(); i++)
-        {
-            Ptr<AsBuiltJoint> j = root->asBuiltJoints()->item(i);
-            V3 origin = j->geometry() ? ptMm(j->geometry()->origin()) : V3{0, 0, 0};
-            size_t n0 = mw.mates.size();
-            mw.joint(j->name(), j->occurrenceOne(), j->occurrenceTwo(), j->jointMotion(), origin);
-            markSuppressed(mw, n0, j->isSuppressed(), j->name());
-        }
-        for (size_t i = 0; i < root->motionLinks()->count(); i++)
-        {
-            Ptr<MotionLink> ml = root->motionLinks()->item(i);
-            if (ml->isSuppressed()) continue;
-            auto jname = [](const Ptr<Base>& j) -> std::string {
-                if (Ptr<Joint> jj = j) return jj->name();
-                if (Ptr<AsBuiltJoint> ab = j) return ab->name();
-                return "";
-            };
-            // values: an angle parameter is radians, a distance centimetres; the link only needs their ratio, in
-            // degrees and millimetres
-            auto val = [](const Ptr<ModelParameter>& p) {
-                if (!p) return 0.0;
-                return p->unit() == "deg" ? rad2deg(p->value()) : cm2mm(p->value());
-            };
-            mw.motionLink(ml->name(), jname(ml->jointOne()), jname(ml->jointTwo()), val(ml->valueOne()), val(ml->valueTwo()), ml->isReversed());
-        }
-        a["mates"] = mw.mates;
-        for (auto& m : mnotes) notes.push_back(m);
+        std::function<json(const Ptr<Component>&, const std::string&, const std::string&, const Ptr<Occurrence>&)> writeAssembly;
+        writeAssembly = [&](const Ptr<Component>& c, const std::string& id, const std::string& name, const Ptr<Occurrence>& ctxOcc) -> json {
+            // An assembly as its NCX import left it: the source's own document (its mates, limits and all), each
+            // component where Fusion has it now (a mechanism moved in Fusion goes out as it was left; the source's
+            // mates still hold it), its sub-assemblies written once each (passed through or not) under their ids.
+            json src = unchangedSource(c);
+            if (!src.is_null())
+            {
+                src["id"] = id;
+                std::map<std::string, Ptr<Occurrence>> occById;
+                for (size_t i = 0; i < c->occurrences()->count(); i++)
+                {
+                    Ptr<Occurrence> o = c->occurrences()->item(i);
+                    if (Ptr<Attribute> at = o->attributes()->itemByName("NCX", "component"))
+                    {
+                        json r = json::parse(at->value(), nullptr, false);
+                        if (r.is_object()) occById[r.value("id", "")] = o;
+                    }
+                }
+                for (auto& ce : src["components"])
+                {
+                    auto it = occById.find(ce.value("id", ""));
+                    if (it != occById.end()) ce["transform"] = rowMajorMm(it->second->transform2());
+                    std::string sd = ce.value("document", "");
+                    if (asmWritten.count(sd)) continue;
+                    for (auto& kv : subAsmDoc)
+                        if (kv.second == sd && subAsmComp[kv.first])
+                        {
+                            asmWritten.insert(sd);
+                            Ptr<Component> oc = subAsmComp[kv.first];
+                            Ptr<Occurrence> sub;
+                            Ptr<OccurrenceList> all = des->rootComponent()->allOccurrencesByComponent(oc);
+                            if (all && all->count() > 0) sub = all->item(0);
+                            model["documents"].push_back(writeAssembly(oc, sd, oc->name(), sub));
+                            break;
+                        }
+                }
+                notes.push_back(name + ": as its NCX import left it: written as the source's own document, components where they are now");
+                return src;
+            }
+            json a{{"id", id}, {"kind", "assembly"}, {"name", name}, {"sourceFile", name + ".f3d"},
+                   {"configurations", {{{"id", "cfg:Default"}, {"name", "Default"}}}}, {"activeConfiguration", "cfg:Default"},
+                   {"features", json::array()}, {"components", json::array()}, {"mates", json::array()}};
+            std::vector<std::string> mnotes;
+            MateWriter mw(mnotes);
+            mw.asmComp = c;
+            mw.asmCtx = ctxOcc;
+            Ptr<Component> designRoot = des->rootComponent();
+            for (size_t i = 0; i < c->occurrences()->count(); i++)
+            {
+                Ptr<Occurrence> o = c->occurrences()->item(i);
+                progressStep(name + ": component " + o->name());
+                if (!o->isLightBulbOn()) continue;
+                Ptr<Component> oc = o->component();
+                std::string cid = "c:" + sanitizeId(o->name());
+                json ce{{"id", cid}, {"configuration", "Default"}, {"name", o->name()}, {"transform", rowMajorMm(o->transform2())},
+                        {"fixed", heldToParent(o)}};
+                auto st = subAsmDoc.find(oc->entityToken());
+                if (st != subAsmDoc.end())
+                {
+                    bool rigid = true;
+                    for (size_t k = 0; k < oc->occurrences()->count(); k++)
+                        if (oc->occurrences()->item(k)->isLightBulbOn() && !heldToParent(oc->occurrences()->item(k))) rigid = false;
+                    if (!asmWritten.count(st->second))
+                    {
+                        asmWritten.insert(st->second);
+                        // its parts' faces are measured through its place in the design's root context
+                        Ptr<Occurrence> sub;
+                        Ptr<OccurrenceList> all = designRoot->allOccurrencesByComponent(oc);
+                        if (all && all->count() > 0) sub = all->item(0);
+                        json sd = writeAssembly(oc, st->second, oc->name(), sub);
+                        if (sd["components"].empty())
+                        {
+                            asmWritten.erase(st->second);
+                            continue;
+                        }
+                        model["documents"].push_back(sd);
+                    }
+                    ce["document"] = st->second;
+                    if (!rigid) ce["flexible"] = true;
+                }
+                else if (docOf.count(oc->entityToken()))
+                    ce["document"] = docOf[oc->entityToken()];
+                else
+                    continue;   // a part not written (a partial rebuild)
+                a["components"].push_back(ce);
+                mw.written.insert(cid);
+            }
+            // joints -> mates; a suppressed joint's mates go out suppressed (FORMAT-SPEC 5, Mates). Assemblies list no
+            // configurations, so the key is "cfg:active", as the SolidWorks exporter writes it
+            for (size_t i = 0; i < c->joints()->count(); i++)
+            {
+                Ptr<Joint> j = c->joints()->item(i);
+                progressTick(name + ": joint " + j->name());
+                if (!j->occurrenceOne() && ctxOcc)
+                    if (Ptr<Joint> pj = j->createForAssemblyContext(ctxOcc))
+                        if (pj->occurrenceOne()) j = pj;
+                V3 origin{0, 0, 0};
+                Ptr<Base> g1 = j->geometryOrOriginOne();
+                if (Ptr<JointGeometry> g = g1) origin = ptMm(g->origin());
+                else if (Ptr<JointOrigin> jo = g1) origin = ptMm(jo->geometry()->origin());
+                size_t n0 = mw.mates.size();
+                mw.joint(j->name(), j->occurrenceOne(), j->occurrenceTwo(), j->jointMotion(), origin);
+                markSuppressed(mw, n0, j->isSuppressed(), j->name());
+            }
+            for (size_t i = 0; i < c->asBuiltJoints()->count(); i++)
+            {
+                Ptr<AsBuiltJoint> j = c->asBuiltJoints()->item(i);
+                progressTick(name + ": joint " + j->name());
+                // Read through a sub-assembly's component, an as-built joint the import made in it has no occurrences
+                // or geometry, also through its proxy (measured on L12's arm). The import records them on the joint
+                // (attribute NCX/joint, joints.cpp: the occurrences' names, a point on its axis and its axis, in the
+                // sub-assembly's frame), and whether it holds a fastener.
+                Ptr<Occurrence> one = j->occurrenceOne(), two = j->occurrenceTwo();
+                V3 origin = j->geometry() ? ptMm(j->geometry()->origin()) : V3{0, 0, 0};
+                V3 recAxis{0, 0, 1};
+                bool recorded = false, fastener = false;
+                if (Ptr<Attribute> at = j->attributes()->itemByName("NCX", "joint"))
+                {
+                    json r = json::parse(at->value(), nullptr, false);
+                    auto byName = [&](const std::string& n) -> Ptr<Occurrence> {
+                        for (size_t k = 0; !n.empty() && k < c->occurrences()->count(); k++)
+                            if (c->occurrences()->item(k)->name() == n) return c->occurrences()->item(k);
+                        return nullptr;
+                    };
+                    if (r.is_object())
+                    {
+                        fastener = r.value("fastener", false);
+                        if (!one)
+                        {
+                            one = byName(r.value("one", ""));
+                            two = byName(r.value("two", ""));
+                            if (r.contains("origin")) origin = v3(r["origin"]);
+                            if (r.contains("axis")) recAxis = v3(r["axis"]);
+                            recorded = (bool)one;
+                        }
+                    }
+                }
+                size_t n0 = mw.mates.size();
+                mw.joint(j->name(), one, two, j->jointMotion(), origin, recorded ? &recAxis : nullptr, fastener);
+                markSuppressed(mw, n0, j->isSuppressed(), j->name());
+            }
+            for (size_t i = 0; i < c->motionLinks()->count(); i++)
+            {
+                Ptr<MotionLink> ml = c->motionLinks()->item(i);
+                if (ml->isSuppressed()) continue;
+                auto jname = [](const Ptr<Base>& j) -> std::string {
+                    if (Ptr<Joint> jj = j) return jj->name();
+                    if (Ptr<AsBuiltJoint> ab = j) return ab->name();
+                    return "";
+                };
+                // values: an angle parameter is radians, a distance centimetres; the link only needs their ratio, in
+                // degrees and millimetres
+                auto val = [](const Ptr<ModelParameter>& p) {
+                    if (!p) return 0.0;
+                    return p->unit() == "deg" ? rad2deg(p->value()) : cm2mm(p->value());
+                };
+                mw.motionLink(ml->name(), jname(ml->jointOne()), jname(ml->jointTwo()), val(ml->valueOne()), val(ml->valueTwo()), ml->isReversed());
+            }
+            // a joint Fusion reads back without its occurrences (seen inside rigid sub-assemblies) holds nothing the
+            // `fixed` components do not: left out, with a note, rather than written as an empty opaque mate
+            json kept = json::array();
+            for (auto& m : mw.mates)
+                if (m.value("status", "") == "opaque" && m.value("reason", "") == "a joint between no components")
+                    notes.push_back(name + ": joint " + m.value("name", "") + " is read back without its components: not written");
+                else
+                    kept.push_back(m);
+            a["mates"] = kept;
+            for (auto& m : mnotes) notes.push_back(name + ": " + m);
+            return a;
+        };
+        json a = writeAssembly(root, docIdFor(root, rootName), rootName, wrapOcc);
         model["documents"].push_back(a);
         model["root"] = a["id"];
     }
@@ -1469,6 +3198,48 @@ json exportFileInner(const fs::path& out, const json& opts)
         for (auto& b : model["documents"][0]["bodies"]) fp["bodies"].push_back(b["fingerprint"]);
     }
     model["fingerprint"] = fp;
+    // documents in dependency order, as the SolidWorks exporter writes them (a layout before the parts inserting it,
+    // parts before the assemblies placing them): every document after the documents it names
+    {
+        json docs = model["documents"], ordered = json::array();
+        std::set<std::string> ids, done;
+        for (auto& d : docs) ids.insert(d.value("id", ""));
+        std::function<void(const json&, std::set<std::string>&)> names = [&](const json& o, std::set<std::string>& acc) {
+            if (o.is_object())
+                for (auto it = o.begin(); it != o.end(); ++it)
+                {
+                    if ((it.key() == "document" || it.key() == "source") && it.value().is_string() && ids.count(it.value().get<std::string>()))
+                        acc.insert(it.value().get<std::string>());
+                    else
+                        names(it.value(), acc);
+                }
+            else if (o.is_array())
+                for (auto& x : o) names(x, acc);
+        };
+        std::vector<std::set<std::string>> needs;
+        for (auto& d : docs)
+        {
+            std::set<std::string> acc;
+            names(d, acc);
+            acc.erase(d.value("id", ""));
+            needs.push_back(acc);
+        }
+        while (ordered.size() < docs.size())
+        {
+            size_t pick = docs.size();
+            for (size_t i = 0; i < docs.size() && pick == docs.size(); i++)
+            {
+                if (done.count(docs[i].value("id", ""))) continue;
+                if (std::all_of(needs[i].begin(), needs[i].end(), [&](const std::string& n) { return done.count(n) > 0; })) pick = i;
+            }
+            if (pick == docs.size())   // a cycle (invalid; the validator says so): the rest in their order
+                for (size_t i = 0; i < docs.size() && pick == docs.size(); i++)
+                    if (!done.count(docs[i].value("id", ""))) pick = i;
+            done.insert(docs[pick].value("id", ""));
+            ordered.push_back(docs[pick]);
+        }
+        model["documents"] = ordered;
+    }
     // validate, export the geometry, embed
     std::string mj = model.dump();
     char* rep = nullptr;

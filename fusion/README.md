@@ -1,24 +1,26 @@
 # NCX add-in for Autodesk Fusion
 
-Version **0.1.0**. Imports and exports NCX files (Neutral CAD eXchange, see `../README.md` and `../FORMAT-SPEC.md`)
+Version **0.2.0**. Imports and exports NCX files (Neutral CAD eXchange, see `../README.md` and `../FORMAT-SPEC.md`)
 in Autodesk Fusion: an NCX file opens as a parametric Fusion design with its history, checked against the file's own
 geometry, and a Fusion design can be written as an NCX file.
 
 Written by AI coding agents (Claude Code) from `../docs/ADDING-A-CAD-SYSTEM.md`, with Fusion only (no SolidWorks),
-against 56 sample files exported from SolidWorks 2026. Tested with **Autodesk Fusion 2706.1.14 on Windows 10 x64**.
+against the 61 sample files of NCX 0.6.0 (exported with SolidWorks add-in 0.6.0). Tested with **Autodesk Fusion 2706.1.14 on Windows 10 x64**.
 Windows only (the add-in is a set of Windows DLLs; Fusion on macOS is not supported).
 
-On the 56 samples: every file imports with its history and passes every check (mass, face by face, structure,
-parameter flex where recorded); 25 are rebuilt exactly, 31 approximately (geometry identical, but something is built
+On the 61 samples: every file imports with its history and passes every check (mass, face by face, structure,
+parameter flex where recorded); 28 are rebuilt exactly, 33 approximately (geometry identical, but something is built
 as a functional equivalent or taken from the geometry the file carries, each reported with its reason), none falls
-back to plain geometry. Every design re-exported from Fusion passes the format validator. Details, per sample, and
-what is approximate and why: `FINDINGS.md` (sections 5 and 8). Problems with the format or the core: `ISSUES.md`.
+back to plain geometry. Every design re-exported from Fusion passes the format validator (one re-export, P46, falls
+back to plain geometry when imported again). A real 19-document assembly (a folding step) imports with 12 of its 13
+parts rebuilt. Details, per sample, and what is approximate and why: `FINDINGS.md` (sections 5, 8 and 14). Problems
+with the format or the core: `ISSUES.md`.
 
 ## Installing
 
 1. Download the installer:
-   **[NCX-Fusion-Setup-0.1.0.exe](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/fusion-v0.1.0/NCX-Fusion-Setup-0.1.0.exe)**
-   ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/fusion-v0.1.0)).
+   **[NCX-Fusion-Setup-0.2.0.exe](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/fusion-v0.2.0/NCX-Fusion-Setup-0.2.0.exe)**
+   ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/fusion-v0.2.0)).
 2. Double-click it. If Windows says "Windows protected your PC", click **More info**, then **Run anyway** (the
    installer is not signed by a paid certificate).
 3. Click **Install**, then **Finish**. If Fusion is open, the installer asks you to close it first.
@@ -80,10 +82,10 @@ to skip). A build from scratch takes about two minutes. Restart Fusion once and 
 Fusion runs, `NCX.dll` is locked: the script says so, and the new stub is deployed by rerunning it with Fusion
 closed (the implementation DLLs are always replaced).
 
-`package.ps1` writes `fusion\out\NCX-Fusion-Setup-<version>.exe` (from `installer\NCX-Fusion.iss`; needs Inno Setup 6:
+`package.ps1` builds from an empty build folder and writes `fusion\out\NCX-Fusion-Setup-<version>.exe` (from `installer\NCX-Fusion.iss`; needs Inno Setup 6:
 `winget install JRSoftware.InnoSetup`), which installs the add-in folder (`NCX\` with the manifest, the three DLLs, this
-README and the licence) as described above. The version is set once, in `CMakeLists.txt` (`project(... VERSION ...)`), and
-`NCX\NCX.manifest` must say the same (`build.ps1` checks).
+README and the licence) as described above. The version is set once, in `CMakeLists.txt` (`project(... VERSION ...)`): CMake writes
+Fusion's manifest from `NCX\NCX.manifest.in` into `build\NCX.manifest`, and the installer takes its version from it.
 
 Layout of the add-in folder:
 
@@ -113,9 +115,10 @@ The tools are Python 3 scripts (standard library only, except the validator); ru
 | `tools/shot.py <file> <png>` | import, screenshot, list the timeline |
 | `tools/read_all.py` | the core's reader over the conformance vectors and the samples (set `NCX_CORE_DLL` to `fusion\build\core\Release\ncx_core.dll`) |
 | `tools/tree.py` | the open design's components, bodies (volume, box) and occurrence offsets |
+| `tools/frames_check.py <reply> <payload>` | joints by numbers: each joint the import made against its mate's `frame` |
 | `../validator/ncx_validate.py` | the format validator, run on every re-export; set up with a venv in the clone: `pip install jsonschema "cadquery-ocp<8"` (8.0 breaks its level 4); it needs the core for levels 3-4: set `NCX_CORE_DLL` to `fusion\build\core\Release\ncx_core.dll` (without it the verdict is INCOMPLETE) |
 
-Jobs: `{"cmd": "import", "file": ..., "close": true, "trace": true, "faces": true, "keepPartial": false}`,
+Jobs: `{"cmd": "import", "file": ..., "close": true, "trace": true, "faces": true, "keepPartial": false, "only": [part names], "onlyAssemblies": [sub-assembly names]}`,
 `{"cmd": "export", "file": ...}`, `{"cmd": "uiImport", "file": ..., "quiet": true, "cancelAfter": n}`,
 `{"cmd": "probe", "what": "timeline" | "sketches" | "params" | "stepdoc"}`, `{"cmd": "screenshot", "file": ..., "view": "iso"}`.
 A folder `%LOCALAPPDATA%\NcxFusion\debug_faces` makes rejected sheet-metal variants log their faces.

@@ -11,13 +11,15 @@
 # libraries are taken from FUSION_SDK (default: %APPDATA%\Autodesk\Autodesk Fusion 360\API\CPP, which Fusion
 # keeps current with every update).
 cmake_minimum_required(VERSION 3.16)
-project(ncx_fusion VERSION 0.1.0 LANGUAGES C CXX)
+project(ncx_fusion VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-# the add-in's version: one place (NCX/NCX.manifest must say the same; build.ps1 checks)
+# the add-in's version: this one place. The DLLs get it as NCX_FUSION_VERSION; Fusion's manifest is written from
+# NCX/NCX.manifest.in into the build folder, and the installer takes its version from that manifest.
 add_compile_definitions(NCX_FUSION_VERSION="${PROJECT_VERSION}")
+configure_file(NCX/NCX.manifest.in ${CMAKE_CURRENT_BINARY_DIR}/NCX.manifest @ONLY NEWLINE_STYLE CRLF)
 
 if(NOT FUSION_SDK)
   file(TO_CMAKE_PATH "$ENV{APPDATA}/Autodesk/Autodesk Fusion 360/API/CPP" FUSION_SDK)

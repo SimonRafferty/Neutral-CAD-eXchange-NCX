@@ -129,6 +129,9 @@ void Replayer::replayProperties(const json& doc)
                     std::to_string(kept) + " kept as attributes of the component (group NCX.properties); part number and description set; "
                     "Fusion has no other custom properties");
     // ------------------------------------------------------------------ material
+    // a source without a material: Fusion's default material stands in, and the export writes none while it does
+    if (doc.value("materials", json::array()).empty() && comp_->material())
+        comp_->attributes()->add("NCX", "material", json{{"name", ""}, {"database", ""}, {"fusion", comp_->material()->name()}}.dump());
     for (auto& m : doc.value("materials", json::array()))
     {
         std::string cfg = m.value("configuration", "");
@@ -142,6 +145,10 @@ void Replayer::replayProperties(const json& doc)
         }
         comp_->material(mat);
         for (auto& b : bodies()) b->material(mat);
+        // the source's name, for the export: while the component keeps this material, it is written back under
+        // the source's own name, so the source system finds its material again (exporter.cpp, materialsJson)
+        comp_->attributes()->add("NCX", "material",
+                                 json{{"name", m.value("name", "")}, {"database", m.value("database", "")}, {"fusion", mat->name()}}.dump());
         if (how == "exact") report_.add(docName_, "material " + m.value("name", ""), "rebuilt", "");
         else report_.add(docName_, "material " + m.value("name", ""), "approximate", "matched to Fusion's \"" + mat->name() + "\" " + how);
     }
@@ -208,6 +215,11 @@ void Replayer::replayProperties(const json& doc)
                                                  static_cast<short>(c[2].get<double>() * 255 + 0.5), static_cast<short>((1 - tr) * 255 + 0.5)));
                     }
                 }
+                // the source's exact colour and optical values, by appearance name, for the export (Fusion keeps
+                // 8-bit colour and no ambient/specular/shininess)
+                if (app)
+                    design_->rootComponent()->attributes()->add(
+                        "NCX.appearance", nm, json{{"color", a["color"]}, {"optical", a.value("optical", json::object())}}.dump());
             }
             if (!app)
             {
@@ -225,6 +237,11 @@ void Replayer::replayProperties(const json& doc)
                 json r = resolveRef(bodies(), t, hit);
                 if (hit.empty()) ok = false;
                 for (auto& h : hit) ok = Ptr<BRepBody>(h)->appearance(app) && ok;
+            }
+            else if (kind == "feature" && plainGeometry_)
+            {
+                report_.add(docName_, item, "approximate", "the part is the file's plain geometry, which has no features: not applied");
+                continue;
             }
             else if (kind == "feature")
             {
@@ -244,6 +261,21 @@ void Replayer::replayProperties(const json& doc)
             if (!ok) report_.add(docName_, item, "failed", "its target was not found or refused the appearance: " + lastError());
             else report_.add(docName_, item, note.empty() ? "rebuilt" : "approximate", note);
         }
+}
+
+void Replayer::replayPropertiesOn(const json& doc, const Ptr<Component>& comp)
+{
+    // a part that fell back is the file's plain geometry in a new component: it gets the document's properties,
+    // material and appearances all the same (feature targets excepted: it has no features)
+    Ptr<Component> keep = comp_;
+    Ptr<Design> keepDesign = design_;
+    comp_ = comp;
+    design_ = comp->parentDesign();   // a single part's fallback is a new design
+    plainGeometry_ = true;
+    replayProperties(doc);
+    plainGeometry_ = false;
+    comp_ = keep;
+    design_ = keepDesign;
 }
 
 } // namespace ncxf

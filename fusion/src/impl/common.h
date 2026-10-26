@@ -60,6 +60,18 @@ inline V3 vecOf(const Ptr<Vector3D>& v) { return {v->x(), v->y(), v->z()}; }
 
 std::string lastError();   // Fusion's last API error message (empty if none)
 
+// ---------------------------------------------------------------------------- which way is up (FORMAT-SPEC 4)
+// An imported model whose up axis (`orientation.up`, absent: y) is not Fusion's own (its default modelling
+// orientation) is built inside one component, "the model", placed under the root by one rotation that takes the
+// file's up axis onto Fusion's: everything inside stays in the file's frame (features, checks, joints, export), and
+// Fusion's Home, ViewCube and Top/Front views see the model upright. The component carries attribute NCX/wrapper.
+bool fusionIsZUp();
+std::string fileUpAxis(const json& model);                           // "x", "y", "z" or signed; absent: "y"
+Ptr<Matrix3D> uprightRotation(const std::string& fileUp, bool zUp);  // null when the axes agree
+Ptr<Occurrence>& modelWrapper();                                     // the import's wrapper occurrence, or null
+Ptr<Occurrence> findModelWrapper(const Ptr<Design>& des);            // a design's wrapper occurrence, or null
+bool hasSheetMetal(const json& doc);   // a part document with sheet-metal features (they build in the active component)
+
 // ---------------------------------------------------------------------------- core wrappers (ncx_core)
 struct CoreResult
 {

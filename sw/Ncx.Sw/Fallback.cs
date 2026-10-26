@@ -18,6 +18,9 @@ namespace Ncx.Sw
         readonly Dictionary<string, string> refParts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         // the imported reference parts themselves (open while the replay runs), for face-by-face verification
         string rootRefPath;   // the saved reference when the file's root is a part
+        // each saved reference part's fingerprint (path -> fingerprint): a writer may name its STEP products other
+        // than its documents (Fusion writes time stamps), so a part is also found by its geometry
+        readonly Dictionary<string, JObj> refFingerprints = new Dictionary<string, JObj>(StringComparer.OrdinalIgnoreCase);
         JObj referenceFingerprint;   // measured on the B-rep actually in the file (the stale check)
         IModelDoc2 referenceRoot;     // the imported reference, kept open for a whole-file fallback
 
@@ -44,13 +47,18 @@ namespace Ncx.Sw
                 referenceFingerprint = Host.DocFingerprint(imp);
                 if (imp.GetType() == 2)
                 {
+                    // names of products really in the file (a "<name>_1" product is also filed under "<name>", below;
+                    // that alias must not hide a real product of that name: Fusion's time-stamp names collide that way)
+                    var saved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     foreach (IComponent2 c in ((object[])((IAssemblyDoc)imp).GetComponents(false) ?? new object[0]))
                     {
                         var md = (IModelDoc2)c.GetModelDoc2();
                         if (md == null || md.GetType() != 1) continue;
                         string name = System.Text.RegularExpressions.Regex.Replace(c.Name2.Split('/').Last(), @"-\d+$", "");
-                        if (refParts.ContainsKey(name)) continue;
+                        if (!saved.Add(name)) continue;
                         refParts[name] = SaveRef(md, name);
+                        if (refParts[name] != null)
+                            try { refFingerprints[refParts[name]] = Host.PartFingerprint((IPartDoc)md); } catch (Exception) { }
                         // a part already open under its own name (the rebuilt one) is imported as "<name>_1": file it
                         // under the payload's name too, or the fallback would not find it
                         string bare = System.Text.RegularExpressions.Regex.Replace(name, @"_\d+$", "");
@@ -123,6 +131,27 @@ namespace Ncx.Sw
             imported.ClearSelection2(true);
         }
 
+        /// <summary>The saved reference part whose geometry is this document's (its payload fingerprint, at the
+        /// exchange tolerances the stale check uses), or null.</summary>
+        string ReferenceByGeometry(JObj d)
+        {
+            // the document's bodies' fingerprints, as Verify compares them
+            var fps = d.Arr("bodies").Select(x => ((JObj)x)["fingerprint"]).Where(x => x != null).ToList();
+            if (fps.Count == 0) return null;
+            var fp = new JObj { { "bodies", fps } };
+            foreach (var kv in refFingerprints)
+            {
+                try
+                {
+                    var rep = (JObj)Json.Parse(NcxCore.FingerprintCompare(Json.Write(fp, true), Json.Write(kv.Value, true),
+                                                                          "{\"profile\":\"exchange\"}").ReportJson);
+                    if (rep.Str("result") != "mismatch") return kv.Key;
+                }
+                catch (Exception) { }
+            }
+            return null;
+        }
+
         void CloseReference()
         {
             if (referenceRoot != null) sw.CloseDoc(referenceRoot.GetTitle());
@@ -185,6 +214,7 @@ namespace Ncx.Sw
                 refPath = singlePartFile ? refParts.Values.FirstOrDefault() : null;
             // a part file that also carries other documents (the layout it is derived from): its B-rep is the root's
             if (refPath == null && rootRefPath != null && d.Str("id") == Model?.Str("root")) refPath = rootRefPath;
+            if (refPath == null) refPath = ReferenceByGeometry(d);
             if (refPath == null)
             {
                 Report.Add(d.Str("id"), d.Str("name"), "failed", reason + "; no reference geometry for a fallback");

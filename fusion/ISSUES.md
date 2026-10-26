@@ -398,3 +398,82 @@ sketch's visibility in the inserting part), but FORMAT-SPEC does not mention eit
 `sketch` and `insertPart`): "`hidden` (optional, default false): the sketch is hidden in the source; an importer hides
 it too. On an `insertPart` item, how the inserting part shows that transferred sketch." The Fusion importer honours
 both, and hides a transferred sketch whose item has no `hidden` (transferred sketches are reference geometry).
+
+---
+
+## Round 7
+
+Against the NCX 0.6.0 release candidate (61 samples, SolidWorks add-in 0.6.0) and the folding step re-exported with
+0.6.0. Issues 30-36 of round 6 are in the 0.6.0 spec (`contours` combination, regions bounded by face edges and their
+`boundary`, `start` offsets along the sketch normal, `orientation.up`, `flexible`, sketch `hidden`); each is used by
+the Fusion add-in (FINDINGS 14).
+
+### 37. Region `boundary`: `line` pieces are written displaced along their own direction (SolidWorks exporter bug)
+
+FORMAT-SPEC 4 (regions): a boundary piece on no sketch segment carries `{line: [start, end]}` in sketch coordinates.
+In every file of 0.6.0, the `line` pieces are not where the region's boundary is:
+
+- P49 `Cut-Region` (sketch `SK_Region`: circle `s1` centre (100, 45) r 8, line `s2` from (88, 42) to (112, 42)): the
+  region is the circle's segment below `s2` (area 53.681 = r²·acos(3/8) - 3·√55, as carried). Its boundary is
+  `[[{"line": [[185.167603026, 42], [200, 42]]}, "s1"]]`. The chord truly runs (92.584, 42)-(107.416, 42) and lies on
+  `s2`, so it should have been written `"s2"`; as written it lies outside the sketch face (x 0..120) altogether.
+- Each written point is the true start point plus that end's line parameter along the piece's direction d, the
+  parameter measured from the foot of the perpendicular from the origin: W0 = S + (S·d + c)·d, W1 = S + (E·d + c)·d,
+  with c = (frame origin)·d in the model (0 in every file seen). So S = W0 - ((W0·d + c)/2)·d and E = S + (W1 - W0).
+  Decoded that way, **331 of the folding step's 388 `line` pieces lie on one of the sketch's own lines, and none does
+  as written** (P49: 1 of 1). The other 57 lie on model edges or nowhere checkable from the payload alone.
+- Because the exporter matches pieces to segments by these coordinates, most pieces that run along a sketch segment
+  are written as `line` pieces instead of the segment's id: the boundary of the folding step's Top Hanger Cheek
+  `Boss-Extrude7` region (203.73, 38.47) lists 13 pieces of which 3 are ids.
+- `arc` pieces (centre, radius) are right (P49 `s1`; the Cheek Opposite's `{arc: [[205, -58], 2.25]}`, an earlier
+  hole the region surrounds: its area is exactly the 15.90 mm² the region differs by without it).
+
+Proposal: fix the SolidWorks exporter (write the edge's own end points; match pieces to segments on those). Validator:
+check that every `line` piece's ends lie on the sketch face (inside its `bbox`) and, where a piece lies on a sketch
+segment, that it is written as that segment's id. Until then the Fusion importer reads a `line` piece that lies on
+nothing as written in the decoded form, and uses it only when it then lies on a sketch segment or a model edge, or
+meets the ends of the other pieces (and still checks the region by point and area).
+
+### 38. Region `boundary`: pieces listed twice, and loops that do not close (spec gap / exporter)
+
+The spec says "each once for consecutive edges along one segment". The folding step's boundaries list pieces twice
+(Top Hanger Cheek `Cut-Extrude11`, region (146.282, -1.534), 36 pieces in one loop: four lines appear twice, back to
+back in reverse order, e.g. (139.120, 16.283)-(79.782, -1.689) on `s23`): a sketch line that runs into the region and
+stops (a slit) is passed along both sides. With every piece in the sketch (the 33 decoded ones on sketch lines, three
+model edges and two pieces on no edge drawn), Fusion's region there is 3296.28 mm², the source's 3245.09: 51.19 mm²
+(1.6 %) larger, and no smaller region of the rebuilt sketch contains the point. Proposal: say in FORMAT-SPEC 4 that a
+curve the region's boundary runs along on both sides (a slit) is listed twice, and that each loop's pieces join end to
+end in loop order (so an importer can check a loop closes); the exporter should write each loop so. The SolidWorks
+add-in could also carry the region's inner loops' areas, so an importer can tell which loop is missing.
+
+### 39. Mass check: two kernels measure an analytic body differently too (spec 6.1)
+
+FORMAT-SPEC 6.1 lets a `freeform` body pass the mass check when the rebuild matches the importer's own measurement
+of the file's B-rep at `native` and the payload at `exchange`. The folding step's `Left_M8 Nyloc + Washer` (extrusions,
+a constant fillet, cuts: planes, cylinders, a torus; no spline) is rebuilt with every feature, every face matches the
+file's B-rep face by face (0.001 mm), and the rebuild equals Fusion's measurement of the file's own B-rep at `native`
+(core compare: match), but differs from the payload's fingerprint by 5.6e-5 in volume (1088.888 vs 1088.827 mm³) and
+3.5e-5 in area: SolidWorks and Fusion measure the same body differently. Under the spec as written the part falls back
+(round 6). Proposal: apply the freeform rule to every body ("For any body, the mass check also passes when ...").
+The Fusion add-in does so now, and reports the part `approximate` with the reason.
+
+---
+
+## Round 8
+
+The folding step's round trip SolidWorks -> Fusion -> NCX -> SolidWorks (FINDINGS 15). Both are information for
+importers and the spec; nothing blocks.
+
+### 40. Rigid sub-assemblies written by Fusion: every part `fixed`, and mates between fixed parts (information)
+
+Fusion holds a rigid sub-assembly's parts by Ground to Parent; the Fusion exporter writes each such part `fixed: true`
+in the sub-assembly's document and still writes the sub-assembly's joints as mates (FS_fusion2: Left_Short Link Assy,
+5 components all fixed, 8 mates). An importer must accept mates between two fixed components (they hold nothing
+more). Proposal: say in FORMAT-SPEC 5 that mates between fixed components are allowed and satisfied at the placement.
+
+### 41. One source document placed rigid and flexible becomes two documents (information)
+
+L12 places `L12_Arm` once rigid and once flexible. Fusion needs two components for that (their groundings differ), and
+the export writes two documents, `L12_Arm` and `L12_Arm (flexible)`, with different component ids. Valid, but the
+round trip does not give back one document. Proposal: none needed unless round trips must keep the document count; the
+spec could note that an exporter may write such a pair.

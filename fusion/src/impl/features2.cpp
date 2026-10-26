@@ -44,7 +44,7 @@ bool fusionDirection(const Ptr<Base>& e, V3& dir)
     }
     if (Ptr<SketchLine> sl = e)
     {
-        dir = unit(sub(ptMm(sl->endSketchPoint()->worldGeometry()), ptMm(sl->startSketchPoint()->worldGeometry())));
+        dir = unit(sub(modelPointMm(sl->endSketchPoint()), modelPointMm(sl->startSketchPoint())));
         return true;
     }
     return false;
@@ -395,6 +395,18 @@ std::string Replayer::replayMoveBody(json& nf, const json& def)
     }
     else
         return "move body without a translation or rotation";
+    // With the part's occurrence active (the upright wrapper) Fusion applies a free move in that occurrence's assembly
+    // frame (P27 moved its body to the wrong place): the move expressed there, W M W^-1
+    if (occurrence)
+        if (Ptr<Matrix3D> w = occurrence->transform2())
+        {
+            Ptr<Matrix3D> wi = w->copy();
+            wi->invert();
+            Ptr<Matrix3D> c = wi->copy();
+            c->transformBy(m);   // M W^-1 (transformBy multiplies on the left: this = other * this)
+            c->transformBy(w);   // W M W^-1
+            m = c;
+        }
     Ptr<MoveFeatures> mf = comp_->features()->moveFeatures();
     Ptr<MoveFeatureInput> in = mf->createInput2(targets);
     if (!in || !in->defineAsFreeMove(m)) return "move input: " + lastError();
@@ -449,6 +461,23 @@ std::string Replayer::replayDraft(json& nf, const json& def)
 }
 
 // ---------------------------------------------------------------------------------------- sweep / loft
+// A chain of a sketch's curves as a Path. In the upright wrapper a part is built with its occurrence active, and Fusion
+// then makes no path of the native curves (P13's sweep, P19's thin wall): the same curves of the sketch's proxy in that
+// occurrence are used instead.
+Ptr<Path> Replayer::pathOf(const Ptr<ObjectCollection>& curves, const Ptr<Sketch>& sk)
+{
+    Ptr<Path> p = Path::create(curves, connectedChainedCurves);
+    if (p || !occurrence || !sk) return p;
+    Ptr<Sketch> ps = sk->createForAssemblyContext(occurrence);
+    if (!ps) return nullptr;
+    Ptr<SketchCurves> cs = sk->sketchCurves(), pcs = ps->sketchCurves();
+    Ptr<ObjectCollection> proxies = ObjectCollection::create();
+    for (size_t k = 0; k < curves->count(); k++)
+        for (size_t i = 0; i < cs->count() && i < pcs->count(); i++)
+            if (cs->item(i) == curves->item(k)) proxies->add(pcs->item(i));
+    return proxies->count() == curves->count() ? Path::create(proxies, connectedChainedCurves) : nullptr;
+}
+
 Ptr<Path> Replayer::pathFor(const json& ref, std::string& why)
 {
     if (ref.value("kind", "") == "feature")
@@ -468,7 +497,9 @@ Ptr<Path> Replayer::pathFor(const json& ref, std::string& why)
             why = "path sketch has no curves";
             return nullptr;
         }
-        return Path::create(curves, connectedChainedCurves);
+        Ptr<Path> p = pathOf(curves, it->second.sketch);
+        if (!p) why = "Fusion made no path of the sketch's curves: " + lastError();
+        return p;
     }
     Ptr<Base> o = refObject(ref, why);
     if (!o) return nullptr;
@@ -584,7 +615,7 @@ std::string Replayer::replaySurfaceRevolve(json& nf, const json& def)
         curves->add(cs->item(i));
     }
     if (!axis) return "revolve axis not found";
-    Ptr<Path> path = Path::create(curves, connectedChainedCurves);
+    Ptr<Path> path = pathOf(curves, it->second.sketch);
     Ptr<RevolveFeatures> rf = comp_->features()->revolveFeatures();
     Ptr<RevolveFeatureInput> in = rf->createInput(path, axis, NewBodyFeatureOperation);
     in->isSolid(false);

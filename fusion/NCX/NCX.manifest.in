@@ -6,7 +6,7 @@
 	"description":	{
 		"":	"NCX (Neutral CAD eXchange): import and export parametric models in one STEP file."
 	},
-	"version":	"0.1.0",
+	"version":	"@PROJECT_VERSION@",
 	"runOnStartup":	true,
 	"supportedOS":	"windows",
 	"editEnabled":	false

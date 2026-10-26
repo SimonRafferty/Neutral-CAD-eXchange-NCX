@@ -147,6 +147,74 @@ json probe(const json& req)
         if (req.value("close", true)) res["closed"] = doc->close(false);
         return res;
     }
+    if (what == "activate")
+    {
+        // developer: make the open design whose model (root or upright wrapper) is named `name` the active document
+        std::string want = req.value("name", "");
+        Ptr<Documents> ds = app->documents();
+        for (size_t i = 0; i < ds->count(); i++)
+        {
+            Ptr<Design> d = ds->item(i)->products()->itemByProductType("DesignProductType");
+            if (!d) continue;
+            Ptr<Occurrence> w = findModelWrapper(d);
+            std::string n = w ? w->component()->name() : d->rootComponent()->name();
+            if (n == want) return json{{"ok", ds->item(i)->activate()}};
+        }
+        return json{{"ok", false}, {"error", "no open design named " + want}};
+    }
+    if (what == "centroids")
+    {
+        // developer: each occurrence's first body, its centre of mass read natively and through the occurrence
+        Ptr<Design> des = app->activeProduct();
+        json a = json::array();
+        Ptr<OccurrenceList> os = des->rootComponent()->allOccurrences();
+        for (size_t i = 0; os && i < os->count(); i++)
+        {
+            Ptr<Occurrence> o = os->item(i);
+            if (o->component()->bRepBodies()->count() == 0) continue;
+            Ptr<BRepBody> nb = o->component()->bRepBodies()->item(0);
+            Ptr<BRepBody> pb = o->bRepBodies()->item(0);
+            auto c = [](const Ptr<BRepBody>& b) {
+                Ptr<PhysicalProperties> pp = b->getPhysicalProperties(VeryHighCalculationAccuracy);
+                return json::array({cm2mm(pp->centerOfMass()->x()), cm2mm(pp->centerOfMass()->y()), cm2mm(pp->centerOfMass()->z())});
+            };
+            a.push_back(json{{"path", o->fullPathName()}, {"native", c(nb)}, {"proxy", c(pb)}, {"occCount", o->component()->occurrences()->count()},
+                             {"g2p", o->isGroundToParent()}});
+        }
+        return json{{"ok", true}, {"items", a}};
+    }
+    if (what == "tlctx")
+    {
+        // developer: which timeline entities come as proxies (assembly context) and in which component
+        Ptr<Design> des = app->activeProduct();
+        json a = json::array();
+        for (size_t i = 0; des && i < des->timeline()->count(); i++)
+        {
+            Ptr<Base> e = des->timeline()->item(i)->entity();
+            json j{{"name", des->timeline()->item(i)->name()}, {"type", e ? e->objectType() : "null"}};
+            if (Ptr<Feature> f = e)
+            {
+                j["proxy"] = (bool)f->assemblyContext();
+                j["component"] = f->parentComponent()->name();
+                Ptr<Feature> nf = f->parentComponent()->features()->itemByName(f->name());
+                j["byName"] = (bool)nf;
+                if (nf) j["byNameProxy"] = (bool)nf->assemblyContext();
+                if (Ptr<ExtrudeFeature> x = e)
+                    if (Ptr<Profile> p = x->profile()) j["profileSketchProxy"] = (bool)p->parentSketch()->assemblyContext();
+            }
+            if (Ptr<Sketch> s = e) j["proxy"] = (bool)s->assemblyContext();
+            a.push_back(j);
+        }
+        return json{{"ok", true}, {"items", a}};
+    }
+    if (what == "computeAll")
+    {
+        // developer: recompute the whole design (as Fusion does on some edits), then the tree
+        Ptr<Design> des = app->activeProduct();
+        if (!des) return json{{"ok", false}, {"error", "no active design"}};
+        bool ok = des->computeAll();
+        return json{{"ok", ok}, {"error", ok ? "" : lastError()}, {"tree", walk(des->rootComponent())}};
+    }
     if (what == "tree")
     {
         // the active design's components, bodies (volume, box in mm) and occurrence transforms

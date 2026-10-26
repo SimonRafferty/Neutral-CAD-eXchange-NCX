@@ -647,13 +647,27 @@ def parse_expression(s):
 
 def check_region_boundaries(rep, doc, ft, fpath):
     """A region's `boundary` (spec 4, regions) names segments of the feature's profile sketch, or carries a curve."""
+    L = 3
     d = ft.get("def") if isinstance(ft.get("def"), dict) else {}
     regions = d.get("regions") or []
     prof = d.get("profile") if isinstance(d.get("profile"), dict) else {}
     sk = next((f for f in doc.get("features", []) if prof.get("kind") == "feature" and f.get("id") == prof.get("id")), None)
     if sk is None:
         return
-    seg_ids = {e.get("id") for e in (sk.get("def") or {}).get("entities", []) if e.get("type") != "point"}
+    ents = (sk.get("def") or {}).get("entities", [])
+    seg_ids = {e.get("id") for e in ents if e.get("type") != "point"}
+    lines = [e for e in ents if e.get("type") == "line" and not e.get("construction")
+             and isinstance(e.get("start"), list) and isinstance(e.get("end"), list)]
+
+    def on_line(p, e, tol=1e-3):
+        (ax, ay), (bx, by) = e["start"][:2], e["end"][:2]
+        dx, dy = bx - ax, by - ay
+        n2 = dx * dx + dy * dy
+        if n2 < 1e-12:
+            return False
+        t = ((p[0] - ax) * dx + (p[1] - ay) * dy) / n2
+        return -1e-6 <= t <= 1 + 1e-6 and abs((p[0] - ax) * dy - (p[1] - ay) * dx) / math.sqrt(n2) < tol
+
     for ri, r in enumerate(regions):
         for li, loop in enumerate(r.get("boundary") or []):
             for item in loop:
@@ -661,7 +675,18 @@ def check_region_boundaries(rep, doc, ft, fpath):
                     if item not in seg_ids:
                         rep.error(L, "M-REGION", "4", f"region boundary names '{item}', not a segment of sketch "
                                   f"'{sk.get('name')}'", f"{fpath}/def/regions/{ri}/boundary/{li}")
-                elif not (isinstance(item, dict) and ("line" in item or "arc" in item)):
+                elif isinstance(item, dict) and "line" in item:
+                    try:
+                        a, b = [list(map(float, q[:2])) for q in item["line"]]
+                    except (TypeError, ValueError, IndexError):
+                        rep.error(L, "M-REGION", "4", "region boundary {line} must be [start, end] points",
+                                  f"{fpath}/def/regions/{ri}/boundary/{li}")
+                        continue
+                    host = next((e for e in lines if on_line(a, e) and on_line(b, e)), None)
+                    if host is not None:
+                        rep.error(L, "M-REGION", "4", f"region boundary piece {item['line']} lies on sketch line "
+                                  f"'{host.get('id')}': write the segment's id", f"{fpath}/def/regions/{ri}/boundary/{li}")
+                elif not (isinstance(item, dict) and "arc" in item):
                     rep.error(L, "M-REGION", "4", "region boundary item must be a segment id, {line} or {arc}",
                               f"{fpath}/def/regions/{ri}/boundary/{li}")
 

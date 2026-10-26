@@ -21,6 +21,14 @@ SolidWorks 2026. No SolidWorks was used.
 - Round 6 (2026-10-25): a sixth agent, from a fresh clone (NCX 0.5.4), on progress and responsiveness, and on a real
   assembly (a folding step, 19 documents, exported with SolidWorks add-in 0.5.4; not published). Section 13; issues
   30-36; its brief and spec feedback folded into NCX 0.6.0.
+- Round 7 (2026-10-25): a seventh agent, from the NCX 0.6.0 release candidate (61 samples, SolidWorks add-in 0.6.0):
+  the 0.6.0 additions (`orientation.up`, `flexible`, region `boundary`), the folding step re-exported with 0.6.0, and
+  version 0.2.0 with its installer. Section 14; issues 37-39.
+- Round 8 (2026-10-25): the folding step Fusion -> SolidWorks came apart (nested export, fixed parts, fasteners).
+  Section 15; issues 40-41.
+- Round 9 (2026-10-26, the project owner's own session, no agent): export completeness, judged by the SolidWorks
+  import of what Fusion writes (the "Fusion loop": sample -> Fusion import -> Fusion export -> SolidWorks import).
+  Section 16.
 
 Tested with Autodesk Fusion 2706.1.14 (Windows 10 x64); built with Visual Studio 2019 Build Tools (v142).
 
@@ -354,7 +362,7 @@ Insert Part (which needs saved documents) as a later improvement.
 
 ## 8. Per-sample results
 
-Round 5, on the 59 samples of NCX 0.5.3 (the 56 re-exported with SolidWorks add-in 0.5.3, plus P47, P48, L11).
+The table below is round 7's (61 samples of NCX 0.6.0, section 14); the text that follows it is round 5's, on the 59 samples of NCX 0.5.3 (the 56 re-exported with SolidWorks add-in 0.5.3, plus P47, P48, L11).
 Round 4's text and table are in git history (9ad89b8). Import (`tools/run_samples.py`, every check in spec 6.1;
 "exact" = everything rebuilt natively and every check matched; "approximate" = geometry matches, but something was
 built as a functional equivalent, taken from a carried result, or reported; "fallback" = the part was replaced by the
@@ -366,7 +374,9 @@ file's own geometry, with the reason):
 | round 2 (56 samples, core 0.2.0) | 22 | 32 | 2 | 0 | 0 |
 | round 3 (placement data) | 25 | 31 | 0 | 0 | 0 |
 | round 4 | 25 | 31 | 0 | 0 | 0 |
-| **round 5 (59 samples, NCX 0.5.3)** | **26** | **33** | **0** | **0** | **0** |
+| round 5 (59 samples, NCX 0.5.3) | 26 | 33 | 0 | 0 | 0 |
+| round 6 (59 samples, NCX 0.5.4) | 26 | 33 | 0 | 0 | 0 |
+| **round 7 (61 samples, NCX 0.6.0)** | **28** | **33** | **0** | **0** | **0** |
 
 The 56 older samples give exactly round 4's results with the 0.5.3 re-exports (the same class sample by sample, and the same
 first approximations in the table). P47 is exact; P48 approximate (its inscribed hexagon arrives under-defined, as it does in
@@ -385,66 +395,68 @@ every re-export: **59 of 59 PASS**; the only warnings are C-NOTICE on the two su
 | sample | import | mass | faces | structure | flex | approximations / fallbacks (first ones) | round trip | validator (re-export) |
 |---|---|---|---|---|---|---|---|---|
 | L01 | approximate | match | match | match | match | L01_Layout (approximate) | exact (11 mapped, 0 as results) | PASS |
-| L02 | exact | match | match | match | - |  | exact (4 mapped, 0 as results) | PASS |
+| L02 | exact | match | match | match | - |  | - | PASS |
 | L03 | approximate | match | match | match | - | Point-FrontCentre (approximate); Coincident-Axes (approximate); Limit-PinHeight (approximate); Coincident-Origin (approximate); +2 | exact (8 mapped, 0 as results) | PASS |
-| L04 | approximate | match | match | match | - | Pattern-Pegs (approximate); Pattern-Tabs (approximate); Pattern-TabsOnFace (approximate) | exact (8 mapped, 0 as results) | PASS |
-| L05 | approximate | match | match | match | - | Width-Tab (approximate) | exact (10 mapped, 0 as results) | PASS |
-| L06 | approximate | match | match | match | - | L06_Bracket_Mirrored (approximate); Mirror-Right (approximate) | approximate (8 mapped, 1 as results) | PASS |
-| L07 | approximate | match | match | match | - | Slot-Slider (approximate); Symmetric-Pins (approximate) | exact (6 mapped, 0 as results) | PASS |
-| L08 | exact | match | match | match | - |  | exact (4 mapped, 0 as results) | PASS |
-| L09 | exact | match | match | match | - |  | approximate (8 mapped, 0 as results) | PASS |
-| L10 | exact | match | skipped | match | - |  | approximate (2 mapped, 1 as results) | PASS |
-| L11 | approximate | match | match | match | - | L11_Layout (approximate); cut list Sheet<1> (approximate) | approximate (7 mapped, 1 as results) | PASS |
-| P01_block | exact | match | match | match | - |  | exact (2 mapped, 0 as results) | PASS |
-| P02_block_features | exact | match | match | match | - |  | exact (6 mapped, 0 as results) | PASS |
-| P03_revolve_shaft | exact | match | match | match | - |  | exact (5 mapped, 0 as results) | PASS |
-| P04_ref_plane | exact | match | match | match | - |  | exact (5 mapped, 0 as results) | PASS |
-| P05_patterns_mirror | exact | match | match | match | - |  | approximate (7 mapped, 2 as results) | PASS |
-| P06_circular | exact | match | match | match | - |  | approximate (4 mapped, 1 as results) | PASS |
-| P07_shell | exact | match | match | match | - |  | approximate (3 mapped, 1 as results) | PASS |
-| P08_equations | exact | match | match | match | match |  | exact (2 mapped, 0 as results) | PASS |
-| P09_draft | exact | match | match | match | - |  | approximate (2 mapped, 1 as results) | PASS |
-| P10_configs | approximate | match | match | match | - | configurations (approximate) | exact (4 mapped, 0 as results) | PASS |
-| P11_hole_wizard | exact | match | match | match | - |  | approximate (3 mapped, 1 as results) | PASS |
+| L04 | approximate | match | match | match | - | Pattern-Pegs (approximate); Pattern-Tabs (approximate); Pattern-TabsOnFace (approximate) | - | PASS |
+| L05 | approximate | match | match | match | - | Width-Tab (approximate) | - | PASS |
+| L06 | approximate | match | match | match | - | L06_Bracket_Mirrored (approximate); Mirror-Right (approximate) | - | PASS |
+| L07 | approximate | match | match | match | - | Slot-Slider (approximate); OnBase-Left (approximate); OnBase-Right (approximate); Symmetric-Pins (approximate) | - | PASS |
+| L08 | exact | match | match | match | - |  | - | PASS |
+| L09 | exact | match | match | match | - |  | - | PASS |
+| L10 | exact | match | skipped | match | - |  | - | PASS |
+| L11 | approximate | match | match | match | - | L11_Layout (approximate); cut list Sheet<1> (approximate) | - | PASS |
+| L12 | exact | match | match | match | - |  | approximate (8 mapped, 0 as results) | PASS |
+| P01_block | exact | match | match | match | - |  | - | PASS |
+| P02_block_features | exact | match | match | match | - |  | - | PASS |
+| P03_revolve_shaft | exact | match | match | match | - |  | - | PASS |
+| P04_ref_plane | exact | match | match | match | - |  | - | PASS |
+| P05_patterns_mirror | exact | match | match | match | - |  | - | PASS |
+| P06_circular | exact | match | match | match | - |  | - | PASS |
+| P07_shell | exact | match | match | match | - |  | - | PASS |
+| P08_equations | exact | match | match | match | match |  | - | PASS |
+| P09_draft | exact | match | match | match | - |  | - | PASS |
+| P10_configs | approximate | match | match | match | - | configurations (approximate) | - | PASS |
+| P11_hole_wizard | exact | match | match | match | - |  | - | PASS |
 | P12_sheet_metal | approximate | match | match | match | - | Cut-Hole (approximate); cut list Sheet<1> (approximate) | approximate (4 mapped, 2 as results) | PASS |
-| P13_sweep | exact | match | match | match | - |  | approximate (2 mapped, 1 as results) | PASS |
-| P14_loft | approximate | match | match | match | - | Loft-Transition (approximate) | approximate (3 mapped, 1 as results) | PASS |
-| P15_multibody | exact | match | match | match | - |  | approximate (6 mapped, 1 as results) | PASS |
-| P16_weldment | approximate | match | match | match | - | Weldment (approximate); Tube-Frame (approximate); cut list TUBE, SQUARE 20.00 X 20.00 X 2.00<1> (approximate); cut list TUBE, SQUARE 20.00 X 20.00 X 2.00<2> (approximate); +1 | approximate (13 mapped, 0 as results) | PASS |
-| P17_properties | approximate | match | match | match | - | custom properties (approximate); material 6061 Alloy (approximate); configurations (approximate) | exact (2 mapped, 0 as results) | PASS |
-| P18_appearances | approximate | match | match | match | - | appearance on body (approximate) | exact (6 mapped, 0 as results) | PASS |
-| P19_extrude_options | exact | match | match | match | - |  | approximate (9 mapped, 1 as results) | PASS |
-| P20_ref_geometry | approximate | match | match | match | - | Point-TopCentre (approximate); CS-Corner (approximate); Rev-Thin (approximate) | approximate (4 mapped, 1 as results) | PASS |
-| P21_fillets | approximate | match | match | match | - | Fillet-Faces (approximate); Chamfer-Vertex (approximate) | approximate (8 mapped, 2 as results) | PASS |
-| P22_bodies | approximate | match | match | match | - | Pattern-Posts (approximate); Cut-Hole (approximate); Pattern-Holes (approximate) | approximate (8 mapped, 3 as results) | PASS |
-| P23_sketch_curves | exact | match | match | match | - |  | exact (4 mapped, 0 as results) | PASS |
-| P24_weldment_extras | approximate | match | match | match | - | Weldment (approximate); Tube-Frame (approximate); Tube-Brace (approximate); Tube-Post (approximate); +8 | approximate (20 mapped, 2 as results) | PASS |
-| P25_lofted_bend | approximate | match | match | match | - | Loft-Transition (approximate); cut list Sheet<1> (approximate) | approximate (3 mapped, 1 as results) | PASS |
-| P26_surfaces | exact | match | match | match | - |  | exact (4 mapped, 0 as results) | PASS |
-| P27_rib_move | exact | match | match | match | - |  | approximate (8 mapped, 4 as results) | PASS |
-| P28_sheet_extras | approximate | match | match | match | - | cut list Sheet<1> (approximate) | approximate (3 mapped, 4 as results) | PASS |
-| P29_jog | approximate | match | match | match | - | Jog-Step (approximate); cut list Sheet<1> (approximate) | approximate (3 mapped, 4 as results) | PASS |
-| P30_variable_fillet | exact | match | match | match | - |  | approximate (4 mapped, 1 as results) | PASS |
-| P31_guide_curves | exact | count_only | match | match | - |  | approximate (8 mapped, 2 as results) | PASS |
-| P32_cosmetic_thread | approximate | match | match | match | - | Thread-M10 (approximate) | exact (2 mapped, 0 as results) | PASS |
-| P33_gusset | approximate | match | match | match | - | Weldment (approximate); Tube-L (approximate); Gusset-Corner (approximate); cut list TUBE, SQUARE 20.00 X 20.00 X 2.00<1> (approximate); +3 | approximate (7 mapped, 1 as results) | PASS |
-| P34_closed_corner | approximate | match | match | match | - | Flange-Left (approximate); Corner-Closed (approximate); cut list Sheet<1> (approximate) | approximate (5 mapped, 6 as results) | PASS |
-| P35_miter_flange | approximate | match | match | match | - | Miter-Upstand (approximate); cut list Sheet<1> (approximate) | approximate (3 mapped, 3 as results) | PASS |
-| P36_multi_edge_flange | approximate | match | match | match | - | cut list Sheet<1> (approximate) | approximate (3 mapped, 2 as results) | PASS |
-| P37_dome | approximate | match | match | match | - | Dome-Top (approximate) | approximate (6 mapped, 1 as results) | PASS |
-| P38_split | exact | match | match | match | - |  | approximate (4 mapped, 1 as results) | PASS |
-| P39_knit | exact | match | match | match | - |  | exact (5 mapped, 0 as results) | PASS |
-| P40_wrap | approximate | match | match | match | - | Wrap-Label (approximate) | approximate (5 mapped, 1 as results) | PASS |
-| P41_unfold_fold | approximate | match | match | match | - | cut list Sheet<1> (approximate) | approximate (4 mapped, 4 as results) | PASS |
-| P42_hole_positions | exact | match | match | match | - |  | approximate (3 mapped, 1 as results) | PASS |
-| P43_flange_options | approximate | match | match | match | - | Edge-Offset (approximate); cut list Sheet<1> (approximate) | approximate (2 mapped, 3 as results) | PASS |
-| P44_cut_list | approximate | match | match | match | - | Weldment (approximate); Tube-Frame (approximate); cut list Long rail<1> (approximate); cut list TUBE, SQUARE 20.00 X 20.00 X 2.00<2> (approximate); +1 | approximate (13 mapped, 0 as results) | PASS |
-| P45_sketch3d | approximate | match | match | match | - | Weldment (approximate); Tube-Path (approximate); cut list TUBE, SQUARE 20.00 X 20.00 X 2.00<1> (approximate); cut list TUBE, SQUARE 20.00 X 20.00 X 2.00<2> (approximate); +2 | approximate (11 mapped, 0 as results) | PASS |
-| P46_weldment_corners | approximate | match | match | match | - | Weldment (approximate); Tube-Miter (approximate); Tube-Butt1 (approximate); Tube-Butt2 (approximate); +7 | approximate (73 mapped, 12 as results) | PASS |
-| P47_slots | exact | match | match | match | - |  | exact (4 mapped, 0 as results) | PASS |
-| P48_polygons | approximate | match | match | match | - | SK_Hex (approximate) | exact (4 mapped, 0 as results) | PASS |
+| P13_sweep | exact | match | match | match | - |  | - | PASS |
+| P14_loft | approximate | match | match | match | - | Loft-Transition (approximate) | - | PASS |
+| P15_multibody | exact | match | match | match | - |  | - | PASS |
+| P16_weldment | approximate | match | match | match | - | Weldment (approximate); Tube-Frame (approximate); cut list TUBE, SQUARE 20.00 X 20.00 X 2.00<1> (approximate); cut list TUBE, SQUARE 20.00 X 20.00 X 2.00<2> (approximate); +1 | - | PASS |
+| P17_properties | approximate | match | match | match | - | custom properties (approximate); material 6061 Alloy (approximate); configurations (approximate) | - | PASS |
+| P18_appearances | approximate | match | match | match | - | appearance on body (approximate) | - | PASS |
+| P19_extrude_options | exact | match | match | match | - |  | - | PASS |
+| P20_ref_geometry | approximate | match | match | match | - | Point-TopCentre (approximate); CS-Corner (approximate); Rev-Thin (approximate) | - | PASS |
+| P21_fillets | approximate | match | match | match | - | Fillet-Faces (approximate); Chamfer-Vertex (approximate) | - | PASS |
+| P22_bodies | approximate | match | match | match | - | Pattern-Posts (approximate); Cut-Hole (approximate); Pattern-Holes (approximate) | - | PASS |
+| P23_sketch_curves | exact | match | match | match | - |  | - | PASS |
+| P24_weldment_extras | approximate | match | match | match | - | Weldment (approximate); Tube-Frame (approximate); Tube-Brace (approximate); Tube-Post (approximate); +8 | - | PASS |
+| P25_lofted_bend | approximate | match | match | match | - | Loft-Transition (approximate); cut list Sheet<1> (approximate) | - | PASS |
+| P26_surfaces | exact | match | match | match | - |  | - | PASS |
+| P27_rib_move | exact | match | match | match | - |  | - | PASS |
+| P28_sheet_extras | approximate | match | match | match | - | cut list Sheet<1> (approximate) | - | PASS |
+| P29_jog | approximate | match | match | match | - | Jog-Step (approximate); cut list Sheet<1> (approximate) | - | PASS |
+| P30_variable_fillet | exact | match | match | match | - |  | - | PASS |
+| P31_guide_curves | exact | count_only | match | match | - |  | - | PASS |
+| P32_cosmetic_thread | approximate | match | match | match | - | Thread-M10 (approximate) | - | PASS |
+| P33_gusset | approximate | match | match | match | - | Weldment (approximate); Tube-L (approximate); Gusset-Corner (approximate); cut list TUBE, SQUARE 20.00 X 20.00 X 2.00<1> (approximate); +3 | - | PASS |
+| P34_closed_corner | approximate | match | match | match | - | Flange-Left (approximate); Corner-Closed (approximate); cut list Sheet<1> (approximate) | - | PASS |
+| P35_miter_flange | approximate | match | match | match | - | Miter-Upstand (approximate); cut list Sheet<1> (approximate) | - | PASS |
+| P36_multi_edge_flange | approximate | match | match | match | - | cut list Sheet<1> (approximate) | - | PASS |
+| P37_dome | approximate | match | match | match | - | Dome-Top (approximate) | - | PASS |
+| P38_split | exact | match | match | match | - |  | - | PASS |
+| P39_knit | exact | match | match | match | - |  | - | PASS |
+| P40_wrap | approximate | match | match | match | - | Wrap-Label (approximate) | - | PASS |
+| P41_unfold_fold | approximate | match | match | match | - | cut list Sheet<1> (approximate) | - | PASS |
+| P42_hole_positions | exact | match | match | match | - |  | - | PASS |
+| P43_flange_options | approximate | match | match | match | - | Edge-Offset (approximate); cut list Sheet<1> (approximate) | - | PASS |
+| P44_cut_list | approximate | match | match | match | - | Weldment (approximate); Tube-Frame (approximate); cut list Long rail<1> (approximate); cut list TUBE, SQUARE 20.00 X 20.00 X 2.00<2> (approximate); +1 | - | PASS |
+| P45_sketch3d | approximate | match | match | match | - | Weldment (approximate); Tube-Path (approximate); cut list TUBE, SQUARE 20.00 X 20.00 X 2.00<1> (approximate); cut list TUBE, SQUARE 20.00 X 20.00 X 2.00<2> (approximate); +2 | - | PASS |
+| P46_weldment_corners | approximate | match | match | match | - | Weldment (approximate); Tube-Miter (approximate); Tube-Butt1 (approximate); Tube-Butt2 (approximate); +7 | fallback (73 mapped, 12 as results) | PASS |
+| P47_slots | exact | match | match | match | - |  | - | PASS |
+| P48_polygons | approximate | match | match | match | - | SK_Hex (approximate) | - | PASS |
+| P49_profiles | exact | match | match | match | - |  | exact (10 mapped, 0 as results) | PASS |
 
-Import totals: approximate 33, exact 26
+Import totals: approximate 33, exact 28
 
 ## 9. Round 2: what changed
 
@@ -752,3 +764,285 @@ The user dragged the open import: links turned about a point a metre away, and t
   on one step plate already joined. A rigid group was tried first and replaced by this, because ground to parent shows
   in the browser and can be read back. ISSUES 35 proposes `flexible: true` on a component entry.
 - **Developer option.** `"onlyAssemblies": [names]` builds those sub-assemblies (and their parts) without the rest.
+
+## 14. Round 7: NCX 0.6.0 (orientation, flexible sub-assemblies, region boundaries), version 0.2.0
+
+From the NCX 0.6.0 release candidate (f49e372), 61 samples exported with SolidWorks add-in 0.6.0.
+
+### The 0.6.0 additions
+
+| spec item | what the add-in does | where it showed |
+|---|---|---|
+| `orientation.up` | read (absent: `y`, the spec's default, no longer only for SolidWorks files); when it differs from Fusion's own up axis (`defaultModelingOrientation`), the camera is turned so the file's up is up, with a note; coordinates stay in the file's frame. The file's up is kept on the design (root attribute `NCX/orientation`) and written back on export; a design made in Fusion is written with Fusion's up axis (`z` here) | every sample (all `y`); re-exports carry `orientation` |
+| `flexible` | per component entry. Fusion keeps a sub-assembly's joints and Ground to Parent in its component, shared by all its occurrences, so a sub-assembly placed both rigid and flexible is built twice: `L12_Arm` (rigid: every part grounded to it, plus its mates as joints) and `L12_Arm (flexible)` (its mates as joints, only its `fixed` part grounded to it). The parent's mates into a flexible sub-assembly join the part their `path` names (a proxy), not the sub-assembly occurrence | L12 (`L12_Arm-2`) |
+| region `boundary` | the pieces on no sketch segment are the face's edges: the in-plane model edges on them are projected into the sketch (drawn, fixed, where Fusion refuses the projection as circular: an edge a later feature of the same sketch made); then the profile containing the point, checked by area. `line` pieces as SolidWorks 0.6.0 writes them are displaced (ISSUES 37) and are read decoded when they lie on nothing as written | P49 `Cut-Region`; the folding step: Top Hanger Cheek `Boss-Extrude7` and Opposite `Cut-Extrude10` (an earlier hole inside the region: exactly the 15.90 mm² it missed by) now rebuild |
+| `contours` combination, `start` offset | as round 6 (ISSUES 30, 32) | P49 `Boss-Ring` (nested), `Cut-Cross` (crossing), `Cut-Pocket` (reversed offset): exact |
+| sketch / item `hidden` | as round 6 | all |
+
+Export: `orientation` (above). `flexible` is not written: the exporter writes an assembly flattened (one level, nested
+components as parts, existing behaviour), and Fusion has no rigid/flexible flag of its own (rigidity there is Ground to
+Parent, rigid groups or joints). Selected profiles now go out as `contours` only when every loop is whole sketch curves
+(all loops, so a ring keeps its hole), otherwise as `regions` with point, area, clearance and `boundary` (P49's circle
+segment had gone out as the contour [s2, s1], which re-imports as the other part of the circle, and the ring as its
+outer circle only). User parameters go with the document whose equations name them (since round 6 moved layouts into
+the hidden component they went to the first part, and L01's re-import failed its equations).
+
+### Fusion facts found (measured)
+
+- **`MeasureManager.measureMinimumDistance(face, point)` measures a planar face as its whole plane**: a disc face r 5
+  reported 0 mm to points 60 mm away in its plane, so two coplanar faces were "ambiguous" (P49's sketches on the top
+  face after the ring boss: the part fell back). Now, when the foot of the perpendicular is off the face
+  (`SurfaceEvaluator.isParameterOnFace`), the distance is to the face's edges. On the folding step this also resolved
+  sketches that failed in round 6 (the Cheek's `Sketch30`).
+- **`Sketch.project` refuses an edge a later feature of the same sketch made** ("CIRCULAR_DEPENDENCY ... from
+  Sketch29 to Boss-Extrude6"); one sketch used by several features makes this common.
+- **A cut made without naming its bodies cuts other parts' bodies.** Every part is rebuilt at the origin in its own
+  component; the Top Hanger Cheek's `Cut-Extrude12` (a blind cut past every body, made without participants as sheet
+  metal needs) took 1003 mm³ out of the Step Plate, which had passed its own check: only the whole-model check saw it,
+  and `ExtrudeFeature.participantBodies()` read empty. Now the other parts' volume is compared before and after each
+  such cut; if it changed, the cut is limited to the part's own bodies, or dropped (reported). Found with a developer
+  trace (folder `%LOCALAPPDATA%\NcxFusion\trace_all`: the trace then records every other component's bodies too).
+- **Two kernels measure an analytic body differently** (ISSUES 39): the folding step's nut, every face matching, equals
+  Fusion's measurement of the file's B-rep at native and differs from the payload by 5.6e-5. The spec's freeform rule
+  is applied to it: kept, reported approximate.
+
+### Samples (61)
+
+**28 exact, 33 approximate, 0 fallback** (round 6: 26 / 33 / 0 of 59). Every one of the 59 older samples has its
+round-6 class; L12 and P49 are new and exact. P49 fell back at the first import (the planar-distance fact above), then
+was exact. The suite was run again after the last importer changes (cut guard, mass rule): identical classes.
+
+Round trip (`tools/roundtrip.py`, all 61, before the cut guard): **22 exact, 38 approximate, 1 fallback** (round 5:
+21 / 38 / 0 of 59). L01 failed at first (parameters on the wrong document) and is exact after the export fix; P49 fell
+back at first (its region and ring written as contours) and is exact after it. **P46 falls back**: its `Tube-Butt2`
+corners (Fusion combines, carried as results) find "the bodies it replaces are not in the rebuilt part". The round-6
+build (f49e372, built and tried) gives the same fallback on the same file, so it came with round 6, not this round; not
+resolved. After the cut guard a representative set was rerun (L01, L03, L12, P12, P46, P49): the same classes (3
+exact, 2 approximate, P46 fallback). Validator (levels 1-4, `NCX_CORE_DLL` set) on all 61 re-exports: **61 PASS**
+(warnings only C-NOTICE on P26 and P39), and PASS again on the six rerun. In the table the round-trip column shows
+those six; the others are in the counts above.
+
+### L12 joints by numbers
+
+`fusion/tools/frames_check.py` (each joint's origin and axis as made, against its mate's `frame`):
+
+| assembly | joint | motion | axis vs mate (deg) | origin off the mate's axis (mm) | along the axis (mm) | joins |
+|---|---|---|---|---|---|---|
+| L12_Arm | Concentric-Pin | revolute | 0 | 0.0000 | 10.0 | Pin to Link (rigid arm's component) |
+| L12_Arm (flexible) | Concentric-Pin | revolute | 0 | 0.0000 | 10.0 | Pin to Link (flexible arm's component) |
+| L12_Top | Concentric-Pivot1 | revolute | 0 | 0.0000 | 0.0 | `L12_Arm:2` (the rigid arm as a whole) to the hanger |
+| L12_Top | Concentric-Coupler1 | revolute | 0 | 0.0000 | 5.0 | `L12_Arm:2` to the coupler |
+| L12_Top | Concentric-Pivot2 | cylindrical | 0 | 0.0000 | 0.0 | the flexible arm's pin (`L12_Arm (flexible):2+L12_Pin:3`) to the hanger |
+| L12_Top | Coincident-Arm2 | planar | 0 | - | - | the flexible arm's link to the hanger |
+| L12_Top | Concentric-Coupler2 | cylindrical | 0 | 0.0000 | 5.0 | the flexible arm's link to the coupler |
+
+Every joint healthy. The hanger is pinned (its `fixed`); rigid arm: Pin and Link grounded to `L12_Arm`; flexible arm:
+Link grounded to `L12_Arm (flexible)` (it is `fixed` in the arm document), Pin not grounded (held by its revolute joint
+only). "Along the axis" is where Fusion puts a joint made on a cylinder face (its middle); it does not change the
+motion. Whether Fusion's drag carries the loop is for a person to try (brief §5).
+
+### The folding step (0.6.0 export)
+
+| document | round 6 | round 7 |
+|---|---|---|
+| Top Hanger Cheek | fallback | fallback: `Cut-Extrude11`'s region is 1.6 % too large with every boundary piece in the sketch (ISSUES 38), then fillets on edges that differ; `Cut-Extrude12` dropped by the cut guard. `Boss-Extrude7` now rebuilds from its boundary |
+| Top Hanger Cheek Opposite | fallback | **rebuilt** (mass count_only, 7 faces differ) |
+| M8 Nyloc + Washer | fallback | **rebuilt** (approximate: the mass rule of ISSUES 39; every face matches) |
+| Long Link | rebuilt, count_only, 3 faces | the same |
+| Step Plate, Nissan Window Regulator | rebuilt, count_only | the same (faces: topology) |
+| IGUS, Chassis Plate, Short Link, Step Rung, both dome heads | rebuilt | rebuilt, mass and faces match |
+| layouts (2) | rebuilt | rebuilt |
+
+12 of 13 parts rebuilt (round 6: 10). The whole-model check reports a **mismatch** on the Top Hanger Cheek
+Opposite's body in the assembly: 52920.24 mm³ against 53312.57, although its own check (made right after it was
+rebuilt) passed. Something built after it removes 392 mm³ from it, as the Cheek's cut did to the Step Plate (that one
+is fixed: the Step Plate is right in the assembly now). Not found this round; a candidate is a Fusion hole feature
+(they cut every body they meet) in a later part.
+
+Timing (the one full import with the installed 0.2.0, the menu command's code path): **271 s**, 313 steps, 618
+updates; replay of the Cheek 57 s, Step Plate 41 s, Window Regulator 39 s, joints 22 s, face checks 20 s, reference
+12 s. The longest gaps are single Fusion calls: the Cheek's `Fillet12` 10.8 s (a fillet whose edges are not found), the
+Step Plate's `Sketch7` 7.7 / 7.2 / 6.5 / 4.4 s (constraint solves of a 37-relation face sketch), `Boss-Extrude17`
+4.2 s. (Round 6: 221 s; more parts are rebuilt now.)
+
+Joints: 35, all healthy; 25 turning joints (18 revolute, 7 cylindrical): every axis parallel to its axial mate (0 deg)
+and every origin on that mate's axis line (0.0000 mm); along the axis 1 to 212 mm (the 210 mm ones are link bushings
+compared with the coaxial mate on the other side of the step, the same axis line). Pinned: `Left_Top Hanger Assy` (the
+file's fixed component) and `Left_Nissan Window Regulator` (its mates lock it to the assembly: "fixed to the
+assembly"); no top-level component grounded to parent.
+
+### Version 0.2.0 and the installer
+
+The version is set once, in `CMakeLists.txt` (`project(... VERSION 0.2.0)`): the DLLs get it as `NCX_FUSION_VERSION`,
+CMake writes Fusion's manifest from `NCX/NCX.manifest.in` into `build/NCX.manifest`, and `package.ps1` (now always from
+an empty build folder) passes that version to the installer: `fusion\out\NCX-Fusion-Setup-0.2.0.exe`, 3,088,791 bytes.
+Install test: Fusion closed gracefully (no unsaved document of the user's: the three unsaved imports open were this
+round's own and were closed first), the installer run silently over 0.1.0 (exit 0; Windows Apps lists "NCX for
+Autodesk Fusion" 0.2.0), Fusion started: "NCX add-in 0.2.0 starting in Fusion 2706.1.14", Import/Export NCX present
+in the File menu, and P01 imported through the menu command's code path (`uiImport`, the file given instead of the
+dialog): exact. Nobody clicked the menu itself (no GUI automation here).
+
+### Round 7, second part: upright in Fusion's own frame, the fixed SolidWorks boundaries, Fusion exports
+
+The person found the camera turn did not hold (Home, ViewCube, Top/Front still showed the model on its back). Now:
+
+- **Upright wrapper.** When the file's up axis is not Fusion's, the import builds the whole model inside one component
+  (named after the model, attribute `NCX/wrapper`) placed under the root by the rotation that takes the file's up onto
+  Fusion's (y to z: +90 deg about X), pinned. Inside it everything is in the file's frame. The camera turn is gone.
+  Single parts are wrapped the same way (the part is that component; the structure check is unchanged: P01 exact).
+  Assemblies: parts and sub-assemblies are built inside the wrapper too. Tried and dropped: building parts at the
+  design's root and placing instances in the wrapper (an instance of a component whose build occurrence is at the root
+  did not get its placement: L12's hanger stayed in the world frame, L03's pins turned).
+- **Fusion facts (measured)**: a planar face's own evaluator works in its native space even for a proxy (the
+  planar-distance check maps the point back); a native body's mass properties come where its occurrence puts it (the
+  whole-model check now measures proxies in the root's context and maps them back); features made while an occurrence
+  is active keep proxies of their inputs, profiles too (the exporter reads native profiles, faces, edges and
+  features); `addExistingComponent` with an identity placement inside the rotated wrapper put the instance at its
+  world placement (identity placements get a 1e-9 mm nudge).
+- **Parts cutting parts.** Rather than the volume guard alone: the parts built before are hidden while a part is
+  rebuilt, so a cut without participants cannot reach them (measured: the Cheek Opposite's `Cut-Extrude7` reached the
+  Top Hanger Cheek, the Cheek's `Cut-Extrude12` the Step Plate). The guard stays as a check.
+- **Fixed SolidWorks boundaries** (ISSUES 37/38 fixed in the exporter): pieces are taken as written; the decoded
+  reading is used only for a file where most line pieces lie on sketch lines only when decoded (written before the fix).
+  P49 (new file, boundary `[["s2","s1"]]`): exact. Top Hanger Cheek `Cut-Extrude11` with the fixed file: still 3296.28
+  mm² against 3245.09 (51.19 mm² too large), so the Cheek still falls back.
+- **Export** of an imported model is written from the wrapper component in the file's frame; a partial rebuild, the
+  hidden source-parts container and empty sub-assembly documents are not written; joints on a sub-assembly occurrence
+  find their faces in its parts (L12's `Concentric-Pivot1` and `Concentric-Coupler1` were opaque). Sub-assemblies are
+  still exported flattened (each as its parts placed in the root), so `flexible` is not written.
+
+Results with the installed build: P01, L01, L03, L11, L12, P12, P49 import with their round-7 classes; round trips P01,
+L01, L03, L12, P49 (L01 now exact) and the validator PASS on each. The folding step (fixed file, one full import, 582
+s): 10 of 13 parts rebuilt; Top Hanger Cheek, Cheek Opposite and Long Link fall back (inside the wrapper the cheeks'
+`Edge-Flange3` finds its edge ambiguous, and Long Link's fillets do not resolve: both rebuilt before the wrapper); the
+whole-model check is `count_only` (the earlier 392 mm³ loss is gone); 35 joints healthy, the 25 turning joints on their
+mates' axes (0 deg, 0.0000 mm); only the wrapper pinned. Exported from Fusion: `FS_fusion.ncx.step` (15 documents, 40
+components, 30 mates all mapped) and `L12_fusion.ncx.step`: both PASS the validator.
+
+## 15. Round 8: the folding step Fusion -> NCX -> SolidWorks came apart
+
+The SolidWorks side imported `FS_fusion.ncx.step` (round 7's Fusion export of the folding step): many parts came apart
+when dragged. `fusion/tools/asm_check.py <file>` (new) prints per assembly its components, the fixed ones and each
+component's mates with their partners, and flags a component that is neither fixed nor mated (FREE) or held by a
+single concentric or plane mate (LOOSE). On `FS_fusion.ncx.step`: one flat assembly, 40 components, 30 mates, none
+fixed; 29 flagged (Cheek Opposite, five bushes, four nuts, the regulator and a step rung free; most fasteners on one
+mate). Causes, measured:
+
+- **Flattened export.** Sub-assemblies were written as their parts placed in the root, and only joints as mates. The
+  import holds a rigid sub-assembly's parts by Ground to Parent, which the export dropped: those parts had no mate.
+  Top-level joints on a sub-assembly occurrence were written to whichever of its parts had the face (a bush, a rung).
+- **`fixed` from `isGrounded()` only.** Inside the upright wrapper the import holds the fixed components by Ground to
+  Parent (pinning a nested occurrence does not tie it to its parent), so nothing was written fixed.
+- **Fasteners.** A connector got one joint, to the partner it shares most mates with; when those were only a
+  concentric (a bolt in a plate hole, seated on the other cheek) or only a coincident (a nut on a plate, on the bolt)
+  the joint was cylindrical or planar, and its export one mate. Two more holes: a part whose partners were all
+  connectors that chose someone else (a nut on a bolt and on another nut) got no joint at all (both ends skipped the
+  pair); and the partner of a joint "to the assembly" was the last fixed component in the file (a fixed nut, once a
+  re-imported Fusion export has several fixed components).
+- **Sub-assembly joints read back empty.** An as-built joint the import makes in a sub-assembly component reads back
+  with no occurrences and no geometry, through the component and through `createForAssemblyContext` alike (L12's
+  `Concentric-Pin`, healthy in Fusion). So a flexible sub-assembly's own mates could not be exported.
+
+Changes (exporter.cpp, joints.cpp):
+- **Nested export.** The root (the wrapper is transparent) and every shown sub-assembly component become their own
+  assembly documents, once per Fusion component, with their components' transforms relative to the parent and their
+  own joints as mates. Mate sides are `{component, path}` from the occurrence chain below the assembly. A component
+  grounded or grounded to its parent is `fixed`; a sub-assembly whose shown parts are not all grounded to it is
+  `flexible: true`. A rigid sub-assembly's parts are therefore all `fixed` in its document, and its joints are still
+  written as mates (mates between fixed components; ISSUES 40). L12's flexible arm, built in Fusion as a second
+  component, is written as a second document `L12_Arm (flexible)` (valid; the source had one; ISSUES 41).
+- **Joint records.** Every as-built joint the import makes carries attribute `NCX/joint`: its occurrences' names, a
+  point on its axis and its axis (or plane normal) in its assembly's frame, and whether it holds a fastener. The
+  export uses it when Fusion reports no occurrences.
+- **Fasteners keep their place.** A connector's joint that would leave it sliding or spinning off its partner becomes
+  revolute about its own axis when a concentric with that partner gives the axis and any of its mates seats it
+  across the axis, else rigid; reported `approximate` with the reason. A part left with no joint is joined like a
+  connector. A joint "to the assembly" goes to the fixed component the mates name (else the largest fixed one).
+  The export writes a fastener's revolute joint with no faces meeting across its axis on its partner as a `lock`
+  (`approximate`), so it stays on that part. No loop is added (each connector still has one joint).
+
+Results (dev build; imports with `"faces": false` to keep runs short: import 255 s, export 67 s; `fusion/tools/imex.py`):
+- `FS_fusion2.ncx.step`: 5 assemblies (Top Hanger, Short Link, Long Link, Step, under Left_Folding Step Assy), the
+  sub-assemblies rigid with all their parts fixed; root: 27 components, 6 fixed (the hanger assembly, the regulator
+  and four nuts on the hanger), 36 mates; `asm_check.py`: 0 flagged. Every moving component is held: the two links
+  revolute on the hanger, the step revolute on the long link and concentric with the short link (the four-bar's one
+  swing), bolts revolute on their part, nuts locked to theirs. Validator **PASS** (0 errors, 0 warnings).
+- `L12_fusion2.ncx.step`: L12_Arm (rigid: both parts fixed, the pin's mates written), L12_Arm (flexible) (Link fixed,
+  Pin held by its concentric + coincident), the top level as the source (7 mates, hanger fixed); 0 flagged; validator
+  **PASS**.
+- **Drive test** on `FS_fusion2` re-imported (`fusion/tools/drive_check.py`): 21 top-level joints, all healthy, the
+  hanger's joints now to `Left_Top Hanger Assy`. Setting a joint's value does not solve a closed loop (section 13), so
+  the loop-closing `Concentric9` (short link to step, cylindrical) is suppressed for the test and restored. Driving
+  `Distance8 (axis)` (long link) 10 deg moved 19 occurrences: the long link assembly and its 4 bushes, the step
+  assembly and its 4 parts, and all 8 fasteners on the long link and the step. Driving `LimitAngle2 (axis)` (short
+  link) moved 9: the short link assembly, its 4 bushes and its 3 fasteners. Left in place in both: the hanger
+  assembly, its 11 fasteners and the regulator, which the source holds to the hanger. With `Concentric9` active,
+  setting the value moved nothing (the loop holds; the interactive drag is for a person to try).
+
+Left approximate or lost:
+- Limit mates: `LimitAngle2` (angle 27.9 deg, min 20, max 174) is made a revolute joint without limits, and the export
+  writes concentric + coincident, so the limit is lost both ways (Fusion joint limits are relative to the as-built
+  position and their sense is not pinned down by the file; not attempted). `Distance8/9/11` (1 mm gaps between link
+  and cheek) are kept as the placement: the export writes a coincident of faces that meet there (a bush flange on the
+  cheek) rather than the 1 mm distance.
+- Nuts are rigid on their part (they no longer spin); bolts keep their spin; the regulator and the hanger's nuts are
+  fixed rather than mated to the hanger (same motion).
+- A rigid sub-assembly's joint that Fusion reads back without occurrences and has no record (made by an older build)
+  is left out with a note: its parts are fixed anyway.
+- Re-importing `FS_fusion2` in Fusion: 6 of the parts written from Fusion's own history fall back (Chassis Plate,
+  Short Link, Nyloc, Regulator, Step Plate, Step Rung: `RemoveBody` body references, ambiguous sketch faces, a flange
+  not mapped by the exporter); the assembly is not affected. Not worked on this round.
+- Installer `fusion\out\NCX-Fusion-Setup-0.2.0.exe` rebuilt with these changes (still 0.2.0); not installed.
+
+## 16. Round 9: export completeness (Fusion -> SolidWorks)
+
+The measure is the SolidWorks import of Fusion's export of each sample and of the folding step (the main repository's
+`results/fusion_loop/loop.py`: sample -> Fusion import -> Fusion export -> validator -> SolidWorks 2026 import;
+option `--no-passthrough` tests the native export alone).
+
+**Provenance passthrough.** The import now records where everything came from (attributes, saved with the design):
+- `NCX/source` `{id, type, k}` on every timeline object a payload feature made; on the first of a feature's
+  objects `NCX/def` (the feature without its carried result) and `NCX/after` (`shapeSignature`: the part's solids'
+  volume, area, face and edge counts, which do not depend on where Fusion measures them);
+- `NCX/id` on every sketch entity (its payload id); `NCX/transferred` on an Insert Part copy of a sketch;
+- `NCX/document`, `NCX/documentId` and `NCX/state` (`documentState`: shape, parameter values, timeline objects,
+  occurrences, joints) on every document's component; `NCX/component` on every placed occurrence;
+- `NCX/material` (the source's material and the Fusion material chosen for it, or none) and, on the root, group
+  `NCX.appearance` (the source's exact colour and optical values by appearance name).
+
+The export uses them: a document whose state is as imported is written as the source's own document (an assembly
+with its components where they are now); otherwise each feature natively where Fusion has it, and as the source's
+definition where Fusion built an equivalent, several objects, or something the exporter cannot map, while the part's
+shape right after it is as imported. Documents, features and sketch entities keep the source's ids. Result: the
+folding step SolidWorks -> Fusion -> SolidWorks gives 365 features rebuilt, 12 approximate (the same notes as a direct
+SolidWorks import: polygon, sketch blocks, slot relations), nothing failed or fallen back, all 87 mates in the five
+original assemblies (round 8: 8 parts as plain geometry, 30 mates). One run in three showed a SolidWorks-side flake:
+a relation to the layout's sketch entity "entity missing" in the Top Hanger Cheek, which then fell back; the same file
+imported again was clean.
+
+**Native export added:** materials (the source's name kept; none when the source had none), appearances, custom
+properties; linear and circular patterns (direction sense from the instances; Fusion's origin axes as the origin
+plane they are normal to), mirror and mirror body, shell, draft, combine, split, holes (centres where the drilled
+cylinders' axes meet the start face, which works however Fusion positioned them; "All" is through all), thin
+extrudes (SolidWorks' one-direction wall is Fusion's Side2), constant fillets with several sets (`radii`) and variable
+fillets (the law from the intermediate radii; the result attached), sweeps (with a guide rail), lofts (sections,
+rails, centre line; the result attached), the sheet-metal rule (`sheetMetal`), base and contour flanges, 90-degree
+full-width edge flanges (with the profile sketch SolidWorks needs: a rectangle on the plane the flange generates, its
+base on the edge of the face the flange rises from, its height from the length by datum: outer virtual sharp minus
+the thickness, inner virtual sharp, bend tangent plus the radius; the rise read by probing the computed flange),
+unfold (bends by their inner cylindrical faces), relations and dimensions to projected model edges and vertices and
+to Insert Part copies (as the source document's entities).
+
+**Export fixes:** a sketch with more than one profile always has its selection written (`contours`/`regions`): Fusion's
+"every profile" is not SolidWorks' odd-even whole sketch (the Dome Head's revolve failed); no `merge` on cuts (P03's
+revolve cut failed); deleted bodies measured as native bodies (proxies were turned by the upright wrapper); vertex
+descriptors with their point as their sample; expressions in the neutral grammar under the source's names (`W_` goes
+out as `W`); documents in dependency order.
+
+**Import fixes:** paths of sketch curves through the occurrence's proxies in the upright wrapper (P13's sweep and P19's
+thin wall fell back); materials and appearances also on a fallback part's plain geometry.
+
+**Not yet native** (written as fixed geometry with their result, or passed through when imported): hems, sketched
+bends (fold), sheet-metal chamfers (break corners), refold, offset faces, Fusion's convert to sheet metal, edge
+flanges that are not 90 degrees or not full width, configurations.
+

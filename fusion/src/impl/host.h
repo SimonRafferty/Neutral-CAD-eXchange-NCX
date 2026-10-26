@@ -14,6 +14,19 @@ json fingerprintOf(const std::vector<Ptr<BRepBody>>& bodies);
 // A body's fingerprint for a feature result: as bodyFingerprint for a solid; a surface body gets volume 0, the
 // area-weighted centre of its faces and zero moments (Fusion gives a surface no mass properties).
 json resultFingerprint(const Ptr<BRepBody>& b);
+// Solids' shape independent of where they are measured (volume, area, face and edge counts, by volume), and whether
+// two such signatures agree: the provenance check of an imported part (replay.cpp, exporter.cpp)
+// A sketch point in its component's own space (mm). `worldGeometry` is in the root's space, which the upright wrapper
+// turns: P45's weldment path and other directions read from it came out turned.
+V3 modelPointMm(const Ptr<SketchPoint>& p);
+json shapeSignature(const std::vector<Ptr<BRepBody>>& solids);
+bool sameShape(const json& a, const json& b);
+// Document provenance (exporter.cpp, document passthrough): a component's state as an NCX import left it (its solids'
+// shape, its parameters' values, how many timeline objects, occurrences and joints it has), whether two agree, and
+// recording the source document with that state on the component (attributes NCX/document, NCX/state).
+json documentState(const Ptr<Component>& c);
+bool sameState(const json& a, const json& b);
+void recordDocument(const Ptr<Component>& c, const json& doc);
 // a face is not a plane, cylinder, cone, sphere or torus (FORMAT-SPEC 6, `freeform`)
 bool isFreeform(const Ptr<BRepBody>& b);
 

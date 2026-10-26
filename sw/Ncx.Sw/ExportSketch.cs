@@ -34,6 +34,7 @@ namespace Ncx.Sw
         {
             public readonly Dictionary<string, string> ById = new Dictionary<string, string>();   // native key -> local id
             public string Sketch;   // the sketch these ids belong to
+            public List<object> Entities;   // the sketch's entities as written (sketch mm), sketch blocks' included
 
             /// <summary>Segment ids are unique only within a segment type (a sketch's first line and first
             /// arc are both (0, 1)), so the type is part of the key.</summary>
@@ -417,6 +418,7 @@ namespace Ncx.Sw
             // drop the points owned by segments from the standalone list? No: keep every point, since
             // relations and dimensions refer to them; replay knows which ones segments create.
             def["entities"] = ents;
+            ids.Entities = ents;
 
             // relations
             var cons = new List<object>();

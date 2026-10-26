@@ -275,6 +275,21 @@ namespace Ncx.Sw
             return out_;
         }
 
+        /// <summary>The smallest circular edge of a hole feature's faces (mm, 0 if none).</summary>
+        static double HoleExitDiameter(IFeature f)
+        {
+            double best = 0;
+            foreach (IFace2 face in (object[])f.GetFaces() ?? new object[0])
+                foreach (IEdge e in (object[])face.GetEdges() ?? new object[0])
+                {
+                    var c = (ICurve)e.GetCurve();
+                    if (!c.IsCircle()) continue;
+                    double dia = Math.Round(U.Mm(((double[])c.CircleParams)[6]) * 2, 6);
+                    if (best <= 0 || dia < best) best = dia;
+                }
+            return best;
+        }
+
         void ExportHoleWizard(IFeature f, JObj nf)
         {
             var d = (IWizardHoleFeatureData2)f.GetDefinition();
@@ -313,7 +328,15 @@ namespace Ncx.Sw
                 afterExport.Add(() =>
                 {
                     var dias = HoleDiameters(f);
-                    if (dias.Count == 0) return;
+                    if (dias.Count == 0)
+                    {
+                        // no drilled cylinder: a countersink deeper than a thin sheet is only its cone. Any drill no wider
+                        // than the cone's exit gives the same hole: the smallest circular edge, so another system can
+                        // build it (the folding step's Top Hanger Cheek: holeDiameter 0 and nothing measured)
+                        double exit = HoleExitDiameter(f);
+                        if (exit > 0 && sizes.Num("holeDiameter") <= 0) sizes["holeDiameter"] = exit;
+                        return;
+                    }
                     sizes["measuredDiameters"] = dias.Cast<object>().ToList();
                     if (sizes.Num("holeDiameter") <= 0) sizes["holeDiameter"] = dias[0];
                     if ((kind == 0 || kind == 6) && sizes.Num("counterBoreDiameter") <= 0 && dias.Count > 1)
