@@ -168,6 +168,16 @@ namespace Ncx.Sw
         /// it: against the direction its own descriptor of the resolved entity has.</summary>
         bool Reversed(bool rev, JObj r)
         {
+            if (r?.Str("kind") == "originAxis")
+            {
+                // an origin axis points along its positive model axis; SolidWorks' axis through two planes may not
+                var ax = OriginAxis(r.Str("axis"));
+                var ra = ax?.GetSpecificFeature2() as IRefAxis;
+                var pts = ra == null ? null : (double[])ra.GetRefAxisParams();
+                if (pts == null || pts.Length < 6) return rev;
+                int k = r.Str("axis") == "x" ? 0 : r.Str("axis") == "y" ? 1 : 2;
+                return pts[3 + k] - pts[k] < 0 ? !rev : rev;
+            }
             var pr = r?.Obj("geom")?.Obj("params");
             string key = pr == null ? null : pr.Has("direction") ? "direction" : pr.Has("axis") ? "axis" : null;
             if (key == null) return rev;
@@ -184,35 +194,53 @@ namespace Ncx.Sw
             var d1 = def.Obj("dir1");
             var d2 = def.Obj("dir2");
             bool rev1 = PatternReverse(d1), rev2 = d2 != null && PatternReverse(d2);
-            doc.ClearSelection2(true);
-            string why = SelectRef(d1.Obj("ref"), false, 1);
-            if (why != null) return "direction 1: " + why;
-            if (d2 != null && (why = SelectRef(d2.Obj("ref"), true, 2)) != null) return "direction 2: " + why;
-            if ((why = SelectAll(def.Arr("seeds"), true, 4)) != null) return "seed: " + why;
-            if ((why = SelectPatternExtras(def)) != null) return why;
-            int n0 = FeatureCount();
-            var feat = FM.FeatureLinearPattern5((int)d1.Num("count"), U.M(d1.Num("spacing")),
-                                                d2 == null ? 1 : (int)d2.Num("count"), d2 == null ? 0 : U.M(d2.Num("spacing")),
-                                                rev1, rev2, "NULL", "NULL",
-                                                def.Bool("geometryPattern"), false, false, false, true, true, false, false,
-                                                false, false, 0, 0, def.Bool("seedOnly"), false);
-            return Created(n0, feat, nf, "linear pattern") ?? SkipInstances(nf, def);
+            Func<Tuple<bool, bool>, string> make = v =>
+            {
+                doc.ClearSelection2(true);
+                string why = SelectRef(d1.Obj("ref"), false, 1);
+                if (why != null) return "direction 1: " + why;
+                if (d2 != null && (why = SelectRef(d2.Obj("ref"), true, 2)) != null) return "direction 2: " + why;
+                if ((why = SelectAll(def.Arr("seeds"), true, 4)) != null) return "seed: " + why;
+                if ((why = SelectPatternExtras(def)) != null) return why;
+                int n0 = FeatureCount();
+                var feat = FM.FeatureLinearPattern5((int)d1.Num("count"), U.M(d1.Num("spacing")),
+                                                    d2 == null ? 1 : (int)d2.Num("count"), d2 == null ? 0 : U.M(d2.Num("spacing")),
+                                                    v.Item1, v.Item2, "NULL", "NULL",
+                                                    def.Bool("geometryPattern"), false, false, false, true, true, false, false,
+                                                    false, false, 0, 0, def.Bool("seedOnly"), false);
+                return Created(n0, feat, nf, "linear pattern");
+            };
+            var vs = new List<Tuple<bool, bool>> { Tuple.Create(rev1, rev2) };
+            // another system's file: a direction SolidWorks takes the other way (an axis made from two planes has no
+            // sense of its own) is found by the carried result
+            if (Foreign && nf.Obj("result") != null)
+            {
+                vs.Add(Tuple.Create(!rev1, rev2));
+                if (d2 != null) { vs.Add(Tuple.Create(rev1, !rev2)); vs.Add(Tuple.Create(!rev1, !rev2)); }
+            }
+            return TryVariants(nf, vs, make, v => "directions " + (v.Item1 ? "reversed" : "as given") + (d2 != null ? " / " + (v.Item2 ? "reversed" : "as given") : ""), "linear pattern")
+                   ?? SkipInstances(nf, def);
         }
 
         string ReplayCircularPattern(JObj nf, JObj def)
         {
             doc.ClearSelection2(true);
             bool rev = Reversed(def.Bool("reverse"), def.Obj("axis"));   // against the axis the reference records
-            doc.ClearSelection2(true);
-            string why = SelectRef(def.Obj("axis"), false, 1);
-            if (why != null) return "axis: " + why;
-            if ((why = SelectAll(def.Arr("seeds"), true, 4)) != null) return "seed: " + why;
-            if ((why = SelectPatternExtras(def)) != null) return why;
-            int n0 = FeatureCount();
-            var feat = FM.FeatureCircularPattern5((int)def.Num("count"), U.Rad(def.Num("angle")), rev, "NULL",
-                                                  def.Bool("geometryPattern"), def.Bool("equalSpacing"), false, false, false,
-                                                  false, 1, 0, "NULL", false);
-            return Created(n0, feat, nf, "circular pattern") ?? SkipInstances(nf, def);
+            Func<bool, string> make = r =>
+            {
+                doc.ClearSelection2(true);
+                string why = SelectRef(def.Obj("axis"), false, 1);
+                if (why != null) return "axis: " + why;
+                if ((why = SelectAll(def.Arr("seeds"), true, 4)) != null) return "seed: " + why;
+                if ((why = SelectPatternExtras(def)) != null) return why;
+                int n0 = FeatureCount();
+                var feat = FM.FeatureCircularPattern5((int)def.Num("count"), U.Rad(def.Num("angle")), r, "NULL",
+                                                      def.Bool("geometryPattern"), def.Bool("equalSpacing"), false, false, false,
+                                                      false, 1, 0, "NULL", false);
+                return Created(n0, feat, nf, "circular pattern");
+            };
+            var vs = Foreign && nf.Obj("result") != null ? new[] { rev, !rev } : new[] { rev };
+            return TryVariants(nf, vs, make, r => r ? "reversed" : "as given", "circular pattern") ?? SkipInstances(nf, def);
         }
 
         /// <summary>Bodies (mark 256) and faces (mark 128) a pattern copies besides features.</summary>

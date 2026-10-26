@@ -251,7 +251,7 @@ other systems may use them where they understand them, and otherwise ignore them
   deleteBody moveBody thicken sheetMetal baseFlange edgeFlange flatPattern weldment structuralMember
   sweepCut loftCut importedBody mirrorBody weldmentTrim endCap loftedBend extrudedSurface
   revolvedSurface rib hem breakCorner sketchedBend jog closedCorner miterFlange mirrorPart cosmeticThread gusset
-  dome planarSurface knit wrap unfold fold sketch3d`.
+  dome planarSurface knit wrap unfold fold sketch3d offsetFaces`.
   Their `def` is free-form in 0.1 and gets fixed per type as Stage 3 maps them (see "Feature
   definitions" below for the ones whose meaning is not obvious from their names).
 - Sheet metal: `sheetMetal` carries the part's sheet-metal defaults (thickness, bend radius,
@@ -326,7 +326,10 @@ that meets a field it does not understand reports the feature `approximate` rath
   angles [about x, y, z]}`. With more than one angle the order is not defined: the feature is
   `approximate` and checked by geometry.
 - `hem`: `edges`, `hemType` (open, closed, teardrop, rolled), `position`, `reverse`, `length`, `gap`,
-  `angle`, `radius`, `miterGap`.
+  `angle`, `radius`, `miterGap`. A `teardrop` is a loop of `radius` turned through `angle`; a system whose teardrop
+  also has a flat tail (Fusion: `length` and `gap`) writes those too and carries the result, which a system without
+  the tail uses. Hems on edges that meet at a corner: some systems trim them there by themselves, others need them
+  in one feature with a `miterGap`; check by the result.
 - `breakCorner`: `entities` (corner edges or vertices), `breakType` (chamfer, fillet), `distance`.
 - `sketchedBend`: `line` (the bend-line sketch), `fixedFace` (a face descriptor), `angle`,
   `reverse`, `position`, `useDefaultRadius`, `radius`, and `bendGeometry` (below). `position` is where the bend
@@ -359,8 +362,12 @@ that meets a field it does not understand reports the feature `approximate` rath
     ends and the flange's flat part begins, on the outer face). The profile sketch shows the flange at this length.
   - `position`: where the flange sits relative to the edge. `materialInside`: the flange's outer face is flush
     with the edge (the part's outer size is kept); `materialOutside`: the flange's inner face is flush with the
-    edge (the outer size grows by the thickness); `bendOutside`: the bend starts at the edge. Check the result
-    against `bendGeometry`.
+    edge (the outer size grows by the thickness); `bendOutside`: the bend starts at the edge; `bendSharp`: the
+    flange's outer virtual sharp lies on the edge of the sheet's outer face (at 90 degrees the same as
+    `materialInside`; at other angles `materialInside` runs the flange's outer face, extended, through the edge
+    itself, t·tan(angle − 90°) further out); `bendTangent`: the bend's outer face is tangent to the sheet's edge
+    face (SolidWorks "tangent to bend", Fusion "tangent to side"; not yet confirmed between the two). Check the
+    result against `bendGeometry`.
 - `closedCorner`: `faces` (the flange end faces to extend), `cornerType` (butt, overlap, underlap),
   `gap`, `overlapRatio`, `openBendRegion`. With t the thickness, "the listed flange" the one whose end face is in
   `faces` and "the other flange" the one it meets (measured on P34, gap 0.2, t 2):
@@ -431,7 +438,11 @@ that meets a field it does not understand reports the feature `approximate` rath
 
   Weldment members and sweeps refer to its entities as `sketchEntity`, as for 2D sketches.
 - `dome`: `faces`, `height`, `reverse`, `elliptical`.
-- `split`: `tools` (planes, surfaces or sketches) and `consume`. Every body the tools cut out is kept.
+- `split`: `tools` (planes, surfaces or sketches), `consume`, and optionally `bodies` (body references: the split
+  is limited to these; the other bodies the tools cross stay whole; absent: every body the tools cut). Every body the
+  tools cut out is kept.
+- `offsetFaces`: `faces` moved along their normals by `distance` (mm; positive outward). SolidWorks builds it as Move
+  Face (offset); an exporter attaches the feature's `result`, which decides the sense where systems differ.
 - `planarSurface`: `profile`, a closed sketch.
 - `knit`: `surfaces` (bodies or faces), `formSolid`, `mergeEntities`, `gapControl`, `tolerance`, `maxGap`.
 - `wrap`: `sketch`, `face`, `wrapType` (`emboss`, `deboss`, `scribe`), `thickness`, `reverse`.
@@ -439,7 +450,10 @@ that meets a field it does not understand reports the feature `approximate` rath
   descriptor of the bend in the state the feature saw: its inner cylindrical face when bent (before an unfold), or
   the flat strip's larger face when flat (before a fold). `feature` (the feature the bend belongs to), `sub` (the
   bend's index among that feature's sub-features) and `name` are the source's own; a system without bend
-  sub-features finds the bend by `face`.
+  sub-features finds the bend by `face`. A `fold` that reverses an earlier `unfold` may name it (`unfold`, a
+  feature reference); its bends are then that unfold's, and where its `face`s do not resolve (a system that merges
+  a flat strip into the face beside it writes the unfold's bend descriptors again), take the bends that unfold
+  took.
 - `mirrorPart`: the document is the mirror image of another part: `source` (a document id), `plane` (one
   of the source's origin planes, `{kind: "originPlane", plane}`), `transfer` (as for `insertPart`). It is
   the first feature of its document; an importer creates the document by mirroring the source.
@@ -672,7 +686,13 @@ handle it creates for each id.
 | `right` | YZ | +X |
 
 An importer maps each name to its own plane with that geometry, never to its own plane of the same name (Onshape's
-*Front* is XZ). A sketch's `frame` is authoritative for the sketch's axes; the plane only says which plane it lies on.
+*Front* is XZ).
+
+**Origin axes** are `{kind: "originAxis", by: "id", axis: "x"|"y"|"z"}`, the model's own axes (a pattern's direction
+or a circular pattern's axis made on them). A system without origin axis entities builds one where two origin
+planes meet (SolidWorks: a reference axis from the two planes). An origin axis points along its positive model axis:
+a `reverse` against it is a direction towards negative x, y or z (an axis made from two planes may point either way;
+compare it with the model axis). A sketch's `frame` is authoritative for the sketch's axes; the plane only says which plane it lies on.
 
 **Rule 2, by geometry:** B-rep topology (faces, edges, vertices picked by fillets, chamfers,
 shells, drafts, face-based sketches and mates) is referenced by a **descriptor**. It is recorded

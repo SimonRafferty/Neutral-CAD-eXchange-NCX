@@ -631,6 +631,18 @@ struct DocWriter
                 if (oc->count() > 0) p = oc->item(0);
         if (!p) return nullptr;
         Ptr<Sketch> sk = p->parentSketch();
+        // a sketch of an Insert Part copy (attribute NCX/transferred): the source document's sketch, transferred
+        // (FORMAT-SPEC 4 insertPart), the whole sketch as the source wrote it
+        {
+            Ptr<Sketch> nsk = sk && sk->nativeObject() ? sk->nativeObject() : sk;
+            if (Ptr<Attribute> tr = nsk ? nsk->attributes()->itemByName("NCX", "transferred") : nullptr)
+            {
+                json r = json::parse(tr->value(), nullptr, false);
+                if (r.is_object() && !r.value("document", "").empty() && !r.value("feature", "").empty())
+                    return json{{"kind", "transferred"}, {"by", "id"}, {"document", r.value("document", "")}, {"feature", r.value("feature", "")},
+                                {"name", nsk->name()}};
+            }
+        }
         std::string sid = idOf(sk);
         if (sid.empty()) return nullptr;
         // Selected regions when the feature uses fewer than the odd-even set (FORMAT-SPEC 4). A profile whose loops
@@ -779,6 +791,28 @@ struct DocWriter
                 regionsOut.push_back(json{{"point", json::array({px, py})}, {"area", ap ? cm2mm(cm2mm(ap->area())) : 0.0},
                                           {"clearance", clearance}, {"boundary", boundary}});
             }
+            // Profiles that share a whole loop (a ring and the area inside it) make one area without that loop: a loop
+            // listed an even number of times is interior to the union and goes, else it would be read as a hole (the
+            // spec's nesting rule; P46's cope outlines were rebuilt hollow)
+            std::map<std::vector<std::string>, int> seen;
+            for (auto& c : contours)
+            {
+                std::vector<std::string> k;
+                for (auto& x : c) k.push_back(x.get<std::string>());
+                std::sort(k.begin(), k.end());
+                seen[k]++;
+            }
+            json kept = json::array();
+            std::set<std::vector<std::string>> done;
+            for (auto& c : contours)
+            {
+                std::vector<std::string> k;
+                for (auto& x : c) k.push_back(x.get<std::string>());
+                std::sort(k.begin(), k.end());
+                if (seen[k] % 2 == 1 && !done.count(k)) kept.push_back(c);
+                done.insert(k);
+            }
+            contours = kept;
         }
         return json{{"kind", "feature"}, {"by", "id"}, {"id", sid}};
     }
@@ -851,8 +885,7 @@ struct DocWriter
     }
 
     // A direction or axis reference (a pattern's direction, a circular pattern's axis) and its direction in the part's
-    // frame. Fusion's origin axes have no counterpart in the spec's references: the origin plane they are normal to
-    // stands for them (SolidWorks takes a plane as a pattern direction: its normal).
+    // frame. Fusion's origin axes are `originAxis` (FORMAT-SPEC 5).
     json directionRef(Ptr<Base> ent, V3& dir, std::string& why)
     {
         if (Ptr<BRepEdge> ed = ent)
@@ -885,9 +918,9 @@ struct DocWriter
         if (Ptr<ConstructionAxis> ax = ent)
         {
             if (ax->nativeObject()) ax = ax->nativeObject();
-            const char* plane = ax == comp->xConstructionAxis() ? "right" : ax == comp->yConstructionAxis() ? "top" : ax == comp->zConstructionAxis() ? "front" : nullptr;
+            const char* letter = ax == comp->xConstructionAxis() ? "x" : ax == comp->yConstructionAxis() ? "y" : ax == comp->zConstructionAxis() ? "z" : nullptr;
             if (Ptr<InfiniteLine3D> g = ax->geometry()) dir = unit(vecOf(g->direction()));
-            if (plane) return json{{"kind", "originPlane"}, {"by", "id"}, {"plane", plane}};
+            if (letter) return json{{"kind", "originAxis"}, {"by", "id"}, {"axis", letter}};
             // an axis the import made on a cylindrical face (a pattern axis): the face
             if (Ptr<ConstructionAxisCircularFaceDefinition> cd = ax->definition())
                 if (Ptr<BRepFace> fc = cd->circularFace()) return directionRef(fc, dir, why);
@@ -928,6 +961,7 @@ struct DocWriter
     bool sheetMetalWritten = false;      // the part's `sheetMetal` (its rule) is written before its first flange
     json preFeatures = json::array();    // features featureDef writes before the one it returns (a rule, flange profiles)
     std::vector<V3> flangeRise;          // the edge flange being written: per edge, the way its web rises (walk)
+    std::vector<std::vector<V3>> flangeWeb;   // and the vertices of its web faces (its width and height, measured)
 
     static V3 outwardNormalOf(const Ptr<BRepFace>& f)
     {
@@ -948,18 +982,20 @@ struct DocWriter
         }
         return best ? outwardNormalOf(best) : V3{0, 0, 0};
     }
-    // the outward normal of the planar face at the edge that lies across this direction (the face a flange rises
-    // from, or the one opposite), or zero
+    // the outward normal of the planar face at the edge that lies most across this direction (the face a flange rises
+    // from, or the one opposite; at 120 degrees the edge's side face is as far off as 0.5), or zero
     static V3 risingFaceNormal(const Ptr<BRepEdge>& e, const V3& y)
     {
+        V3 best{0, 0, 0};
+        double bd = 0.5;
         for (size_t i = 0; i < e->faces()->count(); i++)
         {
             Ptr<BRepFace> f = e->faces()->item(i);
             if (!Ptr<Plane>(f->geometry())) continue;
             V3 n = outwardNormalOf(f);
-            if (std::fabs(dot(n, y)) > 0.9) return n;
+            if (std::fabs(dot(n, y)) > bd) bd = std::fabs(dot(n, y)), best = n;
         }
-        return {0, 0, 0};
+        return best;
     }
     // a straight edge of the part parallel to this one with its middle at this point
     Ptr<BRepEdge> parallelEdge(const Ptr<BRepEdge>& e, const V3& mid)
@@ -1009,6 +1045,54 @@ struct DocWriter
                 if (b->pointContainment(ptCm(p)) == PointInsidePointContainment) return true;
             return false;
         };
+        // the web: the flange's flat faces across the edge (normal square to the edge, not parallel to the sheet); its
+        // direction away from the edge, at any flange angle, and its vertices
+        Ptr<BRepFaces> ff = fl->faces();
+        flangeWeb.assign(es.size(), {});
+        std::vector<V3> webDir(es.size(), V3{0, 0, 0});
+        std::vector<double> webArea(es.size(), 0.0);   // the direction from the largest face (not the flange's thin top)
+        for (size_t i = 0; ff && i < ff->count(); i++)
+        {
+            Ptr<BRepFace> f = ff->item(i);
+            if (f->nativeObject()) f = f->nativeObject();
+            if (!Ptr<Plane>(f->geometry())) continue;
+            V3 nn = outwardNormalOf(f), pc = ptMm(f->pointOnFace());
+            size_t best = es.size();
+            double bd = 1e300;
+            for (size_t k = 0; k < es.size(); k++)
+            {
+                if (std::fabs(dot(nn, es[k].dir)) > 1e-6 || std::fabs(std::fabs(dot(nn, es[k].n)) - 1) < 1e-6) continue;
+                V3 q = sub(pc, es[k].mid);
+                double d = norm(sub(q, mul(es[k].dir, dot(q, es[k].dir))));
+                if (d < bd) bd = d, best = k;
+            }
+            if (best == es.size()) continue;
+            V3 y = unit(cross(es[best].dir, nn));
+            if (dot(sub(pc, es[best].mid), y) < 0) y = mul(y, -1);
+            // a web face rises clear of the sheet (the sheet's own edge face beside the flange does not)
+            double rise = 0;
+            for (size_t v = 0; v < f->vertices()->count(); v++)
+                rise = std::max(rise, dot(sub(ptMm(f->vertices()->item(v)->geometry()), es[best].mid), y));
+            if (rise < th + 1e-6) continue;
+            if (f->area() > webArea[best])
+            {
+                webArea[best] = f->area();
+                webDir[best] = y;
+            }
+            for (size_t v = 0; v < f->vertices()->count(); v++) flangeWeb[best].push_back(ptMm(f->vertices()->item(v)->geometry()));
+        }
+        for (size_t k = 0; k < es.size(); k++)
+            if (norm(webDir[k]) > 0.5 && !flangeWeb[k].empty())
+            {
+                flangeRise.push_back(webDir[k]);
+                if (k + 1 == es.size())
+                {
+                    tl->moveToEnd();
+                    return;
+                }
+            }
+        flangeRise.clear();
+        flangeWeb.clear();
         for (auto& x : es)
         {
             V3 w = unit(cross(x.dir, x.n)), rise{0, 0, 0};
@@ -1446,13 +1530,17 @@ struct DocWriter
                 return nullptr;
             }
             double t = cm2mm(rule->thickness()->value()), r = cm2mm(rule->bendRadius()->value()), k = rule->kFactor();
+            // the rule's bend relief as the part's default: its shape, and its width as a ratio of the thickness
+            BendReliefShapes rs = rule->reliefShape();
+            std::string reliefType = rs == TearBendReliefShape ? "tear" : rs == RoundBendReliefShape ? "obround" : "rectangular";
+            double reliefRatio = rule->reliefWidth() && t > 0 ? cm2mm(rule->reliefWidth()->value()) / t : 0.5;
             auto ruleFirst = [&]() {
                 if (sheetMetalWritten) return;
                 sheetMetalWritten = true;
                 preFeatures.push_back(json{{"id", fid()}, {"name", "Sheet-Metal"}, {"type", "sheetMetal"}, {"status", "mapped"},
                                            {"native", {{"app", "Fusion"}, {"type", "adsk::fusion::SheetMetalRule"}}},
                                            {"def", {{"thickness", t}, {"bendRadius", r}, {"bendAllowanceType", "kFactor"}, {"kFactor", k},
-                                                    {"bendAllowance", 0}, {"autoRelief", true}, {"reliefType", "rectangular"}, {"reliefRatio", 0.5}}}});
+                                                    {"bendAllowance", 0}, {"autoRelief", true}, {"reliefType", reliefType}, {"reliefRatio", reliefRatio}}}});
             };
             if (Ptr<BaseFlangeFeatureDefinition> bd = f->definition())
             {
@@ -1532,10 +1620,11 @@ struct DocWriter
                 // flange's length from that face (90 degrees: outer virtual sharp t below it, inner virtual sharp at
                 // it, bend tangent r above it). The rise direction was read with the flange computed (walk).
                 type = "edgeFlange";
-                double ang = ed->angle() ? rad2deg(ed->angle()->value()) : 90;
-                if (std::fabs(std::fabs(ang) - 90) > 1e-6)
+                double ang = ed->angle() ? std::fabs(rad2deg(ed->angle()->value())) : 90;
+                bool measured = flangeWeb.size() == flangeRise.size() && !flangeWeb.empty();
+                if (std::fabs(ang - 90) > 1e-6 && !measured)
                 {
-                    why = "only 90-degree edge flanges are carried yet";
+                    why = "an edge flange not at 90 degrees whose web could not be measured";
                     return nullptr;
                 }
                 if (ed->extentType() != DistanceFlangeExtentType)
@@ -1548,8 +1637,10 @@ struct DocWriter
                 double H = dt == OuterFacesFlangeHeightDatumType ? len - t : dt == InnerFacesFlangeHeightDatumType ? len : len + r;
                 std::string datum = dt == OuterFacesFlangeHeightDatumType ? "outerVirtualSharp" : dt == InnerFacesFlangeHeightDatumType ? "innerVirtualSharp" : "bendTangent";
                 BendPositionTypes bp = ed->bendPositionType();
+                // Fusion's inside puts the flange's outer virtual sharp on the edge of the sheet's outer face (spec
+                // `bendSharp`); at 90 degrees that is `materialInside`, the flange's outer face through the edge
                 std::string position = bp == OutsideBendPositionType ? "materialOutside" : bp == StartEdgeBendPositionType ? "bendOutside"
-                                     : bp == TangentToSideBendPositionType ? "bendTangent" : "materialInside";
+                                     : bp == TangentToSideBendPositionType ? "bendTangent" : std::fabs(ang - 90) < 1e-6 ? "materialInside" : "bendSharp";
                 double br = r;
                 if (Ptr<BendRadiusOverride> bo = f->bendRadiusOverride())
                     if (bo->isOverridden() && bo->bendRadius()) br = cm2mm(bo->bendRadius()->value());
@@ -1563,9 +1654,9 @@ struct DocWriter
                 for (size_t i = 0; i < eds->count(); i++)
                 {
                     Ptr<FlangeEdgeDefinition> fe = eds->item(i);
-                    if (fe->widthType() != FullEdgeWidthFlangeWidthType)
+                    if (fe->widthType() != FullEdgeWidthFlangeWidthType && !measured)
                     {
-                        why = "only full-edge-width edge flanges are carried yet";
+                        why = "an edge flange of part width whose web could not be measured";
                         return nullptr;
                     }
                     Ptr<BRepEdge> edge = fe->edge();
@@ -1580,9 +1671,9 @@ struct DocWriter
                     V3 y = flangeRise[i];
                     // the edge of the face the flange rises from: this one, or its twin a thickness along the rise
                     V3 n = risingFaceNormal(edge, y);
-                    if (dot(n, y) < 0.5)
+                    if (dot(n, y) < 0)
                     {
-                        Ptr<BRepEdge> twin = parallelEdge(edge, add(mul(add(a, b), 0.5), mul(y, t)));
+                        Ptr<BRepEdge> twin = parallelEdge(edge, add(mul(add(a, b), 0.5), mul(n, -t)));
                         if (!twin)
                         {
                             why = "the edge on the face the flange rises from was not found";
@@ -1594,19 +1685,36 @@ struct DocWriter
                     }
                     double L = dist(a, b);
                     V3 x = unit(sub(b, a)), z = unit(cross(x, y));
+                    // its span along the edge and its height, measured on the computed flange's web: a rectangle of
+                    // those is the profile at any angle, width, datum and bend position (the formula above at 90
+                    // degrees is the fallback)
+                    double s0 = 0, s1 = L, Hi = H;
+                    if (measured && !flangeWeb[i].empty())
+                    {
+                        s0 = 1e300, s1 = -1e300, Hi = -1e300;
+                        for (auto& v : flangeWeb[i])
+                        {
+                            V3 q = sub(v, a);
+                            s0 = std::min(s0, dot(q, x));
+                            s1 = std::max(s1, dot(q, x));
+                            Hi = std::max(Hi, dot(q, y));
+                        }
+                        if (std::fabs(s0) < 1e-6) s0 = 0;
+                        if (std::fabs(s1 - L) < 1e-6) s1 = L;
+                    }
                     std::string skId = fid();
                     usedIds.insert(skId);
                     std::string skName = f->name() + (eds->count() > 1 ? " profile " + std::to_string(i + 1) : " profile");
-                    json ents = json::array({json{{"id", "p1"}, {"type", "point"}, {"p", {0, 0}}}, json{{"id", "p2"}, {"type", "point"}, {"p", {L, 0}}},
-                                             json{{"id", "p3"}, {"type", "point"}, {"p", {L, H}}}, json{{"id", "p4"}, {"type", "point"}, {"p", {0, H}}},
-                                             json{{"id", "s1"}, {"type", "line"}, {"start", {0, 0}}, {"end", {L, 0}}, {"startPoint", "p1"}, {"endPoint", "p2"}},
-                                             json{{"id", "s2"}, {"type", "line"}, {"start", {L, 0}}, {"end", {L, H}}, {"startPoint", "p2"}, {"endPoint", "p3"}},
-                                             json{{"id", "s3"}, {"type", "line"}, {"start", {L, H}}, {"end", {0, H}}, {"startPoint", "p3"}, {"endPoint", "p4"}},
-                                             json{{"id", "s4"}, {"type", "line"}, {"start", {0, H}}, {"end", {0, 0}}, {"startPoint", "p4"}, {"endPoint", "p1"}}});
+                    json ents = json::array({json{{"id", "p1"}, {"type", "point"}, {"p", {s0, 0}}}, json{{"id", "p2"}, {"type", "point"}, {"p", {s1, 0}}},
+                                             json{{"id", "p3"}, {"type", "point"}, {"p", {s1, Hi}}}, json{{"id", "p4"}, {"type", "point"}, {"p", {s0, Hi}}},
+                                             json{{"id", "s1"}, {"type", "line"}, {"start", {s0, 0}}, {"end", {s1, 0}}, {"startPoint", "p1"}, {"endPoint", "p2"}},
+                                             json{{"id", "s2"}, {"type", "line"}, {"start", {s1, 0}}, {"end", {s1, Hi}}, {"startPoint", "p2"}, {"endPoint", "p3"}},
+                                             json{{"id", "s3"}, {"type", "line"}, {"start", {s1, Hi}}, {"end", {s0, Hi}}, {"startPoint", "p3"}, {"endPoint", "p4"}},
+                                             json{{"id", "s4"}, {"type", "line"}, {"start", {s0, Hi}}, {"end", {s0, 0}}, {"startPoint", "p4"}, {"endPoint", "p1"}}});
                     json cons = json::array({json{{"type", "horizontal"}, {"entities", {"s1"}}}, json{{"type", "vertical"}, {"entities", {"s2"}}},
                                              json{{"type", "horizontal"}, {"entities", {"s3"}}}, json{{"type", "vertical"}, {"entities", {"s4"}}}});
                     json dims = json::array({json{{"id", "d1"}, {"name", "D1"}, {"fullName", "D1@" + skName}, {"kind", "distance"}, {"entities", {"p1", "p4"}},
-                                                  {"value", H}, {"driving", true}, {"textPosition", {L / 2, H / 2}}}});
+                                                  {"value", Hi}, {"driving", true}, {"textPosition", {(s0 + s1) / 2, Hi / 2}}}});
                     preFeatures.push_back(json{{"id", skId}, {"name", skName}, {"type", "sketch"}, {"status", "mapped"},
                                                {"native", {{"app", "Fusion"}, {"type", "flange profile (written for the flange)"}}},
                                                {"def", {{"plane", {{"kind", "generated"}, {"by", f->name()}}},
@@ -1616,8 +1724,8 @@ struct DocWriter
                     profilesJ.push_back(json{{"kind", "feature"}, {"by", "id"}, {"id", skId}});
                 }
                 ruleFirst();
-                json d{{"edge", edgesJ[0]}, {"profile", profilesJ[0]}, {"angle", 90}, {"useDefaultRadius", std::fabs(br - r) < 1e-9}, {"bendRadius", br},
-                       {"position", position}, {"useDefaultRelief", true}, {"reliefType", "rectangular"}, {"useReliefRatio", true}, {"reliefRatio", 0.5},
+                json d{{"edge", edgesJ[0]}, {"profile", profilesJ[0]}, {"angle", ang}, {"useDefaultRadius", std::fabs(br - r) < 1e-9}, {"bendRadius", br},
+                       {"position", position}, {"useDefaultRelief", true}, {"reliefType", reliefType}, {"useReliefRatio", true}, {"reliefRatio", reliefRatio},
                        {"reliefWidth", 1}, {"reliefDepth", 1}, {"length", {{"type", "blind"}, {"distance", len}, {"datum", datum}, {"reverse", false}}}};
                 if (edgesJ.size() > 1)
                 {
@@ -1661,6 +1769,276 @@ struct DocWriter
                 bj.push_back(json{{"name", "Bend" + std::to_string(++k)}, {"face", descriptor(nb)}});
             }
             return json{{"fixedFace", descriptor(fixed)}, {"bends", bj}};
+        }
+        // ---- more sheet metal (FORMAT-SPEC 4 hem, sketchedBend, breakCorner, fold, offsetFaces, convertToSheetMetal).
+        // Where Fusion's settings do not say which of the source system's own settings give the same shape (a hem's or
+        // bend's position, its sense), the feature carries its result (walk) and an importer picks the setting whose
+        // geometry is that result, as this add-in's importer does the other way.
+        if (Ptr<HemFeature> f = e)
+        {
+            type = "hem";
+            Ptr<HemFeatureDefinition> hd = f->definition();
+            Ptr<BRepEdge> edge = hd ? hd->hemEdge() : nullptr;
+            if (edge && edge->nativeObject()) edge = edge->nativeObject();
+            if (!edge)
+            {
+                why = "its edge is gone";
+                return nullptr;
+            }
+            auto mm = [](const Ptr<ModelParameter>& p) { return p ? cm2mm(p->value()) : 0.0; };
+            BendPositionTypes bp = hd->bendPositionType();
+            json d{{"edges", json::array({descriptor(edge)})}, {"reverse", hd->isFlipped()}, {"miterGap", 0}, {"angle", 180},
+                   {"position", bp == StartEdgeBendPositionType || bp == OutsideBendPositionType ? "outside" : "inside"}};
+            if (Ptr<OpenHemFeatureDefinition> h = hd)
+            {
+                double g = mm(h->gap());
+                // SolidWorks' closed hem is Fusion's open hem with SolidWorks' small gap (this add-in's import, P28)
+                d["hemType"] = g <= 0.1 + 1e-9 ? "closed" : "open";
+                d["length"] = mm(h->length());
+                d["gap"] = g;
+            }
+            else if (Ptr<FlatHemFeatureDefinition> h = hd)
+            {
+                d["hemType"] = "closed";
+                d["length"] = mm(h->length());
+                d["gap"] = 0;
+            }
+            else if (Ptr<RolledHemFeatureDefinition> h = hd)
+            {
+                d["hemType"] = "rolled";
+                d["radius"] = mm(h->radius());
+                d["angle"] = h->angle() ? rad2deg(h->angle()->value()) : 180;
+            }
+            else if (Ptr<TeardropHemFeatureDefinition> h = hd)
+            {
+                d["hemType"] = "teardrop";
+                d["radius"] = mm(h->radius());
+                d["length"] = mm(h->length());
+                d["gap"] = mm(h->gap());
+            }
+            else
+            {
+                why = "a rope or double hem has no counterpart in the spec yet";
+                return nullptr;
+            }
+            return d;
+        }
+        if (Ptr<FoldFeature> f = e)
+        {
+            // a fold on one sketch line: a sketched bend about that sketch (the sketch must hold only that line: a
+            // sketched bend bends along every line of its sketch)
+            type = "sketchedBend";
+            Ptr<FoldBendLineDefinitions> bls = f->bendLines();
+            if (!bls || bls->count() != 1)
+            {
+                why = "a fold on several lines is not carried yet";
+                return nullptr;
+            }
+            Ptr<FoldBendLineDefinition> bl = bls->item(0);
+            Ptr<SketchLine> line = bl->bendLine();
+            if (line && line->nativeObject()) line = line->nativeObject();
+            std::string sid = line ? idOf(line->parentSketch()) : "";
+            if (sid.empty())
+            {
+                why = "its bend line is not in a written sketch";
+                return nullptr;
+            }
+            Ptr<BRepFace> fixed = f->stationaryFace();
+            if (fixed && fixed->nativeObject()) fixed = fixed->nativeObject();
+            if (!fixed)
+            {
+                why = "its stationary face is gone";
+                return nullptr;
+            }
+            Ptr<SheetMetalRule> rule = comp->activeSheetMetalRule();
+            if (!rule)
+            {
+                why = "the part has no sheet-metal rule";
+                return nullptr;
+            }
+            double r = cm2mm(rule->bendRadius()->value()), br = r, t = cm2mm(rule->thickness()->value()), k = rule->kFactor();
+            if (Ptr<BendRadiusOverride> bo = f->bendRadiusOverride())
+                if (bo->isOverridden() && bo->bendRadius()) br = cm2mm(bo->bendRadius()->value());
+            double ang = bl->bendAngle() ? std::fabs(rad2deg(bl->bendAngle()->value())) : 90;
+            // the bend goes in a sketch of its own holding only its line (a sketched bend bends along every line of
+            // its sketch), on the sheet's face lying in the line's plane (SolidWorks makes a sketched bend only from a
+            // sketch on a face of the sheet), else by its frame. The line is written where the spec's position
+            // `materialInside` puts it, the bend's outer virtual sharp: Fusion's line marks the start, centre or end
+            // of the bend zone in the flat (its developed length, by the rule's K-factor), and the outer virtual sharp
+            // lies (radius + thickness) tan(angle / 2) past the start, towards the side that moves.
+            auto& ids = sketchIds[sid];
+            auto lit = ids.find(line->entityToken());
+            json src;
+            for (auto& x : features)
+                if (x.value("id", "") == sid) src = x;
+            if (lit == ids.end() || src.is_null())
+            {
+                why = "its bend line is not in the written sketch";
+                return nullptr;
+            }
+            Ptr<Sketch> lsk = line->parentSketch();
+            V3 so = ptMm(lsk->origin()), sx = unit(vecOf(lsk->xDirection())), sy = unit(vecOf(lsk->yDirection()));
+            Ptr<BRepFace> onFace = faceInPlane(so, unit(cross(sx, sy)));
+            std::string lineId = lit->second, p1, p2;
+            json keep = json::array();
+            V3 a2{0, 0, 0}, b2{0, 0, 0};
+            for (auto& en : src["def"]["entities"])
+                if (en.value("id", "") == lineId)
+                {
+                    p1 = en.value("startPoint", "");
+                    p2 = en.value("endPoint", "");
+                    a2 = {en["start"][0].get<double>(), en["start"][1].get<double>(), 0};
+                    b2 = {en["end"][0].get<double>(), en["end"][1].get<double>(), 0};
+                }
+            // in the sketch's 2D frame: the unit normal to the line pointing away from the stationary face
+            V3 dl = unit(sub(b2, a2)), n2{-dl[1], dl[0], 0};
+            V3 c3 = sub(ptMm(fixed->pointOnFace()), so), c2{dot(c3, sx), dot(c3, sy), 0};
+            if (dot(sub(c2, a2), n2) > 0) n2 = mul(n2, -1);
+            FoldBendLinePositionTypes lp = bl->linePosition();
+            double zone = deg2rad(ang) * (br + k * t);   // the bend zone's developed length
+            double start = lp == StartFoldBendLinePositionType ? 0 : lp == CenterFoldBendLinePositionType ? -zone / 2 : -zone;
+            double shift = start + (br + t) * std::tan(deg2rad(ang) / 2);
+            V3 d2 = mul(n2, shift);
+            auto moved = [&](const json& p) { return json::array({p[0].get<double>() + d2[0], p[1].get<double>() + d2[1]}); };
+            for (auto& en : src["def"]["entities"])
+            {
+                std::string id = en.value("id", "");
+                if (id == lineId)
+                {
+                    json m = en;
+                    m["start"] = moved(en["start"]);
+                    m["end"] = moved(en["end"]);
+                    keep.push_back(m);
+                }
+                else if (en.value("type", "") == "point" && (id == p1 || id == p2))
+                {
+                    json m = en;
+                    m["p"] = moved(en["p"]);
+                    keep.push_back(m);
+                }
+            }
+            std::string bid = fid();
+            usedIds.insert(bid);
+            json def = src["def"];
+            def["entities"] = keep;
+            def["constraints"] = json::array();
+            def["dimensions"] = json::array();
+            def["hidden"] = true;
+            def["constrained"] = "under";
+            def["plane"] = onFace ? descriptor(onFace) : json{{"kind", "frame"}};
+            preFeatures.push_back(json{{"id", bid}, {"name", f->name() + " line"}, {"type", "sketch"}, {"status", "mapped"},
+                                       {"native", {{"app", "Fusion"}, {"type", "fold line (written for the bend)"}}}, {"def", def}});
+            return json{{"line", {{"kind", "feature"}, {"by", "id"}, {"id", bid}}}, {"fixedFace", descriptor(fixed)},
+                        {"angle", ang}, {"reverse", false}, {"position", "materialInside"},
+                        {"useDefaultRadius", std::fabs(br - r) < 1e-9}, {"radius", br}};
+        }
+        if (Ptr<SheetMetalChamferFeature> f = e)
+        {
+            type = "breakCorner";
+            Ptr<SheetMetalChamferEdgeSets> sets = f->edgeSets();
+            if (!sets || sets->count() != 1)
+            {
+                why = "a sheet-metal chamfer with several sets is not carried yet";
+                return nullptr;
+            }
+            json ents = json::array();
+            for (auto& ed : sets->item(0)->edges()) ents.push_back(descriptor(ed->nativeObject() ? ed->nativeObject() : ed));
+            return json{{"entities", ents}, {"breakType", "chamfer"}, {"distance", cm2mm(sets->item(0)->distance()->value())}};
+        }
+        if (Ptr<SheetMetalFilletFeature> f = e)
+        {
+            type = "breakCorner";
+            Ptr<SheetMetalFilletEdgeSets> sets = f->edgeSets();
+            if (!sets || sets->count() != 1)
+            {
+                why = "a sheet-metal fillet with several sets is not carried yet";
+                return nullptr;
+            }
+            json ents = json::array();
+            for (auto& ed : sets->item(0)->edges()) ents.push_back(descriptor(ed->nativeObject() ? ed->nativeObject() : ed));
+            return json{{"entities", ents}, {"breakType", "fillet"}, {"distance", cm2mm(sets->item(0)->radius()->value())}};
+        }
+        if (Ptr<RefoldFeature> f = e)
+        {
+            // a refold: the fixed face and each bend by the face of its flat strip that faces the way the fixed face
+            // does (FORMAT-SPEC 4 fold), in the flat state the feature sees
+            type = "fold";
+            Ptr<UnfoldFeature> uf = f->unfoldFeature();
+            if (uf && uf->nativeObject()) uf = uf->nativeObject();
+            Ptr<BRepFace> fixed = uf ? uf->stationaryFace() : nullptr;
+            if (fixed && fixed->nativeObject()) fixed = fixed->nativeObject();
+            if (!fixed)
+            {
+                why = "its unfold's stationary face is gone";
+                return nullptr;
+            }
+            V3 fn = outwardNormalOf(fixed);
+            json bj = json::array();
+            Ptr<BRepFaces> made = uf->faces();
+            int k = 0;
+            for (size_t i = 0; made && i < made->count(); i++)
+            {
+                Ptr<BRepFace> s = made->item(i);
+                if (s->nativeObject()) s = s->nativeObject();
+                if (!Ptr<Plane>(s->geometry()) || dot(outwardNormalOf(s), fn) < 1 - 1e-9 || s == fixed) continue;
+                bj.push_back(json{{"name", "Bend" + std::to_string(++k)}, {"face", descriptor(s)}});
+            }
+            json d{{"fixedFace", descriptor(fixed)}};
+            // the unfold it reverses: an importer can take that unfold's bends again. Fusion merges a flat strip
+            // into the face beside it, so the strips may not be faces of their own: then the bends are the unfold's
+            std::string uid = featureId(uf);
+            json ub;
+            for (auto& x : features)
+                if (x.value("id", "") == uid && x.value("type", "") == "unfold") ub = x["def"].value("bends", json());
+            if (!uid.empty() && !ub.is_null()) d["unfold"] = json{{"kind", "feature"}, {"by", "id"}, {"id", uid}};
+            if (bj.empty())
+            {
+                if (ub.is_null())
+                {
+                    why = "its bends' flat strips were not found, nor its unfold's bends";
+                    return nullptr;
+                }
+                bj = ub;
+            }
+            d["bends"] = bj;
+            return d;
+        }
+        if (Ptr<OffsetFacesFeature> f = e)
+        {
+            // FORMAT-SPEC 4 offsetFaces: faces moved along their normals by a distance (SolidWorks: Move Face, offset)
+            type = "offsetFaces";
+            json faces = json::array();
+            for (auto& fc : f->inputFaces()) faces.push_back(descriptor(fc->nativeObject() ? fc->nativeObject() : fc));
+            if (faces.empty())
+            {
+                why = "an offset of no faces";
+                return nullptr;
+            }
+            return json{{"faces", faces}, {"distance", f->distance() ? cm2mm(f->distance()->value()) : 0.0}};
+        }
+        if (e && std::string(e->objectType()) == "adsk::fusion::Feature" && attrOf(e, "source").empty())
+        {
+            // Fusion's own convert to sheet metal (the API has no class for it): a sheet of the rule's thickness made
+            // from a plate body. Written as the spec's convertToSheetMetal from the plate's largest flat face, with
+            // no bends (the result decides the thickness sense)
+            Ptr<TimelineObject> to = Ptr<Feature>(e) ? Ptr<Feature>(e)->timelineObject() : nullptr;
+            std::string tn = to ? to->name() : "";
+            Ptr<SheetMetalRule> rule = comp->activeSheetMetalRule();
+            if (rule && tn.find("Convert") != std::string::npos)
+            {
+                type = "convertToSheetMetal";
+                Ptr<BRepFace> big;
+                for (auto& b : solids())
+                    for (size_t i = 0; i < b->faces()->count(); i++)
+                        if (Ptr<Plane>(b->faces()->item(i)->geometry()) && (!big || b->faces()->item(i)->area() > big->area())) big = b->faces()->item(i);
+                if (!big)
+                {
+                    why = "no flat face to convert from";
+                    return nullptr;
+                }
+                return json{{"thickness", cm2mm(rule->thickness()->value())}, {"bendRadius", cm2mm(rule->bendRadius()->value())},
+                            {"fixedFace", descriptor(big)}, {"bendEdges", json::array()}, {"reverse", false}, {"keepBody", false}};
+            }
         }
         if (Ptr<SweepFeature> f = e)
         {
@@ -1928,7 +2306,14 @@ struct DocWriter
                 why = "its splitting tool is not a plane or face that can be referenced";
                 return nullptr;
             }
-            return json{{"tools", json::array({t})}, {"consume", false}};
+            // the bodies it splits (Fusion splits only these; FORMAT-SPEC 4 split `bodies`)
+            json targets = json::array();
+            Ptr<ObjectCollection> sb = f->splitBodies();
+            for (size_t i = 0; sb && i < sb->count(); i++)
+                if (Ptr<BRepBody> b = sb->item(i)) targets.push_back(bodyRef(b));
+            json d{{"tools", json::array({t})}, {"consume", false}};
+            if (!targets.empty() && static_cast<int>(targets.size()) < static_cast<int>(solids().size())) d["bodies"] = targets;
+            return d;
         }
         why = std::string(e ? e->objectType() : "?") + " has no NCX mapping in this exporter yet";
         return nullptr;
@@ -2042,7 +2427,9 @@ struct DocWriter
             // definition while the part's shape right after the group is what the import left (NCX/after).
             size_t groupEnd = ii + 1;
             json srcDef;
-            if (tag.is_object() && tag.value("k", 0) == 0 && passthrough)
+            // an Insert Part's copied sketches are always written as the insertPart they stand for (they are Fusion's form
+            // of it, whatever the passthrough setting): features refer to the source document's entities through it
+            if (tag.is_object() && tag.value("k", 0) == 0 && (passthrough || tag.value("type", "") == "insertPart"))
             {
                 while (groupEnd < items.size() && items[groupEnd].tag.is_object() && items[groupEnd].tag.value("id", "") == tag.value("id", "") &&
                        items[groupEnd].tag.value("k", 0) > 0)
@@ -2174,8 +2561,12 @@ struct DocWriter
                 nf["status"] = "mapped";
                 nf["def"] = def;
                 if (Ptr<Feature> ft = e) featureOfId[id] = ft;
-                // a loft and a variable fillet carry their result (FORMAT-SPEC 4: systems differ there)
-                if (type == "loft" || type == "loftCut" || (type == "fillet" && def.value("filletType", "") == "variable"))
+                // these carry their result (FORMAT-SPEC 4: systems differ there; an importer checks or chooses its
+                // settings by it)
+                static const std::set<std::string> withResult{"loft", "loftCut", "hem", "sketchedBend", "breakCorner", "fold", "unfold",
+                                                              "offsetFaces", "convertToSheetMetal", "edgeFlange", "baseFlange",
+                                                              "linearPattern", "circularPattern"};
+                if (withResult.count(type) || (type == "fillet" && def.value("filletType", "") == "variable"))
                 {
                     t->rollTo(false);
                     json result;

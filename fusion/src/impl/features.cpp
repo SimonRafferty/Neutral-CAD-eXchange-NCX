@@ -227,6 +227,15 @@ Ptr<Base> Replayer::refObject(const json& r, std::string& why)
     std::string kind = r.value("kind", "");
     if (kind == "originPlane") return planeFor(r, why);
     if (kind == "origin") return comp_->originConstructionPoint();
+    if (kind == "originAxis")   // FORMAT-SPEC 5: an origin axis by its letter
+    {
+        std::string a = r.value("axis", "");
+        if (a == "x") return comp_->xConstructionAxis();
+        if (a == "y") return comp_->yConstructionAxis();
+        if (a == "z") return comp_->zConstructionAxis();
+        why = "origin axis '" + a + "' unknown";
+        return nullptr;
+    }
     if (kind == "feature")
     {
         auto it = features.find(r.value("id", ""));

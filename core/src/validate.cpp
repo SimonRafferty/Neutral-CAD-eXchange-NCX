@@ -21,7 +21,7 @@ const std::set<std::string> kKnownFeatures = {
     "chamfer", "hole", "linearPattern", "circularPattern", "sketchPattern", "mirror", "shell", "draft", "sweep",
     "loft", "insertPart", "combine", "split", "deleteBody", "moveBody", "thicken", "sheetMetal", "baseFlange", "edgeFlange", "flatPattern", "weldment", "structuralMember", "sweepCut", "loftCut", "mirrorBody", "weldmentTrim", "endCap",
     "loftedBend", "extrudedSurface", "revolvedSurface", "rib", "componentPattern", "hem", "breakCorner", "sketchedBend", "jog", "mirrorPart", "mirrorComponents", "cosmeticThread", "gusset", "closedCorner", "miterFlange",
-    "dome", "planarSurface", "knit", "wrap", "unfold", "fold", "sketch3d", "convertToSheetMetal",
+    "dome", "planarSurface", "knit", "wrap", "unfold", "fold", "sketch3d", "convertToSheetMetal", "offsetFaces",
     "importedBody", "opaque"};
 
 struct Ctx {

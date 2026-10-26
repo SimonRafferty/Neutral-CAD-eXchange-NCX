@@ -278,6 +278,7 @@ namespace Ncx.Sw
             deferredSketches.Clear();
             pendingSheetMetal = null;
             originPlanes.Clear();
+            originAxes.Clear();
             sketchMaps.Clear();
             transferredItems.Clear();
             originPoint = null;
@@ -405,6 +406,7 @@ namespace Ncx.Sw
                 case "jog": return ReplayJog(nf, def);
                 case "closedCorner": return ReplayClosedCorner(nf, def);
                 case "miterFlange": return ReplayMiterFlange(nf, def);
+                case "offsetFaces": return ReplayOffsetFaces(nf, def);
                 case "moveBody": return ReplayMoveBody(nf, def);
                 case "deleteBody": return ReplayDeleteBody(nf, def);
                 case "shell": return ReplayShell(nf, def);
@@ -482,10 +484,55 @@ namespace Ncx.Sw
         }
 
         /// <summary>Select a reference (plane, feature, or resolved face/edge). Returns null or why not.</summary>
+        // origin axes made for `originAxis` references, by letter (this part's)
+        readonly Dictionary<string, IFeature> originAxes = new Dictionary<string, IFeature>();
+
+        /// <summary>The model's x, y or z axis (FORMAT-SPEC 5 originAxis): SolidWorks has no origin axes, so a hidden
+        /// reference axis where two origin planes meet, made once per part. The selection being built is kept.</summary>
+        IFeature OriginAxis(string letter)
+        {
+            IFeature ax;
+            if (originAxes.TryGetValue(letter ?? "", out ax)) return ax;
+            int[] planes = letter == "x" ? new[] { 0, 1 } : letter == "y" ? new[] { 0, 2 } : letter == "z" ? new[] { 1, 2 } : null;
+            if (planes == null || originPlanes.Count < 3) return null;
+            var sm = (ISelectionMgr)doc.SelectionManager;
+            var kept = new List<Tuple<object, int>>();
+            for (int i = 1; i <= sm.GetSelectedObjectCount2(-1); i++) kept.Add(Tuple.Create((object)sm.GetSelectedObject6(i, -1), (int)sm.GetSelectedObjectMark(i)));
+            doc.ClearSelection2(true);
+            originPlanes[planes[0]].Select2(false, 0);
+            originPlanes[planes[1]].Select2(true, 0);
+            int n0 = FeatureCount();
+            doc.InsertAxis2(true);
+            if (FeatureCount() > n0)
+            {
+                ax = LastFeature();
+                Name(ax, "Axis " + letter.ToUpperInvariant() + " (origin)");
+                doc.ClearSelection2(true);
+                ax.Select2(false, 0);
+                doc.BlankRefGeom();
+                originAxes[letter] = ax;
+            }
+            doc.ClearSelection2(true);
+            foreach (var k in kept)
+            {
+                if (k.Item1 is IFeature) ((IFeature)k.Item1).Select2(true, k.Item2);
+                else if (k.Item1 is IEntity) ((IEntity)k.Item1).Select4(true, Mark(k.Item2));
+                else if (k.Item1 is ISketchSegment) ((ISketchSegment)k.Item1).Select4(true, Mark(k.Item2));
+                else if (k.Item1 is ISketchPoint) ((ISketchPoint)k.Item1).Select4(true, Mark(k.Item2));
+            }
+            return ax;
+        }
+
         string SelectRef(JObj r, bool append, int mark)
         {
             switch (r.Str("kind"))
             {
+                case "originAxis":
+                {
+                    var ax = OriginAxis(r.Str("axis"));
+                    if (ax == null) return "could not make the origin axis " + r.Str("axis");
+                    return ax.Select2(append, mark) ? null : "could not select the origin axis";
+                }
                 case "originPlane":
                 {
                     int i = Array.IndexOf(new[] { "front", "top", "right" }, r.Str("plane"));

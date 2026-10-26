@@ -433,6 +433,11 @@ add yours. Ones that cost a debugging round each:
   - Export: a vertex descriptor needs its point as its one sample; Fusion's "All" extent (`AllExtentDefinition`) is
     through all; a fixed spline has only its two ends as points, so write its exact `nurbs` (importers build another
     system's spline from `nurbs`).
+  - Sheet-metal export: write positions by the spec's geometric meaning, not by the word.
+    - Fusion's fold line marks the start, centre or end of the flat bend zone: write the line at the outer virtual
+      sharp (`materialInside`), in a sketch of its own on the sheet's face.
+    - Fusion's "inside" flange at an angle is `bendSharp`.
+    - Measure a flange's web only on faces that rise clear of the sheet.
 - **Onshape** (from a trial add-in, not yet in this repository): cloud-only, so a web-API client (or an Onshape app's
   server), not a desktop add-in. Use a versioned path (`/api/v17`) and `application/json;charset=UTF-8; qs=0.09`:
   unversioned paths use a legacy JSON form and every feature post fails with a bare "Error processing json". Quotas:
@@ -455,3 +460,10 @@ add yours. Ones that cost a debugging round each:
   "solve as flexible" is set through `CompConfigProperties5` on the selected component (`Solving` is read-only); a
   file opened read-only stays locked after it is closed, until SolidWorks exits; Through All - Both cannot be made
   through `FeatureCut4` (build through all in both directions).
+  - Sheet metal:
+    - Give the K-factor and relief to the base flange that makes the Sheet-Metal feature (a CustomBendAllowance).
+      Changed later, they only take with SetOverrideDefaultParameter2 and a rebuild.
+    - Never change an edge flange's length datum after it is made: SolidWorks drops the flange.
+    - A sketched bend needs its sketch on a face of the sheet.
+    - SolidWorks refuses a hem whose edge meets another hem at a corner.
+    - Once a sheet-metal feature is carried as fixed geometry, later sheet-metal features cannot be built.

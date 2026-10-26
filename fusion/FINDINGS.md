@@ -1042,7 +1042,41 @@ out as `W`); documents in dependency order.
 **Import fixes:** paths of sketch curves through the occurrence's proxies in the upright wrapper (P13's sweep and P19's
 thin wall fell back); materials and appearances also on a fallback part's plain geometry.
 
-**Not yet native** (written as fixed geometry with their result, or passed through when imported): hems, sketched
-bends (fold), sheet-metal chamfers (break corners), refold, offset faces, Fusion's convert to sheet metal, edge
-flanges that are not 90 degrees or not full width, configurations.
+**Rarer sheet-metal features native (2026-10-26, Fusion-made test models `fx:` in results/fusion_loop):** hems,
+folds, break corners, refold, offset faces, Fusion's convert to sheet metal, and edge flanges at any angle or part
+width are written natively, and SolidWorks rebuilds them:
+- folds: the start, centre and end positions all rebuild, each on its first try;
+- edge flanges: 90 degrees, 120 degrees and part width;
+- convert plus a later flange, and patterns along the origin axes.
+
+What it took:
+- A fold's line goes in a sketch of its own on the sheet's face (SolidWorks makes a sketched bend only from a
+  sketch on a face of the sheet). It is written where the spec's `materialInside` puts it, the outer virtual
+  sharp: Fusion's line marks the start, centre or end of the bend zone in the flat, whose developed length is
+  angle × (radius + K × thickness), and the outer virtual sharp lies (radius + thickness) × tan(angle / 2) past the
+  start.
+- Edge flange web faces are measured only where they rise clear of the sheet (the sheet's own edge face beside the
+  flange spoiled a part-width flange's span). The face a flange rises from is the one most across the rise (at 120
+  degrees the side face ties at 0.5).
+- Fusion's "inside" at an angle other than 90 degrees is the spec's `bendSharp` (outer virtual sharp on the
+  sheet's outer edge). SolidWorks' `materialInside` there runs the outer face through the edge, t·tan(angle − 90°)
+  further out.
+- SolidWorks import of another system's flange:
+  - a probe flange is made, and the profile is redrawn taller by (carried volume − probe volume) / (width ×
+    thickness), since a profile's height means something else in each system at angles;
+  - the length datum is never changed afterwards: SolidWorks then drops the flange.
+- SolidWorks' Sheet-Metal feature:
+  - the K-factor and relief go in with the base flange (a CustomBendAllowance from FeatureManager);
+  - afterwards (after a convert) they only take with SetOverrideDefaultParameter2 and a rebuild before the next
+    feature (otherwise ModifyDefinition keeps the defaults, clears the relief ratio and the next flange fails);
+  - the name "Sheet-Metal" is refused (SolidWorks' hidden default).
+
+Known gaps:
+- Fusion's teardrop hem has a flat tail SolidWorks' teardrop has no counterpart for: carried as its result.
+- Hems on edges that meet at a corner: Fusion trims them there, SolidWorks refuses the second.
+- A flange Fusion stretches across its neighbours' corners (Flange-Tangent in sm_flanges).
+- After any sheet-metal feature carried as its result, the body is no longer SolidWorks sheet metal, so later
+  sheet-metal features are carried too.
+
+**Not yet native:** configurations.
 
