@@ -253,6 +253,57 @@ namespace Ncx.Sw
             return null;
         }
 
+        /// <summary>Is a selected region bounded partly by something other than the sketch's own entities (a model
+        /// edge, the edge of the face the sketch lies on)? Another system may not find that region the same way, so
+        /// the feature's result goes with it.</summary>
+        static bool RegionsLeaveSketch(JObj def)
+        {
+            foreach (JObj rg in def.Arr("regions"))
+                foreach (var loop in rg.Arr("boundary"))
+                    if (((System.Collections.IList)loop).Cast<object>().Any(piece => !(piece is string))) return true;
+            return false;
+        }
+
+        /// <summary>Does a normal cut cross a bend? Its profile reaches past the face of the sheet it is drawn on,
+        /// or its walls are not all square to the sketch (a flat plane along the cut direction, or a cylinder about
+        /// it): some follow the bent sheet.</summary>
+        bool NormalCutCrossesBend(IFeature f)
+        {
+            IFeature skf = null;
+            for (var sub = (IFeature)f.GetFirstSubFeature(); sub != null; sub = (IFeature)sub.GetNextSubFeature())
+                if (sub.GetTypeName2() == "ProfileFeature") { skf = sub; break; }
+            if (skf == null) return false;
+            var sk = (ISketch)skf.GetSpecificFeature2();
+            var fr = new SketchFrame(sw, sk);
+            int refType = 0;
+            var onFace = sk.GetReferenceEntity(ref refType) as IFace2;
+            if (onFace != null)
+                foreach (ISketchPoint pt in (object[])sk.GetSketchPoints2() ?? new object[0])
+                {
+                    var m = fr.ToModel(pt.X, pt.Y);
+                    var c = (double[])onFace.GetClosestPointOn(m[0], m[1], m[2]);
+                    if (c != null && V.Dist(V.P3(c), m) > 1e-6) return true;   // a profile point off the face: over a bend
+                }
+            var z = fr.Z;
+            foreach (IFace2 face in (object[])f.GetFaces() ?? new object[0])
+            {
+                var srf = (ISurface)face.GetSurface();
+                if (srf.IsPlane())
+                {
+                    var pp = (double[])srf.PlaneParams;
+                    double c = Math.Abs(V.Dot(V.Unit(new[] { pp[0], pp[1], pp[2] }), z));
+                    if (c > 1e-6 && c < 1 - 1e-6) return true;   // neither a wall along the cut nor a floor
+                }
+                else if (srf.IsCylinder())
+                {
+                    var cp = (double[])srf.CylinderParams;
+                    if (Math.Abs(V.Dot(V.Unit(new[] { cp[3], cp[4], cp[5] }), z)) < 1 - 1e-6) return true;
+                }
+                else return true;
+            }
+            return false;
+        }
+
         void ExportExtrude(IFeature f, JObj nf)
         {
             var d = (IExtrudeFeatureData2)f.GetDefinition();
@@ -275,6 +326,7 @@ namespace Ncx.Sw
                         Approx(nf, unreadableContours + " selected contour(s) not readable through SolidWorks' API: built from the others");
                         needsResult.Add(nf);
                     }
+                    if (cwhy == null && RegionsLeaveSketch(def)) needsResult.Add(nf);
                 }
                 def["reverse"] = d.ReverseDirection;
                 def["end"] = End(d, true, nf);
@@ -287,7 +339,13 @@ namespace Ncx.Sw
                 }
                 if (!boss && d.FlipSideToCut) def["flipSide"] = true;
                 // sheet metal: a cut normal to the sheet across bends; a cut's or boss's depth tied to the thickness
-                if (!boss && d.NormalCut) def["normalCut"] = true;
+                if (!boss && d.NormalCut)
+                {
+                    def["normalCut"] = true;
+                    // across a bend it removes material square to the bent sheet, which a system without normal cuts
+                    // cannot make: its result goes with it
+                    if (NormalCutCrossesBend(f)) needsResult.Add(nf);
+                }
                 if (d.LinkToThickness) def["linkToThickness"] = true;
                 if (boss) def["merge"] = d.Merge;
                 var start = Start(d, nf);

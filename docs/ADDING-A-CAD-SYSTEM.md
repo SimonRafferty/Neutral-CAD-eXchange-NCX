@@ -438,6 +438,12 @@ add yours. Ones that cost a debugging round each:
       sharp (`materialInside`), in a sketch of its own on the sheet's face.
     - Fusion's "inside" flange at an angle is `bendSharp`.
     - Measure a flange's web only on faces that rise clear of the sheet.
+  - Finding where a rebuild departs from its source: compare the solid volume after each feature. Use the source
+    system's rollback and your own timeline; the first feature that differs is the one to fix.
+  - Converting a body to sheet metal can be accepted and then fail at the next compute (a boss on the sheet). Keep
+    such a body plain, or every later feature breaks.
+  - A cut in an assembly changes the component, so every instance of it. Give each instance the cut touches its own
+    copy, and export the copies as their part's document.
 - **Onshape** (from a trial add-in, not yet in this repository): cloud-only, so a web-API client (or an Onshape app's
   server), not a desktop add-in. Use a versioned path (`/api/v17`) and `application/json;charset=UTF-8; qs=0.09`:
   unversioned paths use a legacy JSON form and every feature post fails with a bare "Error processing json". Quotas:

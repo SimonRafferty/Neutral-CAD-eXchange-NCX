@@ -114,20 +114,34 @@ std::string Replayer::replayConvertToSheetMetal(json& nf, const json& def)
     }
     if (!fixed) return "~note:its carried result is used; the fixed face was not found on it, so the sheet is not a Fusion sheet-metal body";
     json fpBefore = bodyFingerprint(sheet);
+    Ptr<Timeline> tl = design_->timeline();
+    size_t n0 = tl ? tl->count() : 0;
     if (!sheet->convertToSheetMetal(fixed, rule))
     {
         nf["status"] = "approximate";
         nf["note"] = "carried as fixed geometry (its resulting bodies): Fusion refused to make it a sheet-metal body (" + lastError() + ")";
         return "";
     }
-    // the conversion keeps the geometry (checked)
+    // the conversion must keep the geometry: where Fusion's conversion changes it (its own corner reliefs or rip
+    // gaps; the folding step's Short Link gained 4 mm^3), it is taken out again and the source's sheet stays a plain body
+    bool changed = false;
     for (auto& b : bodies(true))
         if (b->isSheetMetal())
         {
             json fp = bodyFingerprint(b);
             if (std::fabs(fp["volume"].get<double>() - fpBefore["volume"].get<double>()) > 1e-6 * fpBefore["volume"].get<double>() + 1e-9)
-                logLine(docName_ + ": convert to sheet metal changed the volume");
+                changed = true;
         }
+    if (changed)
+    {
+        logLine(docName_ + ": convert to sheet metal changed the volume: taken out");
+        if (tl && tl->count() > n0)
+            if (Ptr<Feature> cf = tl->item(tl->count() - 1)->entity()) cf->deleteMe();
+        nf["status"] = "approximate";
+        nf["note"] = "carried as fixed geometry (its resulting bodies): Fusion's conversion to a sheet-metal body changed its shape, so it is "
+                     "kept a plain body (later sheet-metal features that need it carry their results)";
+        return "";
+    }
     nf["status"] = "approximate";
     nf["note"] = "the sheet is the file's own result of the feature (Fusion converts only a body that already is a sheet), made a Fusion "
                  "sheet-metal body from its fixed face with the rule's thickness and bend radius; later sheet-metal features build on it";

@@ -1078,5 +1078,27 @@ Known gaps:
 - After any sheet-metal feature carried as its result, the body is no longer SolidWorks sheet metal, so later
   sheet-metal features are carried too.
 
-**Not yet native:** configurations.
+**The folding step's last three parts (2026-10-26):** the Long Link and both Top Hanger Cheeks now rebuild in Fusion
+(the whole folding step: 0 failed, 0 fallback). The first differing feature was found by comparing the volume after
+each feature: SolidWorks' rollback against Fusion's timeline (probe `volumes`).
+
+The SolidWorks exporter now carries the result where Fusion cannot rebuild the same, and Fusion uses it:
+- a normal cut whose profile reaches past the sheet face it is drawn on (over a bend; the Long Link's Cut-Extrude2);
+- features whose selected regions are bounded partly by model or face edges (the Cheek's Boss-Extrude7 and
+  Cut-Extrude11);
+- countersinks deeper than the sheet (no drilled cylinder).
+
+Fusion import fixes:
+- a carried result of a boss is kept a plain body, because converting it to sheet metal is accepted and then fails
+  at the next compute, breaking every later feature;
+- holes name the part's solids as their targets in a sheet-metal component (otherwise "No target body");
+- a sheet conversion that changes the shape is taken out again;
+- an assembly-level cut's instances are independent copies of their part: Fusion's cut in an assembly changes the
+  component, so every instance of it. The export writes the copies as their part's document.
+
+A SolidWorks pitfall in testing: with documents of the same names still open from an earlier job, a SolidWorks import
+can rebuild wrongly (a fillet's tangent propagation took 4 of its 6 edges). Import into a clean session.
+
+**Not yet native:** configurations. L10: Fusion keeps a body cut in two as one body of two lumps (SolidWorks: two
+bodies), so the assembly's body count differs.
 

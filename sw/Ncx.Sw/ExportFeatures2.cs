@@ -79,6 +79,7 @@ namespace Ncx.Sw
                         Approx(nf, unreadableContours + " selected contour(s) not readable through SolidWorks' API: built from the others");
                         needsResult.Add(nf);
                     }
+                    if (cwhy == null && RegionsLeaveSketch(def)) needsResult.Add(nf);
                 }
                 if (d.IsThinFeature())
                     def["thin"] = new JObj
@@ -325,6 +326,9 @@ namespace Ncx.Sw
                 // cylindrical faces give them, smallest = the drilled hole, largest = a counterbore. Measured once the
                 // model is rolled forward: the feature has no faces in the rolled-back state it is exported in.
                 int kind = Neutral.GeneralHoleType(d.Type);
+                // a countersink with no drilled cylinder (deeper than a thin sheet) is unusual enough that another
+                // system may not drill it the same way: its result goes with it
+                if (HoleDiameters(f).Count == 0) needsResult.Add(nf);
                 afterExport.Add(() =>
                 {
                     var dias = HoleDiameters(f);

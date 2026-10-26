@@ -362,20 +362,41 @@ std::string Replayer::replayHole(json& nf, const json& def)
         for (auto& p : pts) sps->add(s->sketchPoints()->add(s->modelToSketchSpace(ptCm(p))));
     }
     Ptr<HoleFeatures> hf = comp_->features()->holeFeatures();
-    Ptr<HoleFeatureInput> in;
-    if (kind == "counterbore" && cbD > 0) in = hf->createCounterboreInput(mmValue(holeD), mmValue(cbD), mmValue(cbDepth));
-    else if (kind == "countersink" && csD > 0) in = hf->createCountersinkInput(mmValue(holeD), mmValue(csD), degValue(csA));
-    else in = hf->createSimpleInput(mmValue(holeD));
-    if (!in) return "hole input: " + lastError();
     if (kind == "tapped" || kind == "pipeTap")
         approx(nf, "tapped hole rebuilt as its tap drill (" + std::to_string(holeD) + " mm); the thread is not modelled");
-    if (!in->setPositionBySketchPoints(sps)) return "hole positions: " + lastError();
     if (!through && endType != "blind")
         approx(nf, "end condition " + endType + " rebuilt as a blind depth of " + std::to_string(depth) + " mm measured on the file's geometry");
-    bool ok = through ? in->setAllExtent(PositiveExtentDirection) : in->setDistanceExtent(mmValue(depth));
-    if (!ok) return "hole extent: " + lastError();
-    if (sz.value("drillAngle", 0.0) > 0) in->tipAngle(degValue(sz.value("drillAngle", 118.0)));
-    Ptr<HoleFeature> f = hf->add(in);
+    // the input, drilled along the position sketch's default direction or against it (an input Fusion refused
+    // cannot be used again)
+    std::string inWhy;
+    auto make = [&](bool against) -> Ptr<HoleFeature> {
+        Ptr<HoleFeatureInput> in;
+        if (kind == "counterbore" && cbD > 0) in = hf->createCounterboreInput(mmValue(holeD), mmValue(cbD), mmValue(cbDepth));
+        else if (kind == "countersink" && csD > 0) in = hf->createCountersinkInput(mmValue(holeD), mmValue(csD), degValue(csA));
+        else in = hf->createSimpleInput(mmValue(holeD));
+        if (!in) return inWhy = "hole input: " + lastError(), nullptr;
+        Ptr<ObjectCollection> at = ObjectCollection::create();   // a fresh selection each time
+        for (size_t i = 0; i < sps->count(); i++) at->add(sps->item(i));
+        if (!in->setPositionBySketchPoints(at)) return inWhy = "hole positions: " + lastError(), nullptr;
+        bool ok = through ? in->setAllExtent(against ? NegativeExtentDirection : PositiveExtentDirection) : in->setDistanceExtent(mmValue(depth));
+        if (!ok) return inWhy = "hole extent: " + lastError(), nullptr;
+        if (sz.value("drillAngle", 0.0) > 0) in->tipAngle(degValue(sz.value("drillAngle", 118.0)));
+        if (against && !through) in->isDefaultDirection(false);
+        // the part's solids as its targets: in a sheet-metal component a hole otherwise looks only for
+        // sheet-metal bodies and misses a plain body a carried result brought
+        if (comp_->activeSheetMetalRule()) in->participantBodies(bodies(true));
+        return hf->add(in);
+    };
+    Ptr<HoleFeature> f = make(false);
+    if (!f) logLine("hole " + nf.value("name", "") + " along the sketch normal: " + inWhy + " " + lastError());
+    if (!f && inWhy.empty() && lastError().find("NO_TARGET_BODY") != std::string::npos)
+    {
+        // drilled away from the material: the position sketch's plane faces the other way from the face it lies on
+        f = make(true);
+        if (!f) logLine("hole " + nf.value("name", "") + " against the sketch normal: " + inWhy + " " + lastError());
+        if (f) nf["info"] = "drilled against the position sketch's normal (the face the hole starts on faces the other way)";
+    }
+    if (!f && !inWhy.empty()) return inWhy;
     if (!f) return "hole failed: " + lastError();
     name(f, nf.value("name", ""));
     features[nf.value("id", "")] = f;

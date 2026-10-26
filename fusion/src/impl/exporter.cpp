@@ -3228,6 +3228,7 @@ json exportFileInner(const fs::path& out, const json& opts)
     const bool passthrough = opts.value("passthrough", true);
     std::set<std::string> idsUsed;
     std::map<std::string, Ptr<Component>> subAsmComp;   // sub-assembly component entity token -> the component
+    std::map<std::string, std::string> cutCopyDoc;       // source document id -> the id its assembly-cut copies share
     auto docIdFor = [&](const Ptr<Component>& c, const std::string& name) {
         std::string id;
         if (Ptr<Attribute> a = c->attributes()->itemByName("NCX", "documentId")) id = a->value();
@@ -3240,9 +3241,18 @@ json exportFileInner(const fs::path& out, const json& opts)
     };
     // the recorded source document when the component is as the import left it, else null
     auto unchangedSource = [&](const Ptr<Component>& c) -> json {
-        if (!passthrough) return nullptr;
         Ptr<Attribute> st = c->attributes()->itemByName("NCX", "state");
         Ptr<Attribute> dd = c->attributes()->itemByName("NCX", "document");
+        // an import's copy of a part for an assembly-level cut: the part it copies is its source document (the cut
+        // goes with the assembly, which passthrough writes as the source's), however the copy now looks. Without
+        // passthrough the assembly is written natively, and its cut is not (assembly features are not written yet):
+        // the copy is then written as it is
+        if (passthrough && dd && c->attributes()->itemByName("NCX", "assemblyCutCopy"))
+        {
+            json d = json::parse(dd->value(), nullptr, false);
+            return d.is_object() ? d : json(nullptr);
+        }
+        if (!passthrough) return nullptr;
         if (!st || !dd) return nullptr;
         if (!sameState(json::parse(st->value(), nullptr, false), documentState(c))) return nullptr;
         json d = json::parse(dd->value(), nullptr, false);
@@ -3266,7 +3276,16 @@ json exportFileInner(const fs::path& out, const json& opts)
             subAsmComp[c->entityToken()] = c;
             continue;
         }
-        docOf[c->entityToken()] = docIdFor(c, c->name());
+        // a part and its copies for an assembly-level cut are one document, written once (from whichever comes first)
+        Ptr<Attribute> did = c->attributes()->itemByName("NCX", "documentId");
+        std::string key = did ? did->value() : c->entityToken();
+        auto known = cutCopyDoc.find(key);
+        if (known != cutCopyDoc.end())
+        {
+            docOf[c->entityToken()] = known->second;
+            continue;
+        }
+        docOf[c->entityToken()] = cutCopyDoc[key] = docIdFor(c, c->name());
         parts.push_back(c);
     }
     for (int pass = 0; pass < 2; pass++)   // sub-assembly ids: the rigid builds first, then " (flexible)" copies

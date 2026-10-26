@@ -983,9 +983,10 @@ namespace Ncx.Sw
             if (fingerprint != null)
             {
                 var actual = Host.DocFingerprint(adoc);
-                // parts that fell back hold the file's B-rep as this system measures it: another kernel wrote the
-                // payload's numbers, so they compare at exchange tolerance (FORMAT-SPEC 6.1)
-                string options = fellBack.Count > 0 ? "{\"profile\":\"exchange\"}" : null;
+                // parts that fell back hold the file's B-rep as this system measures it, and a file from another CAD
+                // system was measured by another kernel: the payload's numbers compare at exchange tolerance
+                // (FORMAT-SPEC 6.1)
+                string options = fellBack.Count > 0 || Foreign ? "{\"profile\":\"exchange\"}" : null;
                 var rep = (JObj)Json.Parse(NcxCore.FingerprintCompare(Json.Write(fingerprint, true), Json.Write(actual, true), options).ReportJson);
                 if (options != null) v["tolerance"] = "exchange";
                 v["result"] = rep.Str("result");

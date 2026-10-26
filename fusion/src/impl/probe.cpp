@@ -222,6 +222,36 @@ json probe(const json& req)
         if (!des) return json{{"ok", false}, {"error", "no active design"}};
         return json{{"ok", true}, {"tree", walk(des->rootComponent())}};
     }
+    if (what == "volumes")
+    {
+        // the solid volume (mm^3) and body count after each timeline item, to find where a rebuild departs from
+        // its source (developer)
+        Ptr<Design> des = app->activeProduct();
+        if (!des) return json{{"ok", false}, {"error", "no active design"}};
+        Ptr<Timeline> tl = des->timeline();
+        json items = json::array();
+        for (size_t i = 0; tl && i < tl->count(); i++)
+        {
+            Ptr<TimelineObject> t = tl->item(i);
+            t->rollTo(false);
+            double v = 0;
+            int n = 0;
+            Ptr<Components> cs = des->allComponents();
+            for (size_t c = 0; cs && c < cs->count(); c++)
+                for (size_t b = 0; b < cs->item(c)->bRepBodies()->count(); b++)
+                {
+                    Ptr<BRepBody> body = cs->item(c)->bRepBodies()->item(b);
+                    if (!body->isSolid()) continue;
+                    v += body->volume() * 1000;
+                    n++;
+                }
+            Ptr<Base> e = t->entity();
+            items.push_back(json{{"i", i}, {"name", t->name()}, {"type", e ? e->objectType() : "?"}, {"volume", v}, {"bodies", n},
+                                 {"health", static_cast<int>(t->healthState())}});
+        }
+        if (tl) tl->moveToEnd();
+        return json{{"ok", true}, {"volumes", items}};
+    }
     if (what == "timeline")
     {
         Ptr<Design> des = app->activeProduct();

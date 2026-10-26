@@ -503,6 +503,11 @@ std::string Replayer::applyResult(const json& nf)
         bf->name(nf.value("name", "") + " (result)");
         // a sheet-metal body stays one: later sheet-metal features (and cuts in a sheet-metal component) only
         // find sheet-metal bodies (measured on P12: a cut after a carried edge flange found "No target body")
+        // A feature that adds solid material (a boss on the sheet) leaves a body that is no longer a sheet: Fusion
+        // accepts converting it and fails the conversion at the next compute, which breaks every later feature (the
+        // folding step's Top Hanger Cheek, Boss-Extrude7); it stays a plain body, and later cuts name it as their target
+        static const std::set<std::string> adds{"extrude", "revolve", "sweep", "loft", "rib", "thicken", "dome", "boundary"};
+        if (adds.count(nf.value("type", ""))) sheet = false;
         if (sheet && comp_->activeSheetMetalRule())
             for (size_t i = 0; i < comp_->bRepBodies()->count(); i++)
             {
@@ -514,8 +519,31 @@ std::string Replayer::applyResult(const json& nf)
                     Ptr<BRepFace> f = b->faces()->item(k);
                     if (Ptr<Plane>(f->geometry()) && (!biggest || f->area() > biggest->area())) biggest = f;
                 }
-                if (biggest && !b->convertToSheetMetal(biggest, comp_->activeSheetMetalRule()))
+                if (!biggest) continue;
+                // only a body that still is a sheet: its volume about the thickness times half its area (a boss on
+                // the sheet makes it more; Fusion accepts the conversion and fails it at the next compute)
+                double tmm = comp_->activeSheetMetalRule()->thickness()->value() * 10.0;
+                double vol = b->volume() * 1000.0, area = b->area() * 100.0;
+                if (vol > 0.55 * tmm * area)
+                {
+                    logLine("result body kept as a plain body: not a sheet (volume " + std::to_string(vol) + " mm3, area " + std::to_string(area) + " mm2)");
+                    continue;
+                }
+                // a body that is no longer a sheet (a boss on it) cannot be converted: the failed conversion
+                // stays in the timeline in error and breaks every later compute, so it is taken out again
+                Ptr<Timeline> tl = design_->timeline();
+                size_t n0 = tl ? tl->count() : 0;
+                bool ok = b->convertToSheetMetal(biggest, comp_->activeSheetMetalRule());
+                Ptr<TimelineObject> last = tl && tl->count() > n0 ? tl->item(tl->count() - 1) : nullptr;
+                // its health shows only once the timeline is evaluated again: rolled back before it and forward
+                if (last && last->rollTo(true)) tl->moveToEnd();
+                bool failedConvert = last && (last->healthState() == ErrorFeatureHealthState || !last->errorOrWarningMessage().empty());
+                if (!ok || failedConvert)
+                {
                     logLine("convert to sheet metal failed: " + lastError());
+                    if (last && last->entity())
+                        if (Ptr<Feature> cf = last->entity()) cf->deleteMe();
+                }
             }
         features[nf.value("id", "")] = bf;
         // 4. names, matched by fingerprint

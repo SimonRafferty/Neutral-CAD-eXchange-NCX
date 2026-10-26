@@ -282,6 +282,7 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
     std::map<std::string, Replayer*> registry;
     std::map<std::string, Ptr<Occurrence>> buildOcc;   // document id -> the occurrence it was built under
     std::map<std::string, Ptr<Component>> compOf;      // document id -> component its instances use
+    std::vector<std::pair<Ptr<Component>, std::string>> cutCopies;   // copies made for assembly-level cuts, with their document
     std::set<std::string> skipFlex;
     std::vector<Ptr<Occurrence>> partialRebuilds;   // a fallback part's partial rebuild, kept hidden
     bool anyFallback = false;
@@ -498,6 +499,13 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
         }
         compOf[id] = comp;
         progressPhase("placement");
+        // the components an assembly-level cut changes (FORMAT-SPEC 4: the cut changes those instances in this
+        // assembly, not their parts): Fusion's cut in an assembly changes the component, so every instance of it, so
+        // each of these instances is an independent copy of its component (marked, with the source's attributes)
+        std::set<std::string> cutComps;
+        for (auto& af : d.value("features", json::array()))
+            if (af.value("type", "") == "cut" && af.contains("def") && af["def"].contains("components"))
+                for (auto& cc : af["def"]["components"]) cutComps.insert(cc.get<std::string>());
         size_t nComp = d.value("components", json::array()).size(), kComp = 0;
         for (auto& c : d.value("components", json::array()))
         {
@@ -524,7 +532,18 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
                 tr->x(tr->x() + 1e-10);
                 xf->translation(tr);
             }
-            Ptr<Occurrence> o = comp->occurrences()->addExistingComponent(cit->second, xf);
+            bool cutCopy = cutComps.count(c.value("id", "")) > 0;
+            Ptr<Occurrence> o = cutCopy ? comp->occurrences()->addNewComponentCopy(cit->second, xf)
+                                        : comp->occurrences()->addExistingComponent(cit->second, xf);
+            if (o && cutCopy)
+            {
+                Ptr<Component> cc = o->component();
+                cc->attributes()->add("NCX", "assemblyCutCopy", cd);   // the document it copies (recorded below)
+                cutCopies.push_back({cc, cd});
+                cc->name(cit->second->name() + " (" + c.value("name", c.value("id", "")) + ", assembly cut)");
+                report.add(name, c.value("name", c.value("id", "")), "approximate",
+                           "an independent copy of " + cit->second->name() + " (Fusion's cut in an assembly changes the component itself; this instance takes the assembly's cut, the part does not)");
+            }
             if (!o)
             {
                 report.add(name, c.value("name", c.value("id", "")), "failed", "could not place the component: " + lastError());
@@ -622,6 +641,10 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
     for (auto& kv : compOf)
         if (const json* sd = findDoc(model, baseDocId(kv.first)))
             if (kv.second && kv.second->isValid()) recordDocument(kv.second, *sd);
+    // a copy for an assembly-level cut is its part's document too (the cut belongs to the assembly)
+    for (auto& cc : cutCopies)
+        if (const json* sd = findDoc(model, baseDocId(cc.second)))
+            if (cc.first && cc.first->isValid()) recordDocument(cc.first, *sd);
     for (auto& kv : occOf)
     {
         size_t bar = kv.first.find('|');
