@@ -19,8 +19,8 @@ with the format or the core: `ISSUES.md`.
 ## Installing
 
 1. Download the installer:
-   **[NCX-Fusion-Setup-0.2.0.exe](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/fusion-v0.2.0/NCX-Fusion-Setup-0.2.0.exe)**
-   ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/fusion-v0.2.0)).
+   **[NCX-Fusion-Setup-0.2.3.exe](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/fusion-v0.2.3/NCX-Fusion-Setup-0.2.3.exe)**
+   ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/fusion-v0.2.3)).
 2. Double-click it. If Windows says "Windows protected your PC", click **More info**, then **Run anyway** (the
    installer is not signed by a paid certificate).
 3. Click **Install**, then **Finish**. If Fusion is open, the installer asks you to close it first.
