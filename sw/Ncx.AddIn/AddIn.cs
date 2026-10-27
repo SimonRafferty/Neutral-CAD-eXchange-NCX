@@ -1,4 +1,4 @@
-// The SolidWorks add-in: menu items only (Tools > NCX Translator), as the user asked - no task pane,
+// The SolidWorks add-in: menu items only (File > NCX Translator), as the user asked - no task pane,
 // no toolbar. Export Neutral writes the active part/assembly (and every document it depends on) to one
 // NCX file; Import Neutral rebuilds a model from one, shows the per-feature report and verification.
 //
@@ -23,7 +23,9 @@ namespace Ncx.AddIn
     public class NcxAddIn : ISwAddin
     {
         const string Title = "NCX Translator";
-        const string Menu = "NCX Translator@&Tools";
+        // File > NCX Translator, like Fusion's File menu commands (user 2026-10-27; it was at the bottom of Tools)
+        const string Menu = "NCX Translator@&File";
+        const int MenuPosition = 2;   // just below File > Open... (New, Open come first in every document type)
         static readonly int[] DocTypes = { 0, 1, 2 };   // no document, part, assembly
 
         ISldWorks sw;
@@ -60,7 +62,7 @@ namespace Ncx.AddIn
             sw.SetAddinCallbackInfo2(0, this, cookie);
             foreach (int t in DocTypes)
             {
-                sw.AddMenu(t, Menu, -1);
+                sw.AddMenu(t, Menu, MenuPosition);
                 if (t != 0)
                     sw.AddMenuItem4(t, cookie, "Export Neutral (NCX)...@" + Menu, -1, "OnExport", "OnEnableExport",
                                     "Write this model and its history to a single NCX file", "");
