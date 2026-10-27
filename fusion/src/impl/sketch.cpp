@@ -442,11 +442,14 @@ std::string Replayer::replaySketch(json& nf, const json& def, const Ptr<Base>& p
     }
     currentFrame_ = nullptr;
     if (!plane) return "sketch plane: " + why;
-    Ptr<Sketch> sk = comp_->sketches()->add(plane);
+    auto timing = std::make_unique<TimedSection>("sketch: create on its plane");
+    // without the face's edges: Fusion's add() projects them (its "auto project" preference), and they are not the
+    // source's geometry (extra profiles); projecting and deleting them cost 27 s of the folding step's import
+    Ptr<Sketch> sk = comp_->sketches()->addWithoutEdges(plane);
+    if (!sk) sk = comp_->sketches()->add(plane);
     if (!sk) return "could not create a sketch on the plane: " + lastError();
     name(sk, nf.value("name", ""));
-    // a sketch made on a face gets the face's edges projected into it (Fusion's "auto project" preference):
-    // they are not the source's geometry and would make extra profiles
+    // any edges projected all the same are removed
     {
         std::vector<Ptr<SketchCurve>> auto_;
         Ptr<SketchCurves> cs = sk->sketchCurves();
@@ -477,6 +480,7 @@ std::string Replayer::replaySketch(json& nf, const json& def, const Ptr<Base>& p
             else if (op && dist(at, proj) < 1e-6) m.origin = op;
         }
     }
+    timing = std::make_unique<TimedSection>("sketch: entities (compute deferred)");
     sk->isComputeDeferred(true);
     std::vector<std::string> notes, splineInfo;
     if (!planeNote.empty()) notes.push_back(planeNote);
@@ -634,8 +638,14 @@ std::string Replayer::replaySketch(json& nf, const json& def, const Ptr<Base>& p
         Ptr<SketchPoint> p = sk->sketchPoints()->add(posOf(e["p"]));
         if (p) m.ents[e["id"]] = p;
     }
+    // Relations and dimensions go into the live sketch, each one re-solving it (relations 69 s and dimensions 60 s of
+    // the folding step's import). Deferring the solve over them was tried (222 s instead of 318 s), but Fusion
+    // projects nothing into a deferred sketch: every relation to a model edge or another sketch's entity failed.
+    // Doing that would need those projections made first, with the solve on.
+    timing = std::make_unique<TimedSection>("sketch: compute on");
     sk->isComputeDeferred(false);
     std::vector<std::string> infos = splineInfo;
+    timing = std::make_unique<TimedSection>("sketch: relations");
     if (def.contains("constraints"))
         for (auto& c : def["constraints"])
         {
@@ -644,6 +654,7 @@ std::string Replayer::replaySketch(json& nf, const json& def, const Ptr<Base>& p
             if (!w.empty() && w[0] == '~') infos.push_back(w.substr(1));
             else if (!w.empty()) notes.push_back(w);
         }
+    timing = std::make_unique<TimedSection>("sketch: dimensions");
     if (def.contains("dimensions"))
         for (auto& d : def["dimensions"])
         {
@@ -651,8 +662,10 @@ std::string Replayer::replaySketch(json& nf, const json& def, const Ptr<Base>& p
             std::string w = addDimension(m, d);
             if (!w.empty()) notes.push_back(w);
         }
+    timing = std::make_unique<TimedSection>("sketch: fully-defined check");
     if (def.value("constrained", "") == "full" && !sk->isFullyConstrained())
         notes.push_back("the source sketch is fully defined, the rebuilt one is not");
+    timing = std::make_unique<TimedSection>("sketch: hide, ids");
     // the source's visibility (FORMAT-SPEC 4, sketch `hidden`)
     if (def.value("hidden", false)) sk->isLightBulbOn(false);
     features[nf.value("id", "")] = sk;
@@ -663,6 +676,7 @@ std::string Replayer::replaySketch(json& nf, const json& def, const Ptr<Base>& p
             if (Ptr<Attributes> as = kv.second->attributes()) as->add("NCX", "id", kv.first);
     sketches_[nf.value("id", "")] = m;
     sketchDefs_[nf.value("id", "")] = def;
+    timing.reset();
     if (!infos.empty())
     {
         std::string all;

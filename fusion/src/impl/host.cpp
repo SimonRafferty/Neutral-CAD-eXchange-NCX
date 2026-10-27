@@ -591,7 +591,17 @@ json descriptor(const Ptr<Base>& entity0)
         g["bbox"] = json::array({pt[0], pt[1], pt[2], pt[0], pt[1], pt[2]});
         return json{{"kind", kind}, {"by", "geom"}, {"geom", g}};
     }
-    g["bbox"] = boxMm(entity);
+    // Fusion's box of an edge is not always tight around it: an arc's highest point lay 0.003 mm outside it (a GrabCAD
+    // servo horn's fillet edge), so its own samples fell outside its box; the box takes in the samples
+    std::array<double, 6> box = boxMm(entity);
+    if (g.contains("samples"))
+        for (auto& s : g["samples"])
+            for (int k = 0; k < 3; k++)
+            {
+                box[k] = std::min(box[k], s[k].get<double>());
+                box[k + 3] = std::max(box[k + 3], s[k].get<double>());
+            }
+    g["bbox"] = box;
     return json{{"kind", kind}, {"by", "geom"}, {"geom", g}};
 }
 

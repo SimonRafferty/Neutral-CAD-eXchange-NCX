@@ -12,6 +12,7 @@ json uiImport(const json& req);
 json uiExport(const json& req);
 json screenshot(const json& req);   // probe.cpp
 json closeDocs(const json& req);    // probe.cpp
+json openArchive(const json& req);  // probe.cpp
 json exportJob(const json& req);    // exporter.cpp
 json testModel(const json& req);    // testmodels.cpp: developer test models made in Fusion
 }
@@ -28,6 +29,7 @@ json dispatch(const json& req)
     if (cmd == "uiExport") return uiExport(req);
     if (cmd == "screenshot") return screenshot(req);
     if (cmd == "closeDocs") return closeDocs(req);
+    if (cmd == "openArchive") return openArchive(req);
     if (cmd == "testModel") return testModel(req);
     if (cmd == "version") return json{{"ok", true}, {"impl", kImplVersion}, {"core", ncx_version()}};
     return json{{"ok", false}, {"error", "unknown cmd " + cmd}};

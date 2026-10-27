@@ -42,6 +42,7 @@
         "kind": {"enum": ["part", "assembly"]},
         "name": {"type": "string"},
         "sourceFile": {"type": "string"},
+        "plain": {"type": "boolean", "description": "no history in the source (imported geometry only): an importer takes its bodies from the file's B-rep as they are, rebuilds nothing and checks them against nothing (FORMAT-SPEC 3)"},
         "configurations": {"type": "array", "items": {"$ref": "#/$defs/configuration"}},
         "activeConfiguration": {"$ref": "#/$defs/id"},
         "parameters": {"type": "array", "items": {"$ref": "#/$defs/parameter"}},
@@ -390,7 +391,8 @@
         "moments": {"$ref": "#/$defs/vec3"},
         "bbox": {"type": "array", "items": {"type": "number"}, "minItems": 6, "maxItems": 6},
         "faces": {"type": "integer"}, "edges": {"type": "integer"},
-        "freeform": {"type": "boolean", "description": "a face is not a plane, cylinder, cone, sphere or torus: compared with the freeform tolerances under the exchange profile"}
+        "freeform": {"type": "boolean", "description": "a face is not a plane, cylinder, cone, sphere or torus: compared with the freeform tolerances under the exchange profile"},
+        "plain": {"type": "boolean", "description": "a body of a plain document: paired in a comparison, never compared (FORMAT-SPEC 6)"}
       }
     },
 

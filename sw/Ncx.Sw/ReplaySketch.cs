@@ -325,6 +325,12 @@ namespace Ncx.Sw
                         notes.Add("relation " + c.Str("type") + " not rebuilt");
                         continue;
                     }
+                    string type = AxisRelation(c.Str("type"), src, tgt);
+                    if (type == null)
+                    {
+                        notes.Add("relation " + c.Str("type") + ": the sketch's axes are turned against the source's by an angle that is not a multiple of 90 degrees, kept as drawn");
+                        continue;
+                    }
                     var objs = c.Arr("entities").Select(x => Resolve(sm2, x)).ToArray();
                     if (objs.Any(o => o == null)) { notes.Add("relation " + c.Str("type") + ": entity missing"); continue; }
                     // two of the sketch's own points SolidWorks already joined into one (drawn at the same spot):
@@ -339,7 +345,7 @@ namespace Ncx.Sw
                     int before = rm.GetRelationsCount(0);
                     // which entities, for the report (an id of this sketch, or the kind of outside reference)
                     guardLabel = c.Str("type") + " (" + string.Join(", ", c.Arr("entities").Select(x => x as string ?? ((JObj)x).Str("kind"))) + ")";
-                    if (!AddConstraintBySelection(objs, c.Str("type")) || rm.GetRelationsCount(0) <= before)
+                    if (!AddConstraintBySelection(objs, type) || rm.GetRelationsCount(0) <= before)
                         notes.Add("relation " + guardLabel + " rejected");
                     guardLabel = null;
                 }
@@ -395,6 +401,22 @@ namespace Ncx.Sw
             // 3D sketches
             { "alongX", "sgALONGX3D" }, { "alongY", "sgALONGY3D" }, { "alongZ", "sgALONGZ3D" }
         };
+
+        /// <summary>A relation in the source sketch's axes as one in SolidWorks' sketch axes. "horizontal" / "vertical"
+        /// name the source frame's x / y; SolidWorks picks its own axes for a sketch on a face, which another system's
+        /// file may have turned against them (Fusion's sketch on a side face: x along -Y, while SolidWorks' runs along
+        /// Z), so each becomes the target axis it lies along. Null when it lies along neither (turned by an angle that
+        /// is not a multiple of 90 degrees): no SolidWorks relation says it. Other relations pass unchanged.</summary>
+        static string AxisRelation(string type, SketchFrame src, SketchFrame tgt)
+        {
+            bool points = type == "horizontalPoints" || type == "verticalPoints";
+            if (!points && type != "horizontal" && type != "vertical") return type;
+            var dir = type.StartsWith("horizontal") ? src.X : src.Y;
+            double alongX = Math.Abs(V.Dot(dir, tgt.X)), alongY = Math.Abs(V.Dot(dir, tgt.Y));
+            if (alongX > 1 - 1e-9) return points ? "horizontalPoints" : "horizontal";
+            if (alongY > 1 - 1e-9) return points ? "verticalPoints" : "vertical";
+            return null;
+        }
 
         bool AddConstraintBySelection(object[] objs, string type)
         {

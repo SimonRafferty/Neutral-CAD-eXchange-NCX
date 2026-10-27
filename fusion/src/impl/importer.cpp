@@ -7,7 +7,11 @@
 #include "reference.h"
 #include "replay.h"
 
+#include <shlobj.h>
+
 #include <chrono>
+#include <ctime>
+#include <fstream>
 
 namespace ncxf {
 
@@ -243,7 +247,32 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
         out["notice"] = ref.noticeFound.empty() ? "not found" : ref.noticeFound;
         json stale = coreCompare(model["fingerprint"], ref.fingerprint, "exchange");
         out["staleCheck"] = stale.value("result", "?");
-        if (stale.value("result", "") == "mismatch")
+        if (stale.value("result", "") != "match") out["staleDetail"] = stale;   // which bodies, which quantities
+        // Fusion's STEP reader measures some freeform bodies of its own files differently (a GrabCAD caster's modelled
+        // thread, read back: 2e-3 in volume, 5e-2 in moments, while OpenCASCADE and SolidWorks read the same file within
+        // tolerance). A mismatch only there, every body present and each volume within 1%, is reported and the rebuild
+        // goes on: each part is still checked against the payload once rebuilt, so an edit there still shows
+        bool readerOnly = stale.value("result", "") == "mismatch";
+        std::set<long long> oddBodies;
+        if (readerOnly)
+            for (auto& d : stale.value("differences", json::array()))
+            {
+                if (d.value("severity", "") != "mismatch") continue;
+                if (!d.contains("body") || !d["body"].is_number_integer()) { readerOnly = false; break; }
+                long long bi = d["body"].get<long long>();
+                const json& eb = model["fingerprint"]["bodies"];
+                bool ff = bi >= 0 && bi < static_cast<long long>(eb.size()) && eb[bi].value("freeform", false);
+                bool smallVol = d.value("quantity", "") != "volume" ||
+                                std::fabs(d.value("actual", 0.0) - d.value("expected", 0.0)) <= 0.01 * std::fabs(d.value("expected", 1.0));
+                if (!ff || !smallVol) { readerOnly = false; break; }
+                oddBodies.insert(bi);
+            }
+        if (readerOnly)
+            report.add(file.filename().u8string(), "file", "note",
+                       std::to_string(oddBodies.size()) + " freeform bod" + (oddBodies.size() == 1 ? "y" : "ies") +
+                           " of the file measure a little differently in Fusion's STEP reader (" + differencesText(stale) +
+                           "); the rest matches its payload, so the model is rebuilt and each part checked");
+        else if (stale.value("result", "") == "mismatch")
             plainReason = "the file's geometry no longer matches its payload (" + differencesText(stale) +
                           "): it was changed after export";
     }
@@ -295,6 +324,22 @@ json importFileInner(const fs::path& file, const json& opts, Ptr<Document>& crea
             std::string st;
             importAssembly(model, ref, des, report, opts, file, verification, st);
             out["status"] = st;
+        }
+        else if (rootDoc->value("plain", false))
+        {
+            // a plain part (FORMAT-SPEC 4: no history in the source, imported geometry only): the file's geometry as
+            // it is, with its properties; nothing rebuilt or compared, a note rather than a fallback
+            progressPhase("plain part");
+            root->name(rootDoc->value("name", ""));
+            std::string w = importPlain(file, root, model, noticeName);
+            Ptr<Component> plainComp = root;
+            if (root->bRepBodies()->count() == 0 && root->occurrences()->count() > 0) plainComp = root->occurrences()->item(0)->component();
+            Replayer rp(report, model, file);
+            rp.replayPropertiesOn(*rootDoc, plainComp);
+            report.add(rootDoc->value("name", ""), "part", "note",
+                       "no history in the source (imported geometry): its bodies as the file has them" + (w.empty() ? "" : " (" + w + ")"));
+            verification.push_back(json{{"document", rootDoc->value("name", "")}, {"mass", "plain"}});
+            out["status"] = "plain";
         }
         else
         {
@@ -443,6 +488,127 @@ json importJob(const json& req)
     return importFile(fs::u8path(req["file"].get<std::string>()), req);
 }
 
+namespace {
+
+// "A, B, C and 4 more"
+std::string nameList(const std::vector<std::string>& names, size_t most = 5)
+{
+    std::string s;
+    for (size_t i = 0; i < names.size() && i < most; i++) s += (i ? ", " : "") + names[i];
+    if (names.size() > most) s += " and " + std::to_string(names.size() - most) + " more";
+    return s;
+}
+
+} // namespace
+
+// The import report box in plain words. Most people who open an NCX file are not CAD specialists: a list of every
+// approximated feature reads as a list of errors. So the box says the model came in, names only the parts worth
+// looking at, and counts the rest; the saved report file keeps every entry.
+//   -> {"text", "clean" (nothing to say beyond "it worked"), "check" (a part's shape may differ: a warning)}
+json importSummary(const json& res)
+{
+    const json& report = res.contains("report") ? res["report"] : json::array();
+    // parts replaced by the file's own geometry: right shape, no feature history (their features don't count)
+    std::set<std::string> fixedSet;
+    bool wholeFilePlain = false;
+    for (auto& e : report)
+        if (e.value("result", "") == "fallback")
+        {
+            if (e.value("item", "") == "file") wholeFilePlain = true;
+            else fixedSet.insert(e.value("document", ""));
+        }
+    // parts whose mass properties (volume, area, centroid, inertia) did not match and that were not replaced: the
+    // one thing worth a warning. A face-by-face difference with matching mass properties is the same surfaces cut
+    // into faces differently (the folding step's Cheek Opposite: a few small faces split another way), which the
+    // report file lists but the box does not
+    std::vector<std::string> check;
+    for (auto& v : res.value("verification", json::array()))
+    {
+        std::string d = v.value("document", "");
+        if (fixedSet.count(d)) continue;
+        if (v.contains("mass") && v["mass"].is_string() && v["mass"] == "mismatch") check.push_back(d);
+    }
+    // features built another way (approximate) or left out (failed) in parts that kept their history; notes are
+    // information only and are not mentioned
+    int different = 0;
+    for (auto& e : report)
+    {
+        std::string r = e.value("result", "");
+        if (r != "rebuilt" && r != "note" && r != "fallback" && !fixedSet.count(e.value("document", ""))) different++;
+    }
+    std::vector<std::string> fixed(fixedSet.begin(), fixedSet.end());
+
+    json out{{"check", !check.empty()}};
+    if (wholeFilePlain)
+    {
+        out["text"] = "Your model has been imported into Fusion.\n\n"
+                      "This is a short report on how the import went. It is not an error message.\n\n"
+                      "- The model has the right shape, but it came in as fixed shapes without its editable feature "
+                      "history (the NCX information in the file could not be used).";
+        return out;
+    }
+    if (check.empty() && fixed.empty() && different == 0)
+    {
+        out["clean"] = true;
+        out["text"] = "Your model has been imported into Fusion, and everything matches the original.";
+        return out;
+    }
+    std::string t = "Your model has been imported into Fusion.\n\n"
+                    "This is a short report on how the import went. It is not an error message.\n\n";
+    if (check.empty())
+        t += "- Every part was checked against the original, and its shape matches.\n";
+    else
+        t += "- Please look over " + std::string(check.size() == 1 ? "this part" : "these parts") +
+             ": the check found the shape may differ from the original: " + nameList(check) + ".\n";
+    if (!fixed.empty())
+        t += "- " + nameList(fixed) + (fixed.size() == 1 ? " has" : " have") +
+             " the right shape, but came in without editable feature history (Fusion could not rebuild "
+             + (fixed.size() == 1 ? "it" : "them") + " step by step).\n";
+    if (different > 0)
+        t += "- " + std::to_string(different) + (different == 1 ? " item was" : " items were") +
+             " carried over slightly differently, as Fusion has no exact match" + (check.empty() ? ". This does not change the shape.\n" : ".\n");
+    if (!t.empty() && t.back() == '\n') t.pop_back();
+    out["text"] = t;
+    return out;
+}
+
+// The full report as a text file in Documents\NCX reports (one per imported file, replaced on the next import of the
+// same file name), for whoever helps the user. Returns the path, or "" when it could not be written.
+std::string writeImportReport(const fs::path& source, const json& res, const std::string& summary)
+{
+    PWSTR p = nullptr;
+    fs::path dir;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &p))) dir = fs::path(p) / L"NCX reports";
+    CoTaskMemFree(p);
+    if (dir.empty()) return "";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    fs::path file = dir / (source.stem().wstring() + L" - import report.txt");
+    std::ofstream f(file, std::ios::binary);
+    if (!f) return "";
+    auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    char ts[32];
+    std::strftime(ts, sizeof ts, "%Y-%m-%d %H:%M", std::localtime(&now));
+    f << "NCX import report\r\nFile: " << source.u8string() << "\r\nImported: " << ts << "\r\n\r\n";
+    std::string s = summary;   // the box's text, with Windows line ends
+    for (size_t i = 0; (i = s.find('\n', i)) != std::string::npos; i += 2) s.replace(i, 1, "\r\n");
+    f << s << "\r\n\r\n";
+    f << "Shape checks against the original (per part)\r\n";
+    for (auto& v : res.value("verification", json::array()))
+    {
+        f << "  " << v.value("document", "");
+        for (const char* k : {"mass", "faces", "structure", "flex"})
+            if (v.contains(k) && v[k].is_string()) f << "   " << k << ": " << v[k].get<std::string>();
+        f << "\r\n";
+    }
+    f << "\r\nEvery item (part | item | result | reason)\r\n";
+    for (auto& e : res.value("report", json::array()))
+        f << "  " << e.value("document", "") << " | " << e.value("item", "") << " | " << e.value("result", "")
+          << (e.value("reason", "").empty() ? "" : " | " + e.value("reason", "")) << "\r\n";
+    if (!f) return "";
+    return file.u8string();
+}
+
 json uiImport(const json& req)
 {
     Ptr<Application> app = Application::get();
@@ -457,7 +623,10 @@ json uiImport(const json& req)
         if (dlg->showOpen() != DialogOK) return json{{"ok", true}, {"cancelled", true}};
         path = dlg->filename();
     }
-    json o{{"faces", true}, {"ui", true}};
+    // No face-by-face check from the menu: the mass check decides everything the user is told (and a fallback),
+    // while the face check took over half of a large import (the folding step: 370 s of 680 on a fast PC, its
+    // thousands of distance queries). Test jobs ({"cmd": "import"}) keep it; a developer can ask for it here.
+    json o{{"faces", req.value("faces", false)}, {"ui", true}};
     if (req.contains("cancelAfter")) o["cancelAfter"] = req["cancelAfter"];
     json res = importFile(fs::u8path(path), o);
     if (res.value("status", "") == "cancelled")
@@ -465,30 +634,21 @@ json uiImport(const json& req)
         if (!req.value("quiet", false)) ui->messageBox("NCX import cancelled; nothing was left open.", "NCX");
         return res;
     }
-    // a one-line status when everything carried; the report when something needs attention
-    std::string lines;
-    int attention = 0;
-    for (auto& e : res.value("report", json::array()))
+    if (!res.value("ok", false))
     {
-        std::string r = e.value("result", "");
-        if (r == "rebuilt") continue;
-        attention++;
-        lines += e.value("document", "") + " / " + e.value("item", "") + ": " + r + (e.value("reason", "").empty() ? "" : " - " + e.value("reason", "")) + "\n";
+        if (!req.value("quiet", false))
+            ui->messageBox("NCX could not import this file.\n\n" + res.value("error", "?"), "NCX import", OKButtonType, CriticalIconType);
+        return res;
     }
-    for (auto& v : res.value("verification", json::array()))
-    {
-        for (const char* k : {"mass", "faces", "structure"})
-            if (v.contains(k) && v[k] != "match" && v[k] != "topology" && v[k] != "count_only")
-            {
-                attention++;
-                lines += v.value("document", "") + ": " + k + " check " + v[k].get<std::string>() + "\n";
-            }
-    }
-    res["summary"] = lines;
+    json summary = importSummary(res);
+    std::string reportFile = writeImportReport(fs::u8path(path), res, summary.value("text", ""));
+    std::string box = summary.value("text", "");
+    if (!summary.value("clean", false))
+        box += "\n\nClick OK to carry on." + (reportFile.empty() ? "" : "\n\nFull details, for anyone helping you, are saved in:\n" + reportFile);
+    res["summary"] = box;
+    if (!reportFile.empty()) res["reportFile"] = reportFile;
     if (req.value("quiet", false)) return res;   // developer test: no modal box
-    if (!res.value("ok", false)) ui->messageBox("NCX import failed: " + res.value("error", "?"));
-    else if (attention == 0) ui->messageBox("NCX import: everything rebuilt and verified.", "NCX");
-    else ui->messageBox("NCX import (" + res.value("status", "") + "):\n\n" + lines, "NCX");
+    ui->messageBox(box, "NCX import report", OKButtonType, summary.value("check", false) ? WarningIconType : InformationIconType);
     return res;
 }
 

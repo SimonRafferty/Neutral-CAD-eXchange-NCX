@@ -204,9 +204,8 @@ namespace Ncx.Sw
             return md.Extension.SaveAs(path, 0, 1 | 2, null, ref err, ref warn) ? path : null;   // silent copy
         }
 
-        /// <summary>Replace a part that could not be rebuilt faithfully by its reference geometry.
-        /// Returns the new document, or the original one if no reference geometry is available.</summary>
-        IModelDoc2 FallBack(JObj d, IModelDoc2 partial, string outDir, string reason, bool singlePartFile)
+        /// <summary>The reference part file (the file's own B-rep) of a part document, or null.</summary>
+        string ReferenceFor(JObj d, string outDir, bool singlePartFile)
         {
             ImportReference(outDir);
             string refPath;
@@ -215,6 +214,48 @@ namespace Ncx.Sw
             // a part file that also carries other documents (the layout it is derived from): its B-rep is the root's
             if (refPath == null && rootRefPath != null && d.Str("id") == Model?.Str("root")) refPath = rootRefPath;
             if (refPath == null) refPath = ReferenceByGeometry(d);
+            return refPath;
+        }
+
+        /// <summary>A new part holding the reference geometry (solid bodies, link broken); inserted says whether the
+        /// geometry went in (the document is returned either way).</summary>
+        IModelDoc2 FromReference(string refPath, out bool inserted)
+        {
+            var nd = (IModelDoc2)sw.NewDocument(sw.GetUserPreferenceStringValue(8), 0, 0, 0);
+            created.Add(nd);
+            quiet?.Add(nd);
+            int n0 = ((IFeatureManager)nd.FeatureManager).GetFeatureCount(false);
+            ((IPartDoc)nd).InsertPart2(refPath, 1 | 512);
+            inserted = ((IFeatureManager)nd.FeatureManager).GetFeatureCount(false) != n0;
+            return nd;
+        }
+
+        /// <summary>A plain part (FORMAT-SPEC 4: no history in the source, imported geometry only): the file's own
+        /// bodies as they are, with its properties; nothing rebuilt or compared, a note rather than a fallback.</summary>
+        IModelDoc2 PlainPart(JObj d, string outDir, bool singlePartFile)
+        {
+            string refPath = ReferenceFor(d, outDir, singlePartFile);
+            bool inserted = false;
+            var nd = refPath == null ? null : FromReference(refPath, out inserted);
+            if (!inserted)
+            {
+                Report.Add(d.Str("id"), d.Str("name"), "failed", "a plain part (no history in the source), but the file's geometry for it could not be used");
+                return nd ?? (IModelDoc2)sw.NewDocument(sw.GetUserPreferenceStringValue(8), 0, 0, 0);
+            }
+            doc = nd;   // the part the property and appearance replays work on
+            part = nd as IPartDoc;
+            ReplayPropertiesAndMaterials(nd, d);
+            ReplayAppearances(nd, d);
+            Report.Add(d.Str("id"), d.Str("name"), "note", "no history in the source (imported geometry): its bodies as the file has them");
+            Verification.Add(new JObj { { "document", d.Str("id") }, { "result", "plain" } });
+            return nd;
+        }
+
+        /// <summary>Replace a part that could not be rebuilt faithfully by its reference geometry.
+        /// Returns the new document, or the original one if no reference geometry is available.</summary>
+        IModelDoc2 FallBack(JObj d, IModelDoc2 partial, string outDir, string reason, bool singlePartFile)
+        {
+            string refPath = ReferenceFor(d, outDir, singlePartFile);
             if (refPath == null)
             {
                 Report.Add(d.Str("id"), d.Str("name"), "failed", reason + "; no reference geometry for a fallback");
@@ -227,13 +268,9 @@ namespace Ncx.Sw
             partial.Extension.SaveAs(keep, 0, 1 | 2, null, ref err, ref warn);
             sw.CloseDoc(partial.GetTitle());
 
-            var nd = (IModelDoc2)sw.NewDocument(sw.GetUserPreferenceStringValue(8), 0, 0, 0);
-            created.Add(nd);
-            quiet?.Add(nd);
-            var np = (IPartDoc)nd;
-            int n0 = ((IFeatureManager)nd.FeatureManager).GetFeatureCount(false);
-            np.InsertPart2(refPath, 1 | 512);   // solid bodies, link broken: plain imported geometry
-            if (((IFeatureManager)nd.FeatureManager).GetFeatureCount(false) == n0)
+            bool inserted;
+            var nd = FromReference(refPath, out inserted);   // solid bodies, link broken: plain imported geometry
+            if (!inserted)
             {
                 Report.Add(d.Str("id"), d.Str("name"), "failed", reason + "; reference geometry could not be inserted");
                 return nd;

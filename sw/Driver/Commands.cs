@@ -29,6 +29,8 @@ namespace Ncx.Driver
             try
             {
                 var exp = new Exporter(sw);
+                var t0 = DateTime.Now;
+                if (opts.ContainsKey("phases")) exp.Phase = s => Console.Error.WriteLine((DateTime.Now - t0).TotalSeconds.ToString("F1") + " s  " + s);
                 string flex;
                 // parameter-flex probes: auto (default: only where needed) | off | N per part
                 if (opts.TryGetValue("flex", out flex)) exp.FlexProbes = flex == "auto" ? -1 : flex == "off" ? 0 : int.Parse(flex);

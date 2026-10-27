@@ -215,10 +215,11 @@ json facesBrief(const json& fc, const json& refBodies)
     return out;
 }
 
-// A component holding the file's own bodies of a part (the fallback for a part that did not rebuild).
-Ptr<Occurrence> plainComponent(const Ptr<Component>& root, const RefComponent& rc, const std::string& name)
+// A component holding the file's own bodies of a part: the fallback for a part that did not rebuild, or a plain
+// part (no history in the source).
+Ptr<Occurrence> plainComponent(const Ptr<Component>& root, const RefComponent& rc, const std::string& name, bool fallback = true)
 {
-    progressStep(name + ": the file's own geometry (fallback)");
+    progressStep(name + (fallback ? ": the file's own geometry (fallback)" : ": its geometry (no history in the source)"));
     Ptr<Occurrence> o = root->occurrences()->addNewComponent(Matrix3D::create());
     Ptr<Component> c = o->component();
     c->name(name);
@@ -315,6 +316,30 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
         if (d.value("kind", "") != "part") continue;
         std::string id = d.value("id", ""), name = d.value("name", "");
         if (!only.empty() && !only.count(name)) continue;
+        // a plain part (FORMAT-SPEC 4: no history in the source, imported geometry only): the file's own bodies, as
+        // they are, nothing rebuilt or compared; a note, not a fallback
+        if (d.value("plain", false))
+        {
+            auto rit = ref.components.find(name);
+            if (rit == ref.components.end() || rit->second.temp.empty())
+            {
+                report.add(name, "part", "failed", "a plain part (no history in the source), but the file has no geometry for it");
+                continue;
+            }
+            progressPhase("plain parts");
+            Ptr<Occurrence> plain = plainComponent(buildRoot, rit->second, name, false);
+            auto rp = std::make_unique<Replayer>(report, model, file);
+            rp->registry = &registry;
+            if (plain) rp->replayPropertiesOn(d, plain->component());
+            registry[id] = rp.get();
+            buildOcc[id] = plain;
+            compOf[id] = plain ? plain->component() : nullptr;
+            skipFlex.insert(id);
+            report.add(name, "part", "note", "no history in the source (imported geometry): its bodies as the file has them");
+            verification.push_back(json{{"document", name}, {"mass", "plain"}});
+            reps[id] = std::move(rp);
+            continue;
+        }
         Ptr<Occurrence> occ = buildRoot->occurrences()->addNewComponent(Matrix3D::create());
         if (!occ)
         {

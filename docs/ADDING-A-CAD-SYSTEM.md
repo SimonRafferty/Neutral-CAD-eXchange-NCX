@@ -91,7 +91,10 @@ them flexible.
 - **Units.** The payload is in millimetres and degrees. Many CAD APIs use other units internally (Fusion: centimetres,
   radians); convert at the boundary and nowhere else.
 - **Coordinate frames.** Sketches carry an explicit frame (origin, x, z). A target sketch's own axes may differ;
-  map through the frame (see the SolidWorks `SketchFrame`). The hard part is knowing your system's own frame for a
+  map through the frame (see the SolidWorks `SketchFrame`). Directions map too: `horizontal` / `vertical` relations
+  and dimensions are along the file's frame x / y, which may be your sketch's y / x (a Fusion sketch on a side face
+  against SolidWorks' own sketch there: the relations, applied unmapped, twisted the rectangle and every later
+  feature failed). The hard part is knowing your system's own frame for a
   sketch, especially on a face: before writing the sketch translator, measure it with one throwaway sketch each on
   every default plane, on a face in each axis direction and on an offset plane. In an assembly, every component's
   geometry is in its own document's frame and every mate's `frame` in the assembly's: take a face into the design
@@ -283,8 +286,17 @@ one the user will try first.
 - **Cancel** really stops, within a second, and leaves a defined state: an import closes everything it created
   (scratch documents too); an export finishes the feature it is reading, puts the model back as it was and writes
   no file.
-- The report: one line per feature (rebuilt / approximate / failed / fallback, with the reason). Show it only when
-  something needs attention; otherwise a one-line status.
+- The report: one line per feature (rebuilt / approximate / failed / fallback, with the reason), saved as a file.
+  Most people who receive an NCX file are not CAD specialists, and a list of every approximated feature reads to
+  them as a list of errors: a first user of the Fusion add-in saw a box of 170 such lines on a model that had come in
+  perfectly and decided the import had failed. So what you show is a short summary in plain words:
+  - Start with "Your model has been imported", and say it is a report on how the import went, not an error message.
+  - The only warning: a part whose mass properties do not match and that was not replaced by the file's geometry.
+    Face-by-face differences with matching mass properties (faces split differently), and sketches less defined
+    than the source's, belong in the file, not the box.
+  - Name the parts that came in as fixed geometry (right shape, no feature history).
+  - Count everything else in one line ("12 items were carried over slightly differently...").
+  - End with where the full report is saved, "for anyone helping you". A clean import: a one-line status, no box.
 - The model opens upright (`orientation`, §3), with the sketches hidden that the source hides, and nothing of the
   import's own scaffolding in the way.
 
@@ -331,7 +343,26 @@ Write the rest of what users see:
 A few writing rules:
 - **Profiles:** whenever a sketch has more than one profile, write the selection explicitly as `contours` or
   `regions`. Your system's "every profile" is not the odd-even whole sketch: adjacent regions, or a revolve axis on
-  the boundary, make SolidWorks refuse it.
+  the boundary, make SolidWorks refuse it. Write `contours` only when every selected profile is one; a mixed
+  selection goes out as `regions` (a rectangle written as a contour beside two regions was no contour at all in
+  SolidWorks, where other curves met its sides).
+- **A face as a profile** (Fusion lets a user pick a model face to extrude): write a sketch on that face that traces
+  its edges, every loop, followed by the extrude of that whole sketch.
+- **A feature that failed in the source** and changes nothing (a cut with no target body, kept with a warning):
+  write it `opaque` with `noGeometry`. Written as itself it fails at the importer too.
+- **Parts with no history** (a STEP brought in as it is, a direct-modelled design): write them `plain` (§4), with no
+  features. Decide it before reading any feature: read one by one, 290 imported bodies took SolidWorks 38 minutes.
+  Bodies deleted from the imported ones (an NCX import deletes the notice body that way) are no history either.
+- **Carry the result whenever you are not sure** another system builds the feature the same: a region with a piece
+  on no sketch segment (a projected edge, a projected whole circle inside a ring), a taper, a turning move, a thread
+  that resizes its cylinder. Real Fusion models (GrabCAD) showed it: without it, one extrude came out a little
+  different and every fillet after it failed.
+- **One unreadable feature or joint must not stop the export**: write it `opaque` with its result and the reason, and
+  go on. Fusion threw from a joint, from the name of a cut/paste-body timeline item, and from a parameter list that a
+  direct design does not have.
+
+On the import side, check every written feature that carries a result against it, and when the rebuild differs,
+remove it and use the result (the rest of the history then still rebuilds).
 - **Cuts:** never write `merge` on a cut.
 - **Document order:** dependencies first (a layout before the parts inserting it). An importer should not rely on
   that either; order the documents itself.
@@ -444,6 +475,12 @@ add yours. Ones that cost a debugging round each:
     such a body plain, or every later feature breaks.
   - A cut in an assembly changes the component, so every instance of it. Give each instance the cut touches its own
     copy, and export the copies as their part's document.
+  - Found on real (GrabCAD) models: the STEP export leaves hidden bodies out (show them for a result's export); an
+    edge's bounding box is not always tight (an arc's top was 0.003 mm outside it); a thread's
+    `inputCylindricalFaces` is empty in every timeline state (use its own faces), and a cosmetic thread resizes its
+    cylinder; a direct design has no timeline and no parameter lists; `doEvents`, a joint and some timeline items'
+    names can throw; Fusion's STEP reader measures a modelled thread's body differently from Fusion itself (2e-3 in
+    volume) while other kernels agree; an archive with external references does not open outside Fusion's cloud.
 - **Onshape** (from a trial add-in, not yet in this repository): cloud-only, so a web-API client (or an Onshape app's
   server), not a desktop add-in. Use a versioned path (`/api/v17`) and `application/json;charset=UTF-8; qs=0.09`:
   unversioned paths use a legacy JSON form and every feature post fails with a bare "Error processing json". Quotas:

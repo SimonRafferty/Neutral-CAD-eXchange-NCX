@@ -586,10 +586,20 @@ namespace Ncx.Sw
         }
 
         /// <summary>Fingerprint of a part, or of every body of an assembly's (resolved, unsuppressed) leaf
-        /// components placed in the assembly frame: what an importer measures on the STEP B-rep.</summary>
-        public static JObj DocFingerprint(IModelDoc2 d)
+        /// components placed in the assembly frame: what an importer measures on the STEP B-rep.
+        /// plainPaths: the files of plain parts (FORMAT-SPEC 4: no history, imported geometry only), whose bodies are
+        /// marked plain (paired in a comparison, never compared).</summary>
+        public static JObj DocFingerprint(IModelDoc2 d, ICollection<string> plainPaths = null)
         {
-            if (d.GetType() != 2) return PartFingerprint((IPartDoc)d);
+            Func<string, bool> plain = p => plainPaths != null && p != null && plainPaths.Contains(p);
+            Func<JObj, JObj> mark = fp => { fp["plain"] = true; return fp; };
+            if (d.GetType() != 2)
+            {
+                var fp = PartFingerprint((IPartDoc)d);
+                if (plain(d.GetPathName()))
+                    foreach (JObj b in fp.Arr("bodies")) mark(b);
+                return fp;
+            }
             var res = new List<object>();
             foreach (IComponent2 c in ((object[])((IAssemblyDoc)d).GetComponents(false) ?? new object[0]))
             {
@@ -597,7 +607,8 @@ namespace Ncx.Sw
                 var bodies = c.GetBodies2(0) as object[];
                 if (bodies == null) continue;
                 var m = Exporter.ToMatrix((double[])((IMathTransform)c.Transform2).ArrayData);
-                foreach (IBody2 b in bodies) res.Add(Placed(BodyFingerprint(b), m));
+                bool cp = plain(c.GetPathName());
+                foreach (IBody2 b in bodies) res.Add(cp ? mark(Placed(BodyFingerprint(b), m)) : Placed(BodyFingerprint(b), m));
             }
             return new JObj { { "bodies", res } };
         }

@@ -117,10 +117,13 @@ namespace Ncx.Sw
         string ReplayMoveBody(JObj nf, JObj def)
         {
             doc.ClearSelection2(true);
+            // a pasted copy sits on its original until moved: identical bodies in one place are interchangeable
+            var taken = new List<IBody2>();
             foreach (JObj r in def.Arr("bodies"))
             {
-                var b = FindBody(r);
+                var b = FindBody(r, taken);
                 if (b == null) return "body to move not found";
+                taken.Add(b);
                 if (!b.Select2(true, Mark(1))) return "could not select the body to move";
             }
             var t = def.Vec("translate") ?? new double[3];

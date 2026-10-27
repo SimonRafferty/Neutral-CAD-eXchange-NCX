@@ -222,6 +222,74 @@ json probe(const json& req)
         if (!des) return json{{"ok", false}, {"error", "no active design"}};
         return json{{"ok", true}, {"tree", walk(des->rootComponent())}};
     }
+    if (what == "threads")
+    {
+        // developer: what Fusion gives for each thread feature of the root (its data, its faces)
+        Ptr<Design> des = app->activeProduct();
+        json out = json::array();
+        Ptr<ThreadFeatures> tfs = des ? des->rootComponent()->features()->threadFeatures() : nullptr;
+        for (size_t i = 0; tfs && i < tfs->count(); i++)
+        {
+            Ptr<ThreadFeature> th = tfs->item(i);
+            json row{{"name", th->name()}, {"modelled", th->isModeled()}};
+            for (int state = 0; state < 2; state++)
+            {
+                Ptr<TimelineObject> tto = th->timelineObject();
+                if (tto) tto->rollTo(state == 0);   // 0: just before it, 1: after it
+                Ptr<ThreadFeature> t2 = tfs->item(i);
+                Ptr<ThreadInfo> ti = t2 ? t2->threadInfo() : nullptr;
+                std::string e1 = lastError();
+                Ptr<BRepFaces> fs = t2 ? t2->inputCylindricalFaces() : nullptr;
+                std::string e2 = lastError();
+                Ptr<BRepFaces> own = t2 ? t2->faces() : nullptr;
+                row[state == 0 ? "before" : "after"] = json{{"info", (bool)ti}, {"infoErr", e1}, {"faces", fs ? (int)fs->count() : -1}, {"facesErr", e2},
+                                                            {"ownFaces", own ? (int)own->count() : -1}};
+            }
+            des->timeline()->moveToEnd();
+            out.push_back(row);
+        }
+        return json{{"ok", true}, {"threads", out}};
+    }
+    if (what == "farmeasure")
+    {
+        // a body's mass properties as Fusion gives them where it is, against a temporary copy moved to the origin
+        // (developer: far from the origin, do the centroid and moments lose precision?) {"bodies": [indices]}
+        Ptr<Design> des = app->activeProduct();
+        if (!des) return json{{"ok", false}, {"error", "no active design"}};
+        Ptr<Component> root = des->rootComponent();
+        Ptr<TemporaryBRepManager> tm = TemporaryBRepManager::get();
+        json out = json::array();
+        for (auto& jb : req.value("bodies", json::array()))
+        {
+            size_t i = jb.get<size_t>();
+            if (i >= root->bRepBodies()->count()) continue;
+            Ptr<BRepBody> b = root->bRepBodies()->item(i);
+            json here = bodyFingerprint(b);
+            std::array<double, 6> bx = here["bbox"].get<std::array<double, 6>>();
+            V3 mid{(bx[0] + bx[3]) / 2, (bx[1] + bx[4]) / 2, (bx[2] + bx[5]) / 2};
+            Ptr<BRepBody> t = tm->copy(b);
+            Ptr<Matrix3D> m = Matrix3D::create();
+            m->translation(Vector3D::create(-mm2cm(mid[0]), -mm2cm(mid[1]), -mm2cm(mid[2])));
+            tm->transform(t, m);
+            // a temporary body has no material: a real body made from it in a scratch component is measured
+            Ptr<Occurrence> o = root->occurrences()->addNewComponent(Matrix3D::create());
+            Ptr<BaseFeature> bf = o->component()->features()->baseFeatures()->add();
+            json moved;
+            if (bf && bf->startEdit())
+            {
+                Ptr<BRepBody> nb = o->component()->bRepBodies()->add(t, bf);
+                bf->finishEdit();
+                if (o->component()->bRepBodies()->count() > 0)
+                {
+                    moved = bodyFingerprint(o->component()->bRepBodies()->item(0));
+                    for (int k = 0; k < 3; k++) moved["centroid"][k] = moved["centroid"][k].get<double>() + mid[k];
+                }
+            }
+            o->deleteMe();
+            out.push_back(json{{"i", i}, {"here", here}, {"moved", moved}});
+        }
+        return json{{"ok", true}, {"bodies", out}};
+    }
     if (what == "volumes")
     {
         // the solid volume (mm^3) and body count after each timeline item, to find where a rebuild departs from
@@ -767,6 +835,21 @@ json screenshot(const json& req)
     std::string f = req.at("file");
     bool ok = vp->saveAsImageFile(f, req.value("w", 1200), req.value("h", 900));
     return json{{"ok", ok}, {"file", f}};
+}
+
+// {"cmd": "openArchive", "file": "...f3d"}: open a Fusion archive as a new, unsaved design (tracked, so closeDocs
+// closes it): a user's own Fusion model to export in a test.
+json openArchive(const json& req)
+{
+    Ptr<Application> app = Application::get();
+    Ptr<ImportManager> im = app->importManager();
+    Ptr<FusionArchiveImportOptions> o = im ? im->createFusionArchiveImportOptions(req.value("file", "")) : nullptr;
+    if (!o) return json{{"ok", false}, {"error", "could not read the archive"}};
+    Ptr<Document> d = im->importToNewDocument(o);
+    if (!d) return json{{"ok", false}, {"error", "the archive did not open: " + lastError()}};
+    trackDocument(d);
+    d->activate();
+    return json{{"ok", true}, {"name", d->name()}};
 }
 
 // {"cmd": "closeDocs"}: close (unsaved) the documents this implementation created and left open; never a

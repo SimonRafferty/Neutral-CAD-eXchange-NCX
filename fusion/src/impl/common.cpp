@@ -167,6 +167,7 @@ struct ProgressState
     std::string lastMessage, phase;
     std::vector<json> gaps;                 // every gap between two steps: {seconds, before, after}
     std::map<std::string, double> phases;   // seconds per phase
+    std::map<std::string, json> sections;   // TimedSection totals: {seconds, count}
 } progress;
 
 double since(Clock::time_point t) { return std::chrono::duration<double>(Clock::now() - t).count(); }
@@ -187,6 +188,8 @@ void progressPhase(const std::string& phase)
     progress.phaseStart = Clock::now();
 }
 
+std::string progressLastMessage() { return progress.lastMessage; }
+
 json progressTimeline()
 {
     std::vector<json> g = progress.gaps;
@@ -196,7 +199,27 @@ json progressTimeline()
     if (g.size() > 15) g.resize(15);
     std::map<std::string, double> ph = progress.phases;
     if (!progress.phase.empty()) ph[progress.phase] += since(progress.phaseStart);
-    return json{{"steps", progress.value}, {"updates", progress.gaps.size()}, {"doEvents", progress.pumps}, {"seconds", since(progress.t0)}, {"longestGaps", g}, {"phases", ph}};
+    json sec = json::object();
+    for (auto& kv : progress.sections) sec[kv.first] = kv.second;
+    return json{{"steps", progress.value}, {"updates", progress.gaps.size()}, {"doEvents", progress.pumps}, {"seconds", since(progress.t0)},
+                {"longestGaps", g}, {"phases", ph}, {"sections", sec}};
+}
+
+TimedSection::TimedSection(std::string key) : key_(std::move(key)), start_(std::chrono::steady_clock::now()) {}
+TimedSection::~TimedSection()
+{
+    // A destructor must never throw (Fusion terminated, twice, when json::value() threw on a new, null entry): a new
+    // entry starts as an object with zeros, and anything else that fails only loses the measurement
+    try
+    {
+        json& s = progress.sections[key_];
+        if (!s.is_object()) s = json{{"seconds", 0.0}, {"count", 0}};
+        s["seconds"] = s["seconds"].get<double>() + since(start_);
+        s["count"] = s["count"].get<int>() + 1;
+    }
+    catch (...)
+    {
+    }
 }
 
 void progressBegin(const std::string& title, int steps, bool show)
@@ -211,6 +234,7 @@ void progressBegin(const std::string& title, int steps, bool show)
     progress.phase.clear();
     progress.gaps.clear();
     progress.phases.clear();
+    progress.sections.clear();
     if (!show) return;
     Ptr<UserInterface> ui = Application::get()->userInterface();
     if (!ui) return;
@@ -246,7 +270,19 @@ void pump(const std::string& message)
     recordStep(message);   // the gaps measured are between two updates the user sees
     progress.lastPump = Clock::now();
     progress.pumps++;
-    adsk::doEvents();
+    {
+        TimedSection ts("doEvents (Fusion redraws, dialog)");
+        // Fusion can throw out of its event loop while it catches up on the model (a GrabCAD gripper: "Unknown
+        // exception" from here, every few runs at a different feature, which failed the whole export): the pump is
+        // only for the user's sake, so such a throw is ignored
+        try
+        {
+            adsk::doEvents();
+        }
+        catch (...)
+        {
+        }
+    }
     if (progress.dlg && progress.dlg->wasCancelled()) progress.cancelPending = true;
     if (progress.cancelPending && progress.noCancel == 0)
     {

@@ -25,7 +25,9 @@ namespace Ncx.Sw
             {
                 sw.SetUserPreferenceIntegerValue(I_STEP_AP, 214);   // AP242 assemblies hang SolidWorks 2018 (Stage 1)
                 int err = 0, warn = 0;
+                exp.Phase?.Invoke("STEP export");
                 bool ok = doc.Extension.SaveAs(tmp, 0, 1 | 2, null, ref err, ref warn);   // silent, copy
+                exp.Phase?.Invoke("payload into the STEP");
                 if (!ok || !File.Exists(tmp)) throw new InvalidOperationException("STEP export failed: error " + err);
                 var w = NcxCore.PayloadWrite(File.ReadAllBytes(tmp), Encoding.UTF8.GetBytes(json),
                                              "{\"generator\":\"ncx-sw " + Exporter.Version + " SOLIDWORKS " + sw.RevisionNumber() + "\"}");

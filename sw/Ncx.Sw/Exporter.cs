@@ -14,7 +14,7 @@ namespace Ncx.Sw
 {
     public partial class Exporter
     {
-        public const string Version = "0.6.1";
+        public const string Version = "0.6.2";
         readonly ISldWorks sw;
         public readonly Report Report = new Report();
 
@@ -43,6 +43,7 @@ namespace Ncx.Sw
         readonly Dictionary<string, Dictionary<string, string>> originPlanesByDoc = new Dictionary<string, Dictionary<string, string>>();
         readonly Dictionary<string, Dictionary<string, SketchIds>> sketchIdsByDoc = new Dictionary<string, Dictionary<string, SketchIds>>();
         readonly List<IModelDoc2> openedHere = new List<IModelDoc2>();
+        readonly HashSet<string> plainPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);   // plain parts' files (FORMAT-SPEC 4)
         // per part: items an Insert Part brought in (derived feature name -> reference into the source document)
         readonly Dictionary<string, JObj> transferred = new Dictionary<string, JObj>();
         readonly List<KeyValuePair<IFeature, JObj>> exportedFeatures = new List<KeyValuePair<IFeature, JObj>>();
@@ -53,6 +54,7 @@ namespace Ncx.Sw
         public JObj BuildModel(IModelDoc2 root)
         {
             documents.Clear();
+            plainPaths.Clear();
             docIdByPath.Clear();
             docsById.Clear();
             var openBefore = new HashSet<string>(VisibleDocuments().Select(x => x.GetTitle()));
@@ -60,7 +62,9 @@ namespace Ncx.Sw
             try
             {
                 string rootId = ExportDoc(root);
+                Phase?.Invoke("flex probes");
                 ExportFlex();   // needs every document: a probe is measured on all the parts it moves
+                Phase?.Invoke("the file's fingerprint");
                 var model = new JObj
                 {
                     { "format", "ncx" }, { "schema", NcxCore.SchemaVersion },
@@ -72,7 +76,7 @@ namespace Ncx.Sw
                     { "orientation", new JObj { { "up", "y" } } },
                     { "root", rootId },
                     { "documents", documents },
-                    { "fingerprint", Host.DocFingerprint(root) }
+                    { "fingerprint", Host.DocFingerprint(root, plainPaths) }
                 };
                 return model;
             }
@@ -194,10 +198,13 @@ namespace Ncx.Sw
             opaqueSeen = false;
             featureIdsByDoc[id] = featureIds.ToDictionary(k => k.Key, k => k.Value);
             nextFeature = 1;
+            Phase?.Invoke(System.IO.Path.GetFileName(d.GetPathName()) + ": parameters");
             ExportParameters(out var eqs);   // the dimensions equations drive are driving, not reference dimensions
             equationTargets = new HashSet<string>(eqs.Cast<JObj>().Select(e => e.Str("target")), StringComparer.OrdinalIgnoreCase);
             var features = new List<object>();
             var fm = (IFeatureManager)d.FeatureManager;
+            int importedBodies = 0;   // a plain part's imported bodies (decided before any feature is read: see below)
+            bool plain = false;
             try
             {
                 var all = new List<IFeature>();
@@ -216,9 +223,19 @@ namespace Ncx.Sw
                     for (var sub = (IFeature)f.GetFirstSubFeature(); sub != null; sub = (IFeature)sub.GetNextSubFeature())
                         if (sub.GetTypeName2() == "CosmeticThread") all.Add(sub);
                 }
+                Phase?.Invoke(System.IO.Path.GetFileName(d.GetPathName()) + ": " + all.Count + " features listed");
                 CollectTransferred(all);
                 CollectGeneratedSketches(all);
-                foreach (var f in all)
+                // A part whose history is only imported bodies (STEP or other files brought in: Imported1, ...) is plain
+                // (FORMAT-SPEC 4), decided before its features are read: each would otherwise be read as an opaque
+                // feature with its result, a rollback and a STEP export apiece (a 290-body imported part ran for 13
+                // minutes before it was stopped)
+                var real = all.Where(f => { string t = f.GetTypeName2(); return !Skip.Contains(t) && !t.EndsWith("Folder") && t != "RefPlane" && !transferred.ContainsKey(f.Name); }).ToList();
+                // bodies deleted from the imported ones (an NCX import deletes the file's notice body that way) are no
+                // history either
+                importedBodies = real.Count(f => f.GetTypeName2() == "BaseBody");
+                plain = importedBodies > 0 && real.All(f => f.GetTypeName2() == "BaseBody" || f.GetTypeName2() == "DeleteBody");
+                foreach (var f in plain ? new List<IFeature>() : all)
                 {
                     string t = f.GetTypeName2();
                     if (Skip.Contains(t) || t.EndsWith("Folder")) continue;
@@ -236,6 +253,7 @@ namespace Ncx.Sw
             {
                 fm.EditRollback(1, "");   // swMoveRollbackBarToEnd: leave the model as it was
             }
+            Phase?.Invoke(System.IO.Path.GetFileName(d.GetPathName()) + ": features read" + (plain ? " (plain: none read)" : ""));
             foreach (var measure in afterExport) measure();   // what can only be measured in the finished model
             afterExport.Clear();
             // not a fault: the shape arrives exactly (seeded coordinates); only later edits may differ
@@ -246,10 +264,22 @@ namespace Ncx.Sw
             originPlanesByDoc[id] = originPlanes.ToDictionary(k => k.Key, k => k.Value);
             sketchIdsByDoc[id] = sketchMaps.ToDictionary(k => k.Key, k => k.Value);
             string activeCfg;
+            Phase?.Invoke(System.IO.Path.GetFileName(d.GetPathName()) + ": configurations");
             var configurations = ExportConfigurations(d, out activeCfg);
             var parameters = ExportParameters(out var equations);
             AddEquationTargets(equations, features);
+            Phase?.Invoke(System.IO.Path.GetFileName(d.GetPathName()) + ": bodies");
             var bodies = ((object[])part.GetBodies2(0, false) ?? new object[0]).Cast<IBody2>().ToList();
+            // a plain part: written without features, its geometry in the file's B-rep alone, its bodies marked so no
+            // importer compares another kernel's measurement of them (geometry that came through STEP before measured
+            // up to 1e-3 apart, and one such part made the whole file fail its stale check)
+            plain = plain && bodies.Count > 0;
+            if (plain)
+            {
+                plainPaths.Add(d.GetPathName());
+                Report.Add(id, System.IO.Path.GetFileNameWithoutExtension(d.GetPathName()), "note",
+                           "no history, only imported geometry (" + importedBodies + " imported bod" + (importedBodies == 1 ? "y" : "ies") + "): written as a plain part");
+            }
             var json = new JObj
             {
                 { "id", id }, { "kind", "part" }, { "name", System.IO.Path.GetFileNameWithoutExtension(d.GetPathName()) },
@@ -259,18 +289,30 @@ namespace Ncx.Sw
                 { "parameters", parameters },
                 { "equations", equations },
                 { "features", features },
-                { "bodies", bodies.Select((b, i) => (object)new JObj { { "id", "body:" + (i + 1) }, { "name", b.Name },
-                                                                        { "fingerprint", Host.BodyFingerprint(b) } }).ToList() }
+                { "bodies", bodies.Select((b, i) =>
+                {
+                    var fp = Host.BodyFingerprint(b);
+                    if (plain) fp["plain"] = true;
+                    return (object)new JObj { { "id", "body:" + (i + 1) }, { "name", b.Name }, { "fingerprint", fp } };
+                }).ToList() }
             };
+            if (plain) json["plain"] = true;
+            Phase?.Invoke(System.IO.Path.GetFileName(d.GetPathName()) + ": properties and materials");
             AddPropertiesAndMaterials(d, id, json);
+            Phase?.Invoke(System.IO.Path.GetFileName(d.GetPathName()) + ": cut lists");
             AddCutLists(d, id, json);
+            Phase?.Invoke(System.IO.Path.GetFileName(d.GetPathName()) + ": appearances");
             AddAppearances(d, id, json);
+            Phase?.Invoke(System.IO.Path.GetFileName(d.GetPathName()) + ": done");
             return json;
         }
 
         /// <summary>Progress: called with a message before each feature; return false to cancel (no file is
         /// written and the document's rollback bar is restored).</summary>
         public Func<string, bool> Progress;
+
+        /// <summary>Developer: called at each phase of an export (what is slow on a large model).</summary>
+        public Action<string> Phase;
 
         JObj ExportFeature(IFeature f, string type, IFeatureManager fm)
         {

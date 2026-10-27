@@ -10,6 +10,7 @@
 #include <windows.h>
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <functional>
@@ -126,6 +127,19 @@ void progressCancelAfter(int afterSteps);
 // between two steps (with the messages either side) and the seconds per phase since progressBegin.
 void progressPhase(const std::string& phase);
 json progressTimeline();
+std::string progressLastMessage();   // the message of the last step (where a failure happened)
+// Time spent in one kind of work, wherever it happens (a sketch's relations, a profile check): the scope's seconds
+// are added to progressTimeline's "sections" under the key, with a count.
+class TimedSection
+{
+public:
+    explicit TimedSection(std::string key);
+    ~TimedSection();
+
+private:
+    std::string key_;
+    std::chrono::steady_clock::time_point start_;
+};
 
 // The notice body (FORMAT-SPEC 2.6): header form of a name, and the matching rule.
 std::string headerForm(const std::string& s);

@@ -227,6 +227,13 @@ other systems may use them where they understand them, and otherwise ignore them
 - Each document has `name` and `sourceFile`, `configurations` / `activeConfiguration`,
   `parameters`, `equations`, an optional `designTable`, ordered `features`, `bodies`
   (with per-body fingerprints) and `properties`.
+- `plain: true` on a part: it has no history in the source, only imported geometry (a STEP or other file brought
+  in as it is). A writer marks it so and writes no features for it, and marks its bodies' fingerprints `plain`
+  (in the document and in the file's `fingerprint`); its geometry travels in the file's B-rep alone. An importer
+  takes its bodies from the file's B-rep as they are, rebuilds nothing, compares nothing (§6: plain bodies are
+  paired, never compared) and reports it as a note: it is what the source was, not a fallback. Two kernels measure
+  such geometry differently (a model that came through STEP before: up to 1e-3 in volume or area, more in the
+  moments of thin bodies), so without the mark one such part made the whole file fail its stale check.
 - Assemblies add `components` (document, configuration, row-major 4×4 `transform` in mm, `fixed`)
   and `mates`.
 - A component that places a sub-assembly may say `flexible: true`: the sub-assembly is solved as flexible in this
@@ -839,6 +846,9 @@ applies one of two tolerance profiles:
   centroid and 1.7e-3 in moments (SolidWorks re-reading its own STEP: 3.4e-5). Under `exchange`, a pair of bodies
   where either is marked `freeform` (by the writer, or by the reader from its own measurement) gets the freeform
   tolerances. A 0.1 mm edit on a 100 mm part (1e-3 in volume) still fails. `native` is never loosened.
+- **Plain bodies.** A body whose expected fingerprint says `plain: true` (a plain document's, §4) is paired with an
+  actual body like any other, so the rest pair correctly, but none of its quantities are compared, under either
+  profile; the report counts them (`plain`).
 - Individual tolerances can be overridden in the options (`volume_rel`, `area_rel`, `centroid_abs`, `moment_rel`,
   `bbox_abs`, and the `freeform_` variants, which are never tighter than the analytic ones).
 

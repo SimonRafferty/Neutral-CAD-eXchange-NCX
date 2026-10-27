@@ -21,6 +21,9 @@
 
 namespace ncxf {
 
+// developer: the step an export is at inside a feature (named in an export failure)
+static std::string g_exportStage;
+
 namespace {
 
 json vj(const V3& v) { return json::array({v[0], v[1], v[2]}); }
@@ -55,22 +58,49 @@ struct DocWriter
         return id;
     }
     bool extrudeNegative = false;
+    int lostEdges = 0;   // edges a fillet or chamfer lists that the model no longer has (featureDef)
+    // a region written with a piece on no sketch segment (a projected edge): an importer may find another region
+    // there, so the feature carries its result (as the SolidWorks exporter does for regions bounded by model edges)
+    bool carryResult = false;
     std::vector<std::pair<V3, V3>> holeAxes;   // the hole being written: its drilled cylinders' axes (point, direction)
     json holeDiameters = json::array();         // and the distinct diameters of its cylinders, ascending   // the extrude being written went against its profile's normal
 
     // where an extrude's side faces lie relative to its profile plane (the extent objects do not say:
     // isPositiveDirection reads true for a negative through-all, measured); call with the feature computed
+    // the planar face an extrude takes as its profile directly (Fusion lets a face be picked instead of a sketch
+    // profile), in the component's own frame; null when its profile is a sketch's
+    static Ptr<BRepFace> faceProfile(const Ptr<ExtrudeFeature>& f)
+    {
+        Ptr<Base> pb = f->profile();
+        if (Ptr<ObjectCollection> oc = pb)
+            pb = oc->count() == 1 ? oc->item(0) : nullptr;
+        Ptr<BRepFace> face = pb;
+        if (face && face->nativeObject()) face = face->nativeObject();
+        return face && Ptr<Plane>(face->geometry()) ? face : nullptr;
+    }
+
     static bool sideFacesBelow(const Ptr<ExtrudeFeature>& f)
     {
         Ptr<Profile> p0 = f->profile();
         if (!p0)
             if (Ptr<ObjectCollection> oc = f->profile()) p0 = oc->item(0);
         Ptr<BRepFaces> sf = f->sideFaces();
-        if (!p0 || !sf || !sf->count()) return false;
-        Ptr<Sketch> sk = p0->parentSketch();
-        if (sk->nativeObject()) sk = sk->nativeObject();   // both in the component's own frame (upright wrapper)
-        V3 nrm = unit(cross(vecOf(sk->xDirection()), vecOf(sk->yDirection())));
-        V3 o = ptMm(sk->origin());
+        if (!sf || !sf->count()) return false;
+        V3 nrm, o;
+        if (Ptr<BRepFace> face = faceProfile(f))
+        {
+            // a face extruded directly: against its outward normal, the normal of the sketch written for it
+            nrm = outwardNormalOf(face);
+            o = ptMm(face->pointOnFace());
+        }
+        else
+        {
+            if (!p0) return false;
+            Ptr<Sketch> sk = p0->parentSketch();
+            if (sk->nativeObject()) sk = sk->nativeObject();   // both in the component's own frame (upright wrapper)
+            nrm = unit(cross(vecOf(sk->xDirection()), vecOf(sk->yDirection())));
+            o = ptMm(sk->origin());
+        }
         double sum = 0;
         for (size_t k = 0; k < sf->count(); k++)
         {
@@ -693,18 +723,26 @@ struct DocWriter
                 if (g && g->evaluator()->getParameterExtents(s0, s1)) g->evaluator()->getLengthAtParameter(s0, s1, L);
                 return L;
             };
-            for (auto& q : ps)
-            {
+            auto wholeLoops = [&](const Ptr<Profile>& q) {
                 Ptr<ProfileLoops> ls = q->profileLoops();
-                bool whole = true;
-                for (size_t i = 0; i < ls->count() && whole; i++)
-                    for (size_t k = 0; k < ls->item(i)->profileCurves()->count() && whole; k++)
+                for (size_t i = 0; i < ls->count(); i++)
+                    for (size_t k = 0; k < ls->item(i)->profileCurves()->count(); k++)
                     {
                         Ptr<ProfileCurve> pc = ls->item(i)->profileCurves()->item(k);
                         Ptr<SketchCurve> sc = pc->sketchEntity();
-                        if (!sc || idOfEntity(sc).empty() || std::fabs(curveLen(pc->geometry()) - sc->length()) > 1e-7) whole = false;
+                        if (!sc || idOfEntity(sc).empty() || std::fabs(curveLen(pc->geometry()) - sc->length()) > 1e-7) return false;
                     }
-                if (whole)
+                return true;
+            };
+            // contours only when every selected profile is one: an importer reads `contours` as the whole selection
+            // (the user's cheek jig: one rectangle as a contour beside two regions, and SolidWorks found the rectangle
+            // alone, crossed by the other curves, as no contour at all), so a mixed selection goes out as regions
+            bool allWhole = true;
+            for (auto& q : ps) allWhole = allWhole && wholeLoops(q);
+            for (auto& q : ps)
+            {
+                Ptr<ProfileLoops> ls = q->profileLoops();
+                if (allWhole)
                 {
                     for (size_t i = 0; i < ls->count(); i++)
                     {
@@ -717,6 +755,48 @@ struct DocWriter
                 }
                 json boundary = json::array();
                 std::vector<std::vector<std::array<double, 2>>> polys;
+                // a piece whose own curve is not written (a projected edge lying along a sketch line, which Fusion makes
+                // the profile's curve there) but which lies on a written segment is that segment (a GrabCAD knuckle
+                // joint: its rectangle's sides were written as loose pieces, which the spec does not allow)
+                auto onSegment = [&](const std::vector<std::array<double, 2>>& pts) -> std::string {
+                    if (pts.size() < 2) return "";
+                    Ptr<SketchCurves> scs = sk->sketchCurves();
+                    for (size_t c = 0; c < scs->count(); c++)
+                    {
+                        Ptr<SketchCurve> sc = scs->item(c);
+                        std::string sid = idOfEntity(sc);
+                        if (sid.empty()) continue;
+                        auto uv = [](const Ptr<SketchPoint>& q) { return std::array<double, 2>{cm2mm(q->geometry()->x()), cm2mm(q->geometry()->y())}; };
+                        bool all = true;
+                        if (Ptr<SketchLine> l = sc)
+                        {
+                            auto a = uv(l->startSketchPoint()), b = uv(l->endSketchPoint());
+                            double dx = b[0] - a[0], dy = b[1] - a[1], L = std::hypot(dx, dy);
+                            if (L < 1e-9) continue;
+                            for (auto& q : pts)
+                            {
+                                double t = ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / L, off = std::fabs((q[0] - a[0]) * dy - (q[1] - a[1]) * dx) / L;
+                                if (off > 1e-6 || t < -1e-6 || t > L + 1e-6) all = false;
+                            }
+                        }
+                        else if (Ptr<SketchArc> ar = sc)
+                        {
+                            auto o = uv(ar->centerSketchPoint());
+                            for (auto& q : pts)
+                                if (std::fabs(std::hypot(q[0] - o[0], q[1] - o[1]) - cm2mm(ar->radius())) > 1e-6) all = false;
+                        }
+                        else if (Ptr<SketchCircle> ci = sc)
+                        {
+                            auto o = uv(ci->centerSketchPoint());
+                            for (auto& q : pts)
+                                if (std::fabs(std::hypot(q[0] - o[0], q[1] - o[1]) - cm2mm(ci->radius())) > 1e-6) all = false;
+                        }
+                        else
+                            all = false;
+                        if (all) return sid;
+                    }
+                    return "";
+                };
                 for (size_t i = 0; i < ls->count(); i++)
                 {
                     json loop = json::array();
@@ -727,6 +807,7 @@ struct DocWriter
                         auto pts = curvePts(pc, 32);
                         polys.push_back(pts);
                         std::string id = idOfEntity(pc->sketchEntity());
+                        if (id.empty()) id = onSegment(pts);
                         if (!id.empty())
                         {
                             if (id != last) loop.push_back(id);
@@ -737,7 +818,19 @@ struct DocWriter
                         if (pts.size() < 2) continue;
                         Ptr<Curve3D> g = pc->geometry();
                         if (Ptr<Line3D>(g))
+                        {
                             loop.push_back(json{{"line", json::array({json::array({pts.front()[0], pts.front()[1]}), json::array({pts.back()[0], pts.back()[1]})})}});
+                            carryResult = true;
+                        }
+                        else if (Ptr<Circle3D> c3 = g)
+                        {
+                            // a whole circle (a projected hole edge inside a washer's outline): its own centre and radius,
+                            // since its first and last points coincide and three-point fitting fails (the loop went out
+                            // empty)
+                            Ptr<Point3D> c = sk->modelToSketchSpace(c3->center());
+                            loop.push_back(json{{"arc", json::array({json::array({cm2mm(c->x()), cm2mm(c->y())}), cm2mm(c3->radius())})}});
+                            carryResult = true;
+                        }
                         else
                         {
                             // centre and radius from three points of the arc
@@ -750,6 +843,7 @@ struct DocWriter
                             double ux = (a2 * (B[1] - C[1]) + b2 * (C[1] - A[1]) + c2 * (A[1] - B[1])) / d;
                             double uy = (a2 * (C[0] - B[0]) + b2 * (A[0] - C[0]) + c2 * (B[0] - A[0])) / d;
                             loop.push_back(json{{"arc", json::array({json::array({ux, uy}), std::hypot(A[0] - ux, A[1] - uy)})}});
+                            carryResult = true;
                         }
                     }
                     boundary.push_back(loop);
@@ -1120,6 +1214,85 @@ struct DocWriter
     }
 
     // ---------------------------------------------------------------------------------- features
+    // A planar face extruded directly (Fusion takes a face as an extrude's profile; FORMAT-SPEC profiles are sketches):
+    // written as a sketch on that face that traces its edges, every loop (an inner loop is a hole by nesting), so the
+    // whole sketch is the face, as a SolidWorks user would model it (a sketch on the face, its edges converted). The
+    // sketch goes before the feature (preFeatures); returns the profile reference, or null with why (an edge that is
+    // no line, arc or circle). Measured with the timeline rolled to just before the feature.
+    json faceSketch(const Ptr<BRepFace>& face, const std::string& featName, std::string& why)
+    {
+        V3 z = outwardNormalOf(face), o = ptMm(face->pointOnFace()), x{0, 0, 0};
+        Ptr<BRepLoops> loops = face->loops();
+        for (size_t i = 0; i < loops->count() && norm(x) < 0.5; i++)
+            for (size_t k = 0; k < loops->item(i)->edges()->count(); k++)
+            {
+                Ptr<BRepEdge> ed = loops->item(i)->edges()->item(k);
+                if (!Ptr<Line3D>(ed->geometry())) continue;
+                x = unit(sub(ptMm(ed->endVertex()->geometry()), ptMm(ed->startVertex()->geometry())));
+                break;
+            }
+        if (norm(x) < 0.5)
+            x = unit(cross(std::fabs(z[0]) < 0.9 ? V3{1, 0, 0} : V3{0, 1, 0}, z));
+        V3 y = unit(cross(z, x));
+        auto uv = [&](const V3& p) { V3 q = sub(p, o); return json::array({dot(q, x), dot(q, y)}); };
+        json ents = json::array();
+        std::map<std::pair<long long, long long>, std::string> pointAt;   // shared ends: one point
+        int np = 0, ns = 0;
+        auto pointId = [&](const V3& p) {
+            json q = uv(p);
+            auto key = std::make_pair(std::llround(q[0].get<double>() * 1e6), std::llround(q[1].get<double>() * 1e6));
+            auto it = pointAt.find(key);
+            if (it != pointAt.end()) return it->second;
+            std::string id = "p" + std::to_string(++np);
+            pointAt[key] = id;
+            ents.push_back(json{{"id", id}, {"type", "point"}, {"p", q}});
+            return id;
+        };
+        for (size_t i = 0; i < loops->count(); i++)
+            for (size_t k = 0; k < loops->item(i)->edges()->count(); k++)
+            {
+                Ptr<BRepEdge> ed = loops->item(i)->edges()->item(k);
+                Ptr<Curve3D> g = ed->geometry();
+                std::string sid = "s" + std::to_string(++ns);
+                if (Ptr<Line3D> ln = g)
+                {
+                    V3 a = ptMm(ed->startVertex()->geometry()), b = ptMm(ed->endVertex()->geometry());
+                    ents.push_back(json{{"id", sid}, {"type", "line"}, {"start", uv(a)}, {"end", uv(b)},
+                                        {"startPoint", pointId(a)}, {"endPoint", pointId(b)}});
+                }
+                else if (Ptr<Circle3D> ci = g)
+                {
+                    V3 c = ptMm(ci->center());
+                    ents.push_back(json{{"id", sid}, {"type", "circle"}, {"center", uv(c)}, {"radius", cm2mm(ci->radius())},
+                                        {"centerPoint", pointId(c)}});
+                }
+                else if (Ptr<Arc3D> ar = g)
+                {
+                    V3 c = ptMm(ar->center()), a = ptMm(ar->startPoint()), b = ptMm(ar->endPoint());
+                    // an arc runs counter-clockwise about its own normal from start to end
+                    bool ccw = dot(vecOf(ar->normal()), z) > 0;
+                    ents.push_back(json{{"id", sid}, {"type", "arc"}, {"center", uv(c)}, {"radius", cm2mm(ar->radius())},
+                                        {"start", uv(a)}, {"end", uv(b)}, {"ccw", ccw}, {"centerPoint", pointId(c)},
+                                        {"startPoint", pointId(a)}, {"endPoint", pointId(b)}});
+                }
+                else
+                {
+                    why = "its profile is a face with an edge that is no line, arc or circle (" + std::string(g ? g->objectType() : "?") + ")";
+                    return nullptr;
+                }
+            }
+        std::string skId = fid();
+        usedIds.insert(skId);
+        std::string skName = featName + " profile";
+        preFeatures.push_back(json{{"id", skId}, {"name", skName}, {"type", "sketch"}, {"status", "mapped"},
+                                   {"native", {{"app", "Fusion"}, {"type", "face profile (written for the extrude)"}}},
+                                   {"def", {{"plane", descriptor(face)}, {"frame", {{"origin", vj(o)}, {"x", vj(x)}, {"z", vj(z)}}},
+                                            {"entities", ents}, {"constraints", json::array()}, {"dimensions", json::array()},
+                                            {"constrained", "under"}, {"hidden", true}}}});
+        notes.push_back(docName + ": " + featName + " extrudes a face directly: written as the sketch '" + skName + "' of the face's edges and an extrude of it");
+        return json{{"kind", "feature"}, {"by", "id"}, {"id", skId}};
+    }
+
     // the feature at the rolled-back timeline position: a json feature or null (opaque)
     json featureDef(const Ptr<Base>& e, std::string& type, std::string& why)
     {
@@ -1130,8 +1303,17 @@ struct DocWriter
             json contours = json::array();
             json prof = profileRef(f->profile(), contours);
             if (prof.is_null())
+                if (Ptr<BRepFace> face = faceProfile(f))
+                {
+                    prof = faceSketch(face, f->name(), why);
+                    if (prof.is_null()) return nullptr;
+                }
+            if (prof.is_null())
             {
-                why = "its profile is not a rebuilt sketch";
+                Ptr<Base> pb = f->profile();
+                if (Ptr<ObjectCollection> oc = pb)
+                    if (oc->count() > 0) pb = oc->item(0);
+                why = "its profile is not a rebuilt sketch" + (pb ? " (" + std::string(pb->objectType()) + ")" : std::string());
                 return nullptr;
             }
             json d{{"profile", prof}, {"merge", f->operation() == JoinFeatureOperation}};
@@ -1180,11 +1362,16 @@ struct DocWriter
                 if (Ptr<OffsetStartDefinition> os = f->startExtent())
                     if (Ptr<ModelParameter> op = os->offset())
                         d["start"] = json{{"type", "offset"}, {"distance", std::fabs(cm2mm(op->value()))}, {"reverse", op->value() < 0}};
-            if (f->taperAngleOne() && std::fabs(f->taperAngleOne()->value()) > 1e-12)
-            {
-                why = "a tapered extrude is not carried yet";
-                return nullptr;
-            }
+            // a taper is the end's draft (FORMAT-SPEC 4 extrude end `draft`, `draftOutward`): Fusion's taper angle is
+            // positive outward. The result is carried: systems differ in where a two-sided draft starts
+            auto taper = [&](const Ptr<ModelParameter>& a, const char* key) {
+                if (!a || std::fabs(a->value()) <= 1e-12 || !d.contains(key) || !d[key].is_object()) return;
+                d[key]["draft"] = std::fabs(rad2deg(a->value()));
+                d[key]["draftOutward"] = a->value() > 0;
+                carryResult = true;
+            };
+            taper(Ptr<ModelParameter>(f->taperAngleOne()), "end");
+            taper(Ptr<ModelParameter>(f->taperAngleTwo()), "end2");
             if (f->isThinExtrude())
             {
                 // FORMAT-SPEC 4 `thin`, as the importer reads it (features.cpp): SolidWorks' one-direction wall is
@@ -1313,9 +1500,20 @@ struct DocWriter
                 }
                 for (size_t i = 0; i < cr->edges()->count(); i++)
                 {
-                    edges.push_back(descriptor(cr->edges()->item(i)));
+                    json de = descriptor(cr->edges()->item(i));
+                    if (de.value("kind", "").empty())
+                    {
+                        lostEdges++;   // an edge the model no longer has (Fusion keeps the feature, with a warning)
+                        continue;
+                    }
+                    edges.push_back(de);
                     radii.push_back(cm2mm(cr->radius()->value()));
                 }
+            }
+            if (allConstant && edges.empty())
+            {
+                why = "none of its edges is in the model any more (Fusion reports the feature with a warning)";
+                return nullptr;
             }
             if (allConstant)
             {
@@ -1387,9 +1585,20 @@ struct DocWriter
                 kind = k;
                 for (size_t i = 0; edges && i < edges->count(); i++)
                 {
-                    d["edges"].push_back(descriptor(Ptr<BRepEdge>(edges->item(i))));
+                    json de = descriptor(Ptr<BRepEdge>(edges->item(i)));
+                    if (de.value("kind", "").empty())
+                    {
+                        lostEdges++;   // an edge the model no longer has (Fusion keeps the feature, with a warning)
+                        continue;
+                    }
+                    d["edges"].push_back(de);
                     d["flipped"].push_back(flipped);
                 }
+            }
+            if (!d.contains("edges") || d["edges"].empty())
+            {
+                why = "none of its edges is in the model any more (Fusion reports the feature with a warning)";
+                return nullptr;
             }
             d["chamferType"] = kind;
             return d;
@@ -2315,6 +2524,176 @@ struct DocWriter
             if (!targets.empty() && static_cast<int>(targets.size()) < static_cast<int>(solids().size())) d["bodies"] = targets;
             return d;
         }
+        // ---- a move of bodies (FORMAT-SPEC 4 moveBody): a translation, or a rotation about x, y, z through an origin
+        // (as the importers build it). A move that also slides along its turning axis is neither: carried as a result
+        if (Ptr<MoveFeature> mf = e)
+        {
+            type = "moveBody";
+            json bodies = json::array();
+            Ptr<ObjectCollection> ins = mf->inputEntities();
+            for (size_t i = 0; ins && i < ins->count(); i++)
+            {
+                Ptr<BRepBody> b = ins->item(i);
+                if (!b)
+                {
+                    why = "it moves faces or components, not bodies";
+                    return nullptr;
+                }
+                bodies.push_back(bodyRef(b->nativeObject() ? b->nativeObject() : b));
+            }
+            Ptr<Matrix3D> m = mf->transform();
+            if (bodies.empty() || !m)
+            {
+                why = "its bodies or its transform could not be read";
+                return nullptr;
+            }
+            double R[3][3], t[3];
+            for (int r = 0; r < 3; r++)
+            {
+                for (int c = 0; c < 3; c++) R[r][c] = m->getCell(r, c);
+                t[r] = cm2mm(m->getCell(r, 3));
+            }
+            bool turns = false;
+            for (int r = 0; r < 3; r++)
+                for (int c = 0; c < 3; c++)
+                    if (std::fabs(R[r][c] - (r == c ? 1.0 : 0.0)) > 1e-9) turns = true;
+            json d{{"bodies", bodies}, {"copy", false}, {"copies", 1}};
+            if (!turns)
+            {
+                d["translate"] = json::array({t[0], t[1], t[2]});
+                return d;
+            }
+            // R = Rz(c) Ry(b) Rx(a): x first, then y, then z
+            double b = std::asin(std::clamp(-R[2][0], -1.0, 1.0)), a = std::atan2(R[2][1], R[2][2]), c = std::atan2(R[1][0], R[0][0]);
+            // the origin o the turn goes through: (I - R) o = t, least squares (singular along the turning axis)
+            double A[3][3], N[3][3] = {}, rhs[3] = {};
+            for (int r = 0; r < 3; r++)
+                for (int k = 0; k < 3; k++) A[r][k] = (r == k ? 1.0 : 0.0) - R[r][k];
+            for (int r = 0; r < 3; r++)
+                for (int k = 0; k < 3; k++)
+                {
+                    for (int q = 0; q < 3; q++) N[r][k] += A[q][r] * A[q][k];
+                    if (r == k) N[r][k] += 1e-12;
+                }
+            for (int r = 0; r < 3; r++)
+                for (int q = 0; q < 3; q++) rhs[r] += A[q][r] * t[q];
+            // solve N o = rhs (Cramer: N is 3x3)
+            auto det3 = [](double M[3][3]) {
+                return M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) +
+                       M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]);
+            };
+            double D = det3(N), o[3] = {0, 0, 0};
+            if (std::fabs(D) > 1e-30)
+                for (int k = 0; k < 3; k++)
+                {
+                    double M[3][3];
+                    for (int r = 0; r < 3; r++)
+                        for (int q = 0; q < 3; q++) M[r][q] = q == k ? rhs[r] : N[r][q];
+                    o[k] = det3(M) / D;
+                }
+            double res = 0;
+            for (int r = 0; r < 3; r++)
+            {
+                double v = -t[r];
+                for (int k = 0; k < 3; k++) v += A[r][k] * o[k];
+                res = std::max(res, std::fabs(v));
+            }
+            if (res > 1e-6)
+            {
+                why = "a move that turns and also slides along its turning axis is not carried";
+                return nullptr;
+            }
+            d["rotate"] = json{{"origin", json::array({o[0], o[1], o[2]})}, {"angles", json::array({rad2deg(a), rad2deg(b), rad2deg(c)})}};
+            carryResult = true;   // with more than one angle the order is not defined (FORMAT-SPEC 4): checked by geometry
+            return d;
+        }
+        // ---- a thread (FORMAT-SPEC 4 cosmeticThread): annotation in the neutral model, whether Fusion models it or
+        // not; a modelled thread's geometry stays in the file's B-rep and in the feature's carried result
+        if (Ptr<ThreadFeature> th = e)
+        {
+            // Fusion gives a thread's input faces in no state (inputCylindricalFaces: "Didn't roll editing feature
+            // back" whatever the timeline, measured on Fusion 2706); its own faces and its data come with it computed:
+            // read with the thread rolled in, then back. The start is a circular edge of its faces, the one whose radius
+            // is nearest the thread's (a cylinder's end circle: the same before a cosmetic thread as after it; a
+            // modelled thread carries its result)
+            Ptr<TimelineObject> tto = th->timelineObject();
+            if (tto) tto->rollTo(false);
+            Ptr<ThreadInfo> ti = th->threadInfo();
+            Ptr<BRepFaces> fs = th->faces();
+            Ptr<BRepFace> face = fs && fs->count() > 0 ? fs->item(0) : nullptr;
+            double want = ti ? cm2mm(ti->majorDiameter()) / 2 : 0;
+            Ptr<BRepEdge> start;
+            double bestGap = 1e300;
+            for (size_t k = 0; fs && k < fs->count(); k++)
+            {
+                Ptr<BRepFace> fk = fs->item(k);
+                if (fk->nativeObject()) fk = fk->nativeObject();
+                for (size_t i = 0; i < fk->edges()->count(); i++)
+                    if (Ptr<Circle3D> ci = fk->edges()->item(i)->geometry())
+                    {
+                        double gap = std::fabs(cm2mm(ci->radius()) - want);
+                        if (gap < bestGap) bestGap = gap, start = fk->edges()->item(i);
+                    }
+            }
+            // the start circle as the thread found it: the same circle in the model rolled back to just before it
+            // (the thread splits its face's edges, so the edge read here is not the one an importer meets)
+            V3 sc{0, 0, 0}, sn{0, 0, 1};
+            double sr = 0;
+            if (start)
+                if (Ptr<Circle3D> ci = start->geometry())
+                    sc = ptMm(ci->center()), sn = unit(vecOf(ci->normal())), sr = cm2mm(ci->radius());
+            if (tto) tto->rollTo(true);
+            // Fusion's thread also sizes the cylinder to the thread (a 10 mm rod comes out 9.85 mm with an M10 cosmetic
+            // thread): the circle there with the same centre and axis, whatever its radius (the nearest), and the
+            // feature then carries its result, since it changes the shape
+            json startRef;
+            double startR = 0, bestDr = 1e300;
+            if (start)
+                for (auto& b : solids())
+                    for (size_t i = 0; i < b->edges()->count(); i++)
+                        if (Ptr<Circle3D> ci = b->edges()->item(i)->geometry())
+                            if (dist(ptMm(ci->center()), sc) < 1e-6 && std::fabs(std::fabs(dot(unit(vecOf(ci->normal())), sn)) - 1) < 1e-9 &&
+                                std::fabs(cm2mm(ci->radius()) - sr) < bestDr)
+                            {
+                                bestDr = std::fabs(cm2mm(ci->radius()) - sr);
+                                startR = cm2mm(ci->radius());
+                                startRef = descriptor(b->edges()->item(i));
+                            }
+            if (tto) tto->rollTo(false);
+            if (!startRef.is_null() && bestDr > 1e-6) carryResult = true;
+            if (start && startRef.is_null()) start = nullptr;   // no such circle before the thread
+            std::string startDiag = "faces " + std::to_string(fs ? (int)fs->count() : -1) + ", circle r " + std::to_string(sr) + " at " +
+                                    std::to_string(sc[0]) + "," + std::to_string(sc[1]) + "," + std::to_string(sc[2]) + ", want r " + std::to_string(want);
+            bool internal0 = ti && ti->isInternal();
+            double dia = ti ? cm2mm(internal0 ? ti->majorDiameter() : ti->minorDiameter()) : 0;
+            std::string callout = ti ? ti->threadDesignation() : "", standard = ti ? ti->threadType() : "", size = ti ? ti->threadSize() : "";
+            bool full = th->isFullLength(), modelled = th->isModeled();
+            double length = 0;
+            if (!full)
+                if (Ptr<ModelParameter> L = th->threadLength()) length = cm2mm(L->value());
+            if (tto) tto->rollTo(true);
+            if (!ti || !face)
+            {
+                why = "its thread data or its face could not be read";
+                return nullptr;
+            }
+            if (!start)
+            {
+                why = "the threaded face has no circular edge to start from (" + startDiag + ")";
+                return nullptr;
+            }
+            type = "cosmeticThread";
+            json d{{"edge", startRef}, {"diameter", dia}, {"callout", callout}, {"standard", standard}, {"size", size}};
+            if (full)
+                d["endCondition"] = "upToNext";
+            else
+            {
+                d["endCondition"] = "blind";
+                d["depth"] = length;
+            }
+            if (modelled) carryResult = true;   // a modelled thread changes the geometry: its result goes with it
+            return d;
+        }
         why = std::string(e ? e->objectType() : "?") + " has no NCX mapping in this exporter yet";
         return nullptr;
     }
@@ -2325,7 +2704,14 @@ struct DocWriter
         fs::path tmp = tempDir() / ("export_result_" + std::to_string(GetTickCount64()) + ".step");
         Ptr<ExportManager> em = des->exportManager();
         Ptr<STEPExportOptions> o = em->createSTEPExportOptions(tmp.u8string(), comp);
-        if (!o || !em->execute(o)) return false;
+        // Fusion's STEP export leaves hidden bodies out, and the result lists every body (a GrabCAD caster: its
+        // carried results had 2 solids listed and 1 in the data): hidden ones are shown for the export, then hidden again
+        std::vector<Ptr<BRepBody>> shown;
+        for (auto& b : allBodies())
+            if (!b->isLightBulbOn() && b->isLightBulbOn(true)) shown.push_back(b);
+        bool ok = o && em->execute(o);
+        for (auto& b : shown) b->isLightBulbOn(false);
+        if (!ok) return false;
         result = json{{"format", "step"}, {"replaces", before}, {"bodies", json::array()}, {"data", readFile(tmp)}};
         for (auto& b : allBodies())
             result["bodies"].push_back(json{{"name", b->name()}, {"sheet", !b->isSolid()}, {"fingerprint", resultFingerprint(b)}});
@@ -2371,6 +2757,7 @@ struct DocWriter
     void walk()
     {
         Ptr<Timeline> tl = des->timeline();
+        if (!tl) return;   // a direct design: no history, its parts are plain (document())
         // this component's timeline objects (native: a feature of a nested component comes as a proxy in the root's
         // context, the model in the upright wrapper; read in its component's own frame), with their provenance
         struct Item
@@ -2419,12 +2806,33 @@ struct DocWriter
             const json tag = items[ii].tag;
             // between two features: the timeline is at its end and every feature in its own suppression state,
             // so a cancel here leaves the design as it was
-            progressStep(docName + ": reading " + t->name());
+            // Fusion throws even for the name of some timeline objects (a GrabCAD gripper's cut/paste bodies)
+            std::string tname = "(a timeline object Fusion cannot name)";
+            try
+            {
+                tname = t->name();
+            }
+            catch (...)
+            {
+            }
+            progressStep(docName + ": reading " + tname);
             ProgressNoCancel finishThisFeature;
+            bool suppressed0 = false;
+            try
+            {
+                suppressed0 = t->isSuppressed();
+            }
+            catch (...)
+            {
+            }
+            const size_t featuresBefore = features.size();
+            try
+            {
             // Feature passthrough: the objects one source feature became (its group), when Fusion built it as something
             // else (an equivalent: Insert Part as sketch copies, a convert to sheet metal as a body and a conversion, a
             // carried result), or as several objects, or when it is not written natively below: written as the source's
             // definition while the part's shape right after the group is what the import left (NCX/after).
+            g_exportStage = "provenance";
             size_t groupEnd = ii + 1;
             json srcDef;
             // an Insert Part's copied sketches are always written as the insertPart they stand for (they are Fusion's form
@@ -2466,6 +2874,7 @@ struct DocWriter
             // A suppressed feature is read as it is when active: unsuppressed for the moment (Fusion does not compute
             // a suppressed feature, so neither its definition's geometry nor its result could be read), written with
             // its suppression state, and suppressed again before the next feature.
+            g_exportStage = "suppression state";
             bool wasSuppressed = false;
             if (t->isSuppressed())
             {
@@ -2478,6 +2887,7 @@ struct DocWriter
                 }
                 wasSuppressed = true;
             }
+            g_exportStage = "extrude direction, holes, flange rise";
             if (Ptr<ExtrudeFeature> ex = e)
             {
                 t->rollTo(false);
@@ -2518,6 +2928,33 @@ struct DocWriter
             std::vector<json> before;
             for (auto& b : allBodies()) before.push_back(resultFingerprint(b));
             json nf{{"id", id}, {"name", name}, {"native", {{"app", "Fusion"}, {"type", e->objectType()}}}};
+            // A feature Fusion reports as failed or warned about that leaves the bodies as they were (a cut with "No
+            // target body", the user's cheek jig Extrude10) adds nothing: written as such (FORMAT-SPEC 4 noGeometry),
+            // an importer skips it. Written as itself it would fail there too and cost everything after it.
+            if (Ptr<Feature>(e) && t->healthState() != HealthyFeatureHealthState)
+            {
+                json sigBefore = shapeSignature(solids());
+                t->rollTo(false);
+                bool unchanged = sameShape(sigBefore, shapeSignature(solids())) && allBodies().size() == before.size();
+                tl->moveToEnd();
+                if (unchanged)
+                {
+                    std::string msg = t->errorOrWarningMessage();
+                    nf["type"] = "opaque";
+                    nf["status"] = "opaque";
+                    nf["noGeometry"] = true;
+                    nf["reason"] = "it changes no geometry: Fusion reports it as failed" + (msg.empty() ? std::string() : " (" + msg + ")");
+                    if (wasSuppressed)
+                    {
+                        nf["suppressed"] = {{"cfg:Default", true}};
+                        t->isSuppressed(true);
+                    }
+                    features.push_back(nf);
+                    continue;
+                }
+                t->rollTo(true);
+            }
+            g_exportStage = "reading its definition";
             std::string type, why;
             json def;
             if (Ptr<Sketch> s = e)
@@ -2539,7 +2976,12 @@ struct DocWriter
             {
                 bool smBefore = sheetMetalWritten;
                 preFeatures = json::array();
+                lostEdges = 0;
+                carryResult = false;
                 def = featureDef(e, type, why);
+                if (!def.is_null() && lostEdges > 0)
+                    notes.push_back(docName + ": " + name + ": " + std::to_string(lostEdges) +
+                                    " of its edges are no longer in the model (Fusion keeps the feature with a warning): written with the others");
                 if (def.is_null())
                 {
                     sheetMetalWritten = smBefore;
@@ -2566,7 +3008,7 @@ struct DocWriter
                 static const std::set<std::string> withResult{"loft", "loftCut", "hem", "sketchedBend", "breakCorner", "fold", "unfold",
                                                               "offsetFaces", "convertToSheetMetal", "edgeFlange", "baseFlange",
                                                               "linearPattern", "circularPattern"};
-                if (withResult.count(type) || (type == "fillet" && def.value("filletType", "") == "variable"))
+                if (withResult.count(type) || (type == "fillet" && def.value("filletType", "") == "variable") || carryResult)
                 {
                     t->rollTo(false);
                     json result;
@@ -2592,8 +3034,80 @@ struct DocWriter
                 tl->moveToEnd();
             }
             features.push_back(nf);
+            }
+            catch (const Cancelled&)
+            {
+                throw;
+            }
+            catch (...)
+            {
+                // A Fusion call failed reading this one feature (a GrabCAD gripper's copy/paste body): the design is put
+                // back as it was, and the feature written opaque, with its result when Fusion still gives one, so the
+                // export goes on instead of failing as a whole
+                std::string what = "an unexpected failure (at " + g_exportStage + ")";
+                g_exportStage = "recovering from a feature that could not be read";
+                try
+                {
+                    throw;
+                }
+                catch (const std::exception& ex)
+                {
+                    what = std::string(ex.what()) + " (at " + g_exportStage + ")";
+                }
+                catch (...)
+                {
+                }
+                // each step of putting things back may fail too (the object Fusion could not read): none stops the export
+                auto attempt = [](const std::function<void()>& f) {
+                    try
+                    {
+                        f();
+                    }
+                    catch (...)
+                    {
+                    }
+                };
+                attempt([&] { tl->moveToEnd(); });
+                attempt([&] {
+                    if (t->isSuppressed() != suppressed0) t->isSuppressed(suppressed0);
+                });
+                while (features.size() > featuresBefore) features.erase(features.size() - 1);
+                preFeatures = json::array();
+                std::string fname = "(unnamed)", ftype = "?";
+                attempt([&] { fname = t->name(); });
+                attempt([&] {
+                    if (Ptr<Feature> ff = e) fname = ff->name();
+                });
+                attempt([&] {
+                    if (e) ftype = e->objectType();
+                });
+                json nf{{"id", fid()}, {"name", fname}, {"type", "opaque"}, {"status", "opaque"},
+                        {"native", {{"app", "Fusion"}, {"type", ftype}}},
+                        {"reason", "it could not be read (" + what + ")"}};
+                if (suppressed0)
+                    nf["suppressed"] = {{"cfg:Default", true}};
+                else
+                    try
+                    {
+                        t->rollTo(true);
+                        std::vector<json> before;
+                        for (auto& b : allBodies()) before.push_back(resultFingerprint(b));
+                        t->rollTo(false);
+                        json result;
+                        if (resultStep(result, before)) nf["result"] = result;
+                    }
+                    catch (...)
+                    {
+                    }
+                attempt([&] { tl->moveToEnd(); });
+                notes.push_back(docName + ": " + fname + " could not be read (" + what + "): written as opaque");
+                features.push_back(nf);
+            }
         }
+        g_exportStage = "after the history";
+        progressStep(docName + ": its history read, timeline to its end");
         tl->moveToEnd();
+        progressStep(docName + ": timeline at its end");
     }
 
     json document()
@@ -2602,8 +3116,31 @@ struct DocWriter
                {"configurations", {{{"id", "cfg:Default"}, {"name", "Default"}, {"values", json::object()}}}},
                {"activeConfiguration", "cfg:Default"}, {"parameters", json::array()}, {"equations", json::array()},
                {"features", features}, {"bodies", json::array()}};
+        // A part with no history, only imported geometry (base features, or a direct design: nothing in its timeline)
+        // is plain (FORMAT-SPEC 4): written without features, its geometry in the file's B-rep alone, its bodies
+        // marked so no importer compares another kernel's measurement of them (a user's STEP-made turret: 289
+        // bodies, a few measured 1e-3 apart in OpenCASCADE, and the whole file failed its stale check)
+        // (bodies removed from the imported ones are no history either)
+        bool plain = !solids().empty();
+        for (auto& f : features)
+            if (!(f.value("status", "") == "opaque" && f["native"].value("type", "") == "adsk::fusion::BaseFeature") &&
+                f["native"].value("type", "") != "adsk::fusion::RemoveFeature")
+                plain = false;
+        if (plain)
+        {
+            d["plain"] = true;
+            d["features"] = json::array();
+            if (!features.empty())
+                notes.push_back(docName + ": no history, only imported geometry (" + std::to_string(features.size()) +
+                                " base feature(s)): written as a plain part");
+        }
         int k = 0;
-        for (auto& b : solids()) d["bodies"].push_back(json{{"id", "body:" + std::to_string(++k)}, {"name", b->name()}, {"fingerprint", bodyFingerprint(b)}});
+        for (auto& b : solids())
+        {
+            json fp = bodyFingerprint(b);
+            if (plain) fp["plain"] = true;
+            d["bodies"].push_back(json{{"id", "body:" + std::to_string(++k)}, {"name", b->name()}, {"fingerprint", fp}});
+        }
         d["materials"] = materialsJson();
         json apps = appearancesJson();
         if (!apps.empty()) d["appearances"] = apps;
@@ -3146,7 +3683,7 @@ std::string neutralExpression(const Ptr<Design>& des, const std::string& ex)
                 out += w;
             else
             {
-                Ptr<Parameter> q = des->allParameters()->itemByName(w);
+                Ptr<Parameter> q = des->allParameters() ? des->allParameters()->itemByName(w) : nullptr;
                 out += "\"" + (q ? nativeParamName(q) : w) + "\"";
             }
             k = j;
@@ -3178,6 +3715,28 @@ json exportFile(const fs::path& out, const json& opts)
         res = json{{"ok", true}, {"status", "cancelled"}, {"cancelledAt", c.where}, {"file", out.u8string()},
                    {"notes", json::array({"cancelled by the user at " + c.where + "; no file was written"})}};
     }
+    catch (...)
+    {
+        // anything else (a Fusion call that returned nothing, used as if it had): no file, the design as it was, and
+        // where the export had got to
+        std::string what = "an unexpected failure";
+        try
+        {
+            throw;
+        }
+        catch (const std::exception& e)
+        {
+            what = e.what();
+        }
+        catch (...)
+        {
+        }
+        setMeasureContext(nullptr);
+        if (Ptr<Design> des = Application::get()->activeProduct())
+            if (des->timeline()) des->timeline()->moveToEnd();
+        std::string at = progressLastMessage();
+        res = json{{"ok", false}, {"error", "export failed: " + what + (at.empty() ? "" : " (at: " + at + ", " + g_exportStage + ")") + "; no file was written"}};
+    }
     if (res.is_object()) res["progress"] = progressTimeline();
     progressEnd();
     return res;
@@ -3188,7 +3747,7 @@ json exportFileInner(const fs::path& out, const json& opts)
     Ptr<Application> app = Application::get();
     Ptr<Design> des = app->activeProduct();
     if (!des) return json{{"ok", false}, {"error", "the active document is not a design"}};
-    if (des->designType() != ParametricDesignType) return json{{"ok", false}, {"error", "only parametric designs carry a history to export"}};
+    // a direct design (no history) is written too: every part plain, its geometry in the file's B-rep (FORMAT-SPEC 4)
     // an imported model placed upright (common.h) is written from its wrapper component, in the file's frame
     Ptr<Occurrence> wrapOcc = findModelWrapper(des);
     Ptr<Component> root = wrapOcc ? wrapOcc->component() : des->rootComponent();
@@ -3300,11 +3859,12 @@ json exportFileInner(const fs::path& out, const json& opts)
         }
     bool assembly = !parts.empty();
     if (!assembly) parts.push_back(root);
-    progressSetTotal(static_cast<int>(des->timeline()->count() + (occs ? occs->count() : 0)) + 6);
+    progressSetTotal(static_cast<int>((des->timeline() ? des->timeline()->count() : 0) + (occs ? occs->count() : 0)) + 6);
     json userParams = json::array();
-    for (size_t i = 0; i < des->userParameters()->count(); i++)
+    Ptr<UserParameters> ups = des->userParameters();   // none in a direct design
+    for (size_t i = 0; ups && i < ups->count(); i++)
     {
-        Ptr<UserParameter> p = des->userParameters()->item(i);
+        Ptr<UserParameter> p = ups->item(i);
         userParams.push_back(json{{"name", nativeParamName(p)}, {"value", p->unit().empty() ? p->value() : (p->unit() == "deg" ? rad2deg(p->value()) : cm2mm(p->value()))},
                                   {"unit", p->unit().empty() ? "none" : (p->unit() == "deg" ? "deg" : "mm")}, {"expression", neutralExpression(des, p->expression())},
                                   {"native", p->expression()}});
@@ -3337,7 +3897,9 @@ json exportFileInner(const fs::path& out, const json& opts)
         }
         progressStep(w.docName + ": reading its parameters");
         w.walk();
+        progressStep(w.docName + ": writing its document (bodies, materials, appearances)");
         json d = w.document();
+        progressStep(w.docName + ": its equations");
         // user parameters are design-wide in Fusion: written with the part whose equations use them (below)
         // equations: dimension parameters whose expression is not a plain number
         for (auto& nf : d["features"])
@@ -3345,7 +3907,7 @@ json exportFileInner(const fs::path& out, const json& opts)
                 for (auto& dm : nf["def"]["dimensions"])
                     if (dm.contains("param"))
                     {
-                        Ptr<Parameter> p = des->allParameters()->itemByName(dm["param"].get<std::string>());
+                        Ptr<Parameter> p = des->allParameters() ? des->allParameters()->itemByName(dm["param"].get<std::string>()) : nullptr;
                         if (!p) continue;
                         bool foreign = false;
                         Ptr<ParameterList> deps = p->dependencyParameters();
@@ -3399,7 +3961,11 @@ json exportFileInner(const fs::path& out, const json& opts)
     json fp = json{{"bodies", json::array()}};
     if (assembly)
     {
-        // The file's fingerprint: every solid of every part shown, where the design places it (in the file's frame)
+        // The file's fingerprint: every solid of every part shown, where the design places it (in the file's frame);
+        // a plain part's marked plain (FORMAT-SPEC 6: paired, not compared)
+        std::set<std::string> plainDocs;
+        for (auto& d : model["documents"])
+            if (d.value("plain", false)) plainDocs.insert(d.value("id", ""));
         for (size_t i = 0; i < occs->count(); i++)
         {
             Ptr<Occurrence> o = occs->item(i);
@@ -3408,9 +3974,14 @@ json exportFileInner(const fs::path& out, const json& opts)
             for (Ptr<Occurrence> p = o->assemblyContext(); p; p = p->assemblyContext())
                 if (!p->isLightBulbOn()) shown = false;
             if (!shown || !docOf.count(o->component()->entityToken())) continue;
+            bool plainPart = plainDocs.count(docOf[o->component()->entityToken()]) > 0;
             for (size_t b = 0; b < o->component()->bRepBodies()->count(); b++)
                 if (o->component()->bRepBodies()->item(b)->isSolid())
-                    fp["bodies"].push_back(bodyFingerprint(o->component()->bRepBodies()->item(b), o->transform2()));
+                {
+                    json bf = bodyFingerprint(o->component()->bRepBodies()->item(b), o->transform2());
+                    if (plainPart) bf["plain"] = true;
+                    fp["bodies"].push_back(bf);
+                }
         }
         // Assemblies are written nested, as the design holds them (FORMAT-SPEC 5): the root (or the upright
         // wrapper, which is transparent) and each sub-assembly it shows, once per Fusion component, each with its
@@ -3514,11 +4085,35 @@ json exportFileInner(const fs::path& out, const json& opts)
                 a["components"].push_back(ce);
                 mw.written.insert(cid);
             }
+            // a joint Fusion fails on as it is read (a GrabCAD gripper's Revolute 15: "Unknown exception") is written
+            // as an opaque mate with the reason, and the rest of the assembly goes on
+            auto unreadJoint = [&](size_t n0, const std::string& jn) {
+                std::string what = "an unexpected failure";
+                try
+                {
+                    throw;
+                }
+                catch (const std::exception& ex)
+                {
+                    what = ex.what();
+                }
+                catch (...)
+                {
+                }
+                while (mw.mates.size() > n0) mw.mates.erase(mw.mates.size() - 1);
+                mw.add(json{{"type", "other"}, {"refs", json::array()}}, jn, "opaque", "Fusion failed reading the joint (" + what + ")");
+                notes.push_back(name + ": joint " + jn + " could not be read (" + what + "): written as an opaque mate");
+            };
             // joints -> mates; a suppressed joint's mates go out suppressed (FORMAT-SPEC 5, Mates). Assemblies list no
             // configurations, so the key is "cfg:active", as the SolidWorks exporter writes it
             for (size_t i = 0; i < c->joints()->count(); i++)
             {
                 Ptr<Joint> j = c->joints()->item(i);
+                std::string jn = "joint " + std::to_string(i + 1);
+                size_t n0 = mw.mates.size();
+                try
+                {
+                jn = j->name();
                 progressTick(name + ": joint " + j->name());
                 if (!j->occurrenceOne() && ctxOcc)
                     if (Ptr<Joint> pj = j->createForAssemblyContext(ctxOcc))
@@ -3527,13 +4122,26 @@ json exportFileInner(const fs::path& out, const json& opts)
                 Ptr<Base> g1 = j->geometryOrOriginOne();
                 if (Ptr<JointGeometry> g = g1) origin = ptMm(g->origin());
                 else if (Ptr<JointOrigin> jo = g1) origin = ptMm(jo->geometry()->origin());
-                size_t n0 = mw.mates.size();
                 mw.joint(j->name(), j->occurrenceOne(), j->occurrenceTwo(), j->jointMotion(), origin);
                 markSuppressed(mw, n0, j->isSuppressed(), j->name());
+                }
+                catch (const Cancelled&)
+                {
+                    throw;
+                }
+                catch (...)
+                {
+                    unreadJoint(n0, jn);
+                }
             }
             for (size_t i = 0; i < c->asBuiltJoints()->count(); i++)
             {
                 Ptr<AsBuiltJoint> j = c->asBuiltJoints()->item(i);
+                std::string jn = "as-built joint " + std::to_string(i + 1);
+                size_t n0 = mw.mates.size();
+                try
+                {
+                jn = j->name();
                 progressTick(name + ": joint " + j->name());
                 // Read through a sub-assembly's component, an as-built joint the import made in it has no occurrences
                 // or geometry, also through its proxy (measured on L12's arm). The import records them on the joint
@@ -3564,9 +4172,17 @@ json exportFileInner(const fs::path& out, const json& opts)
                         }
                     }
                 }
-                size_t n0 = mw.mates.size();
                 mw.joint(j->name(), one, two, j->jointMotion(), origin, recorded ? &recAxis : nullptr, fastener);
                 markSuppressed(mw, n0, j->isSuppressed(), j->name());
+                }
+                catch (const Cancelled&)
+                {
+                    throw;
+                }
+                catch (...)
+                {
+                    unreadJoint(n0, jn);
+                }
             }
             for (size_t i = 0; i < c->motionLinks()->count(); i++)
             {

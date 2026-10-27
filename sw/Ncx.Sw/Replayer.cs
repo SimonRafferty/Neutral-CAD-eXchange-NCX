@@ -29,6 +29,11 @@ namespace Ncx.Sw
         string docId;
         readonly Dictionary<string, IFeature> features = new Dictionary<string, IFeature>();   // neutral id -> feature
         readonly List<IFeature> originPlanes = new List<IFeature>();
+        // feature types whose replay chooses its variant by the carried result itself (TryVariants, MatchesResult):
+        // the general result check after a replay leaves them alone
+        static readonly HashSet<string> SelfCheckedResult = new HashSet<string> { "linearPattern", "circularPattern", "convertToSheetMetal",
+            "baseFlange", "edgeFlange", "hem", "sketchedBend", "offsetFaces", "fold", "unfold", "breakCorner", "sketch", "sketch3d",
+            "insertPart", "mirrorPart", "structuralMember" };
         readonly HashSet<string> fellBack = new HashSet<string>();   // ids of documents replaced by the file's B-rep
         readonly Dictionary<string, SketchMap> sketchMaps = new Dictionary<string, SketchMap>();   // sketch id -> entities
         // every rebuilt part's sketch maps (mates may reference a sketch entity in a component)
@@ -112,6 +117,19 @@ namespace Ncx.Sw
                     else
                     {
                         path = Path.Combine(outDir, d.Str("name") + ".SLDPRT");
+                        if (d.Bool("plain"))
+                        {
+                            // no history in the source: its geometry as the file has it (FORMAT-SPEC 4); no flex
+                            rd = PlainPart(d, outDir, model.Arr("documents").Count == 1);
+                            doc = rd;
+                            part = rd as IPartDoc;
+                            fellBack.Add(d.Str("id"));
+                            Save(rd, path);
+                            saved.Add(path);
+                            savedByDoc[d.Str("id")] = path;
+                            rebuilt[d.Str("id")] = rd;
+                            continue;
+                        }
                         rd = ReplayPart(d);
                         // the objective test: if the rebuilt geometry is not the source's, use the reference
                         // B-rep from the same file instead (partial rebuild kept for repair)
@@ -315,8 +333,34 @@ namespace Ncx.Sw
                         failure = ReplayFeature(nf);
                         if (failure == null)
                         {
-                            Report.Add(docId, name, nf.Str("status") == "approximate" ? "approximate" : "rebuilt", nf.Str("note"));
-                            continue;
+                            // a feature that also carries its result (FORMAT-SPEC 4: the writer was not sure every system
+                            // builds it the same, e.g. a region bounded by a projected edge, a taper, a turning move) is
+                            // kept only if it gives those bodies; else it is removed and the result used (a GrabCAD knuckle
+                            // joint's extrude came out longer, and every fillet after it failed)
+                            var res = nf.Obj("result");
+                            IFeature made;
+                            if (res != null && res.Arr("bodies").Count > 0 && !SelfCheckedResult.Contains(nf.Str("type") ?? "") &&
+                                !MatchesResult(res) && features.TryGetValue(nf.Str("id"), out made) && made != null)
+                            {
+                                doc.ClearSelection2(true);
+                                bool removed = made.Select2(false, 0) && doc.Extension.DeleteSelection2(0);
+                                doc.ClearSelection2(true);
+                                if (removed)
+                                {
+                                    features.Remove(nf.Str("id"));
+                                    failure = "the rebuilt " + nf.Str("type") + " differs from the source's carried result";
+                                }
+                                else
+                                {
+                                    Report.Add(docId, name, "approximate", "differs from the source's carried result, which could not replace it");
+                                    continue;
+                                }
+                            }
+                            else
+                            {
+                                Report.Add(docId, name, nf.Str("status") == "approximate" ? "approximate" : "rebuilt", nf.Str("note"));
+                                continue;
+                            }
                         }
                     }
                 }

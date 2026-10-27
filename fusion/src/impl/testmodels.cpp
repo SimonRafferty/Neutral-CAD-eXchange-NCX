@@ -7,7 +7,10 @@
 // rolled, teardrop, flat), sm_fold (a fold; "position": start|center|end), sm_convert (Fusion's convert to sheet metal
 // of a plate, then a flange), patterns_axes (patterns along the origin axes, a partial circular pattern), sm_unfold
 // (a flange, unfolded, a slot cut across the bend in the flat, refolded), sm_corner (a break corner chamfer on a
-// plate's corner), offset_faces (a block's top face offset).
+// plate's corner), offset_faces (a block's top face offset), face_extrude (faces extruded directly, and a cut that
+// misses the body), taper_extrude (one- and two-sided tapers), move_bodies (a translation, a turn about a point),
+// thread (cosmetic and modelled), projected_region (regions bounded by projected edges), side_face_sketch (H/V
+// relations on a side face), plain_direct (a direct design: a plain part).
 #include "host.h"
 #include "replay.h"
 
@@ -122,6 +125,17 @@ Ptr<FlangeFeature> edgeFlange(const Ptr<Component>& c, const Ptr<BRepEdge>& e, d
     in->heightDatumType(datum);
     in->isMiteredCorners(false);
     Ptr<FlangeFeature> f = c->features()->flangeFeatures()->add(in);
+    if (f) f->name(name);
+    return f;
+}
+
+// a block: a rectangle on XY (mm) extruded up by h, a new body
+Ptr<ExtrudeFeature> block(const Ptr<Component>& c, double x0, double y0, double x1, double y1, double h, const std::string& name)
+{
+    Ptr<Sketch> sk = rectSketch(c, x0, y0, x1, y1, "SK_" + name);
+    Ptr<ExtrudeFeatureInput> in = c->features()->extrudeFeatures()->createInput(sk->profiles()->item(0), NewBodyFeatureOperation);
+    in->setDistanceExtent(false, mm(h));
+    Ptr<ExtrudeFeature> f = c->features()->extrudeFeatures()->add(in);
     if (f) f->name(name);
     return f;
 }
@@ -268,6 +282,42 @@ json testModel(const json& req)
         if (of) of->name("Offset-Top");
         need((bool)of, "offset faces");
     }
+    else if (name == "face_extrude")
+    {
+        // faces picked as extrude profiles (a user's cheek jig): the top face with a hole in it, a side face; then a
+        // cut drawn clear of the body, which Fusion keeps with a warning and which removes nothing
+        Ptr<Sketch> sk = rectSketch(c, 0, 0, 100, 60, "SK_Block");
+        sk->sketchCurves()->sketchCircles()->addByCenterRadius(Point3D::create(mm2cm(30), mm2cm(30), 0), mm2cm(8));
+        Ptr<Profile> outer;
+        for (size_t i = 0; i < sk->profiles()->count(); i++)
+            if (sk->profiles()->item(i)->profileLoops()->count() == 2) outer = sk->profiles()->item(i);   // the plate with the hole
+        Ptr<ExtrudeFeatureInput> ein = outer ? c->features()->extrudeFeatures()->createInput(outer, NewBodyFeatureOperation) : nullptr;
+        if (ein) ein->setDistanceExtent(false, mm(10));
+        Ptr<ExtrudeFeature> blk = ein ? c->features()->extrudeFeatures()->add(ein) : nullptr;
+        if (blk) blk->name("Block");
+        need((bool)blk, "block");
+        Ptr<BRepFace> top = faceNear(c, {0, 0, 1}, {50, 30, 10});
+        Ptr<ExtrudeFeatureInput> tin = top ? c->features()->extrudeFeatures()->createInput(top, JoinFeatureOperation) : nullptr;
+        if (tin) tin->setDistanceExtent(false, mm(4));
+        Ptr<ExtrudeFeature> tf = tin ? c->features()->extrudeFeatures()->add(tin) : nullptr;
+        if (tf) tf->name("Face-Top");
+        need((bool)tf, "top face extrude");
+        Ptr<BRepFace> side = faceNear(c, {1, 0, 0}, {100, 30, 7});
+        Ptr<ExtrudeFeatureInput> sin = side ? c->features()->extrudeFeatures()->createInput(side, JoinFeatureOperation) : nullptr;
+        if (sin) sin->setDistanceExtent(false, mm(6));
+        Ptr<ExtrudeFeature> sf = sin ? c->features()->extrudeFeatures()->add(sin) : nullptr;
+        if (sf) sf->name("Face-Side");
+        need((bool)sf, "side face extrude");
+        Ptr<Sketch> ms = rectSketch(c, 200, 0, 220, 20, "SK_Miss");
+        Ptr<ExtrudeFeatureInput> min = c->features()->extrudeFeatures()->createInput(ms->profiles()->item(0), CutFeatureOperation);
+        min->setDistanceExtent(false, mm(10));
+        std::vector<Ptr<BRepBody>> parts;
+        if (c->bRepBodies()->count() > 0) parts.push_back(c->bRepBodies()->item(0));
+        min->participantBodies(parts);
+        Ptr<ExtrudeFeature> miss = c->features()->extrudeFeatures()->add(min);
+        if (miss) miss->name("Cut-Missing");
+        if (!miss) notes.push_back("the cut that misses the body was refused (" + lastError() + "): the model has no such cut");
+    }
     else if (name == "patterns_axes")
     {
         Ptr<Sketch> sk = rectSketch(c, 0, 0, 100, 60, "SK_Block");
@@ -312,6 +362,187 @@ json testModel(const json& req)
             if (cp) cp->name("Pattern-Circular");
             need((bool)cp, "circular pattern");
         }
+    }
+    else if (name == "taper_extrude")
+    {
+        // tapered extrudes: one side inward on a face, two sides with their own tapers (a GrabCAD caster's tapered boss)
+        need((bool)block(c, 0, 0, 100, 60, 10, "Base"), "base");
+        Ptr<BRepFace> top = faceNear(c, {0, 0, 1}, {50, 30, 10});
+        Ptr<Sketch> sk = top ? c->sketches()->addWithoutEdges(top) : nullptr;
+        if (sk)
+        {
+            sk->name("SK_Boss");
+            sk->sketchCurves()->sketchCircles()->addByCenterRadius(sk->modelToSketchSpace(Point3D::create(mm2cm(30), mm2cm(30), mm2cm(10))), mm2cm(12));
+            Ptr<ExtrudeFeatureInput> in = sk->profiles()->count() > 0 ? c->features()->extrudeFeatures()->createInput(sk->profiles()->item(0), JoinFeatureOperation) : nullptr;
+            if (in) in->setOneSideExtent(DistanceExtentDefinition::create(mm(15)), PositiveExtentDirection, deg(-8));
+            Ptr<ExtrudeFeature> f = in ? c->features()->extrudeFeatures()->add(in) : nullptr;
+            if (f) f->name("Boss-Tapered");
+            need((bool)f, "one-sided tapered boss");
+        }
+        Ptr<Sketch> s2 = c->sketches()->add(c->xZConstructionPlane());
+        s2->name("SK_Rib");
+        s2->sketchCurves()->sketchLines()->addTwoPointRectangle(Point3D::create(mm2cm(70), mm2cm(2), 0), Point3D::create(mm2cm(90), mm2cm(8), 0));
+        Ptr<ExtrudeFeatureInput> in2 = c->features()->extrudeFeatures()->createInput(s2->profiles()->item(0), JoinFeatureOperation);
+        in2->setTwoSidesExtent(DistanceExtentDefinition::create(mm(10)), DistanceExtentDefinition::create(mm(6)), deg(5), deg(3));
+        Ptr<ExtrudeFeature> f2 = c->features()->extrudeFeatures()->add(in2);
+        if (f2) f2->name("Rib-TwoSided");
+        need((bool)f2, "two-sided tapered extrude");
+    }
+    else if (name == "move_bodies")
+    {
+        // bodies moved: a translation, and a turn about the z axis through a point (a GrabCAD gripper's moves)
+        need((bool)block(c, 0, 0, 40, 20, 10, "Body-A"), "body A");
+        need((bool)block(c, 60, 0, 90, 30, 10, "Body-B"), "body B");
+        Ptr<ObjectCollection> a = ObjectCollection::create();
+        a->add(c->bRepBodies()->item(0));
+        Ptr<Matrix3D> t = Matrix3D::create();
+        t->translation(Vector3D::create(mm2cm(5), mm2cm(30), mm2cm(2)));
+        Ptr<MoveFeatureInput> mi = c->features()->moveFeatures()->createInput2(a);
+        if (mi) mi->defineAsFreeMove(t);
+        Ptr<MoveFeature> m1 = mi ? c->features()->moveFeatures()->add(mi) : nullptr;
+        if (m1) m1->name("Move-Translate");
+        need((bool)m1, "translation");
+        Ptr<ObjectCollection> b = ObjectCollection::create();
+        b->add(c->bRepBodies()->item(1));
+        Ptr<Matrix3D> r = Matrix3D::create();
+        r->setToRotation(3.14159265358979323846 / 6, Vector3D::create(0, 0, 1), Point3D::create(mm2cm(75), mm2cm(15), 0));
+        Ptr<MoveFeatureInput> mi2 = c->features()->moveFeatures()->createInput2(b);
+        if (mi2) mi2->defineAsFreeMove(r);
+        Ptr<MoveFeature> m2 = mi2 ? c->features()->moveFeatures()->add(mi2) : nullptr;
+        if (m2) m2->name("Move-Rotate");
+        need((bool)m2, "rotation");
+    }
+    else if (name == "thread")
+    {
+        // threads on two rods: a cosmetic one and a modelled one (a GrabCAD caster's and servo horn's threads)
+        Ptr<Sketch> sk = c->sketches()->add(c->xYConstructionPlane());
+        sk->name("SK_Rods");
+        sk->sketchCurves()->sketchCircles()->addByCenterRadius(Point3D::create(0, 0, 0), mm2cm(5));
+        sk->sketchCurves()->sketchCircles()->addByCenterRadius(Point3D::create(mm2cm(30), 0, 0), mm2cm(5));
+        Ptr<ObjectCollection> both = ObjectCollection::create();
+        for (size_t i = 0; i < sk->profiles()->count(); i++) both->add(sk->profiles()->item(i));
+        Ptr<ExtrudeFeatureInput> in = c->features()->extrudeFeatures()->createInput(both, NewBodyFeatureOperation);
+        in->setDistanceExtent(false, mm(30));
+        Ptr<ExtrudeFeature> rods = c->features()->extrudeFeatures()->add(in);
+        if (rods) rods->name("Rods");
+        Ptr<ThreadFeatures> tfs = c->features()->threadFeatures();
+        auto cylFace = [&](double x) -> Ptr<BRepFace> {
+            for (size_t b = 0; b < c->bRepBodies()->count(); b++)
+                for (size_t i = 0; i < c->bRepBodies()->item(b)->faces()->count(); i++)
+                {
+                    Ptr<BRepFace> f = c->bRepBodies()->item(b)->faces()->item(i);
+                    if (Ptr<Cylinder> cy = f->geometry())
+                        if (std::fabs(cm2mm(cy->origin()->x()) - x) < 1e-6) return f;
+                }
+            return nullptr;
+        };
+        for (int k = 0; k < 2; k++)
+        {
+            Ptr<BRepFace> f = cylFace(k == 0 ? 0 : 30);
+            Ptr<ThreadInfo> ti = tfs->createThreadInfo(false, "ISO Metric profile", "M10x1.5", "6g");
+            Ptr<ObjectCollection> fc = ObjectCollection::create();
+            if (f) fc->add(f);
+            Ptr<ThreadFeatureInput> tin = (f && ti) ? tfs->createInput(fc, ti) : nullptr;
+            if (!tin)
+            {
+                notes.push_back("thread input failed: " + lastError());
+                continue;
+            }
+            tin->isModeled(k == 1);
+            tin->isFullLength(true);
+            Ptr<ThreadFeature> th = tfs->add(tin);
+            if (th) th->name(k == 0 ? "Thread-Cosmetic" : "Thread-Modelled");
+            need((bool)th, k == 0 ? "cosmetic thread" : "modelled thread");
+        }
+    }
+    else if (name == "projected_region")
+    {
+        // regions bounded by projected edges (a GrabCAD knuckle joint): a ring between a drawn circle and a hole's
+        // projected edge, and a rectangle with one side on the block's projected outline
+        Ptr<Sketch> sk = rectSketch(c, 0, 0, 100, 60, "SK_Block");
+        sk->sketchCurves()->sketchCircles()->addByCenterRadius(Point3D::create(mm2cm(30), mm2cm(30), 0), mm2cm(8));
+        Ptr<Profile> outer;
+        for (size_t i = 0; i < sk->profiles()->count(); i++)
+            if (sk->profiles()->item(i)->profileLoops()->count() == 2) outer = sk->profiles()->item(i);
+        Ptr<ExtrudeFeatureInput> in = outer ? c->features()->extrudeFeatures()->createInput(outer, NewBodyFeatureOperation) : nullptr;
+        if (in) in->setDistanceExtent(false, mm(10));
+        Ptr<ExtrudeFeature> blk = in ? c->features()->extrudeFeatures()->add(in) : nullptr;
+        if (blk) blk->name("Block");
+        need((bool)blk, "block");
+        Ptr<BRepFace> top = faceNear(c, {0, 0, 1}, {50, 30, 10});
+        Ptr<Sketch> s2 = top ? c->sketches()->add(top) : nullptr;   // the face's edges projected into it
+        if (s2)
+        {
+            s2->name("SK_OnTop");
+            auto P = [&](double x, double y) { return s2->modelToSketchSpace(Point3D::create(mm2cm(x), mm2cm(y), mm2cm(10))); };
+            s2->sketchCurves()->sketchCircles()->addByCenterRadius(P(30, 30), mm2cm(15));
+            s2->sketchCurves()->sketchLines()->addTwoPointRectangle(P(70, 0), P(90, 20));   // its lower side on the outline
+            // the profile holding a point, smallest first (the ring, not the face around it)
+            auto pick = [&](double x, double y) -> Ptr<Profile> {
+                Ptr<Point3D> q = P(x, y);
+                Ptr<Profile> best;
+                double ba = 1e300;
+                for (size_t i = 0; i < s2->profiles()->count(); i++)
+                {
+                    Ptr<Profile> pr = s2->profiles()->item(i);
+                    Ptr<BoundingBox3D> bb = pr->boundingBox();
+                    double a = pr->areaProperties()->area();
+                    if (bb->minPoint()->x() <= q->x() && q->x() <= bb->maxPoint()->x() && bb->minPoint()->y() <= q->y() && q->y() <= bb->maxPoint()->y() &&
+                        a < ba)
+                        ba = a, best = pr;
+                }
+                return best;
+            };
+            Ptr<Profile> ring = pick(30 + 11.5, 30), corner = pick(80, 10);
+            if (ring && corner)
+            {
+                Ptr<ObjectCollection> ps = ObjectCollection::create();
+                ps->add(ring);
+                ps->add(corner);
+                Ptr<ExtrudeFeatureInput> i2 = c->features()->extrudeFeatures()->createInput(ps, JoinFeatureOperation);
+                i2->setDistanceExtent(false, mm(5));
+                Ptr<ExtrudeFeature> f2 = c->features()->extrudeFeatures()->add(i2);
+                if (f2) f2->name("Ring-and-Corner");
+                need((bool)f2, "extrude of the projected regions");
+            }
+            else
+                notes.push_back("the ring or corner region was not found");
+        }
+    }
+    else if (name == "side_face_sketch")
+    {
+        // a sketch on a side face whose axes Fusion and SolidWorks turn differently (a user's cheek jig): a rectangle
+        // with its horizontal and vertical relations and two dimensions, cut into the face
+        need((bool)block(c, 0, 0, 100, 60, 40, "Block"), "block");
+        Ptr<BRepFace> side = faceNear(c, {-1, 0, 0}, {0, 30, 20});
+        Ptr<Sketch> sk = side ? c->sketches()->addWithoutEdges(side) : nullptr;
+        if (sk)
+        {
+            sk->name("SK_Side");
+            Ptr<SketchLineList> r = sk->sketchCurves()->sketchLines()->addTwoPointRectangle(
+                sk->modelToSketchSpace(Point3D::create(0, mm2cm(10), mm2cm(10))), sk->modelToSketchSpace(Point3D::create(0, mm2cm(30), mm2cm(20))));
+            if (r && r->count() == 4)
+                for (int k = 0; k < 2; k++)
+                {
+                    Ptr<SketchLine> l = r->item(k);
+                    Ptr<Point3D> a = l->startSketchPoint()->geometry(), b = l->endSketchPoint()->geometry();
+                    sk->sketchDimensions()->addDistanceDimension(l->startSketchPoint(), l->endSketchPoint(), AlignedDimensionOrientation,
+                                                                 Point3D::create((a->x() + b->x()) / 2 + 0.5, (a->y() + b->y()) / 2 + 0.5, 0));
+                }
+            Ptr<ExtrudeFeatureInput> in = sk->profiles()->count() > 0 ? c->features()->extrudeFeatures()->createInput(sk->profiles()->item(0), CutFeatureOperation) : nullptr;
+            if (in) in->setOneSideExtent(DistanceExtentDefinition::create(mm(15)), NegativeExtentDirection);
+            Ptr<ExtrudeFeature> f = in ? c->features()->extrudeFeatures()->add(in) : nullptr;
+            if (f) f->name("Cut-Side");
+            need((bool)f, "side cut");
+        }
+    }
+    else if (name == "plain_direct")
+    {
+        // a direct (no history) design, as imported or direct-modelled models are: written as a plain part
+        need((bool)block(c, 0, 0, 50, 30, 10, "Box"), "box");
+        need((bool)block(c, 60, 0, 80, 20, 25, "Post"), "post");
+        des->designType(DirectDesignType);
+        need(des->designType() == DirectDesignType, "switch to a direct design");
     }
     else
         return json{{"ok", false}, {"error", "no test model " + name}};

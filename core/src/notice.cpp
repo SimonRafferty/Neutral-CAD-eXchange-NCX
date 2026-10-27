@@ -371,16 +371,60 @@ long notice_solid(const std::string& text, const std::array<double, 6>& model, d
     return b.solid(text);
 }
 
-// mm per length unit of the file (SolidWorks writes mm; metres and inches are recognised too)
-double unit_mm(const StepText& st) {
-    for (const auto& e : st.entities()) {
-        std::string b(e.body);
-        b.erase(std::remove(b.begin(), b.end(), ' '), b.end());
-        if (b.find("LENGTH_UNIT") == std::string::npos) continue;
-        if (b.find(".MILLI.") != std::string::npos) return 1.0;
-        if (b.find("CONVERSION_BASED_UNIT('INCH'") != std::string::npos) return 25.4;
-        if (b.find("SI_UNIT($,.METRE.)") != std::string::npos) return 1000.0;
-    }
+// mm per unit of one LENGTH_UNIT record (its body without spaces); 0 when it is not one this reads
+double length_unit_mm(const std::string& b) {
+    if (b.find("LENGTH_UNIT") == std::string::npos) return 0;
+    if (b.find("CONVERSION_BASED_UNIT('INCH'") != std::string::npos) return 25.4;
+    if (b.find("CONVERSION_BASED_UNIT('FOOT'") != std::string::npos) return 304.8;
+    size_t s = b.find("SI_UNIT(");
+    if (s == std::string::npos || b.find(".METRE.", s) == std::string::npos) return 0;
+    std::string prefix = b.substr(s + 8, b.find(',', s) - (s + 8));
+    static const std::map<std::string, double> mm = {{"$", 1000.0}, {".KILO.", 1e6}, {".DECI.", 100.0}, {".CENTI.", 10.0},
+                                                     {".MILLI.", 1.0}, {".MICRO.", 1e-3}, {".NANO.", 1e-6}};
+    auto it = mm.find(prefix);
+    return it == mm.end() ? 0 : it->second;
+}
+
+// mm per length unit of the geometry in the representation context `ctx` (the unit its GLOBAL_UNIT_ASSIGNED_CONTEXT
+// names). A file can hold more than one length unit: Fusion's in centimetres also has a bare metre one, which the
+// first-found rule took, so a notice came out 100 times too small (a user's centimetre design). Without a context, or
+// when it names none this reads, the first length unit any global unit context names; then the first in the file;
+// then mm.
+double unit_mm(const StepText& st, long ctx = 0) {
+    auto squeeze = [](std::string_view v) {
+        std::string b(v);
+        b.erase(std::remove_if(b.begin(), b.end(), [](char c) { return c == ' ' || c == '\n' || c == '\r'; }), b.end());
+        return b;
+    };
+    // the unit records a context's GLOBAL_UNIT_ASSIGNED_CONTEXT((#a,#b,...)) lists
+    auto assigned = [&](const std::string& b) {
+        std::vector<long> ids;
+        size_t g = b.find("GLOBAL_UNIT_ASSIGNED_CONTEXT((");
+        if (g == std::string::npos) return ids;
+        size_t i = g + 30, end = b.find(')', i);
+        while (i < end) {
+            if (b[i] == '#') {
+                size_t j = i + 1;
+                while (j < end && std::isdigit(static_cast<unsigned char>(b[j]))) ++j;
+                if (j > i + 1) ids.push_back(std::stol(b.substr(i + 1, j - i - 1)));
+                i = j;
+            } else
+                ++i;
+        }
+        return ids;
+    };
+    auto first_length = [&](const std::vector<long>& ids) {
+        for (long id : ids)
+            if (const Entity* u = st.find(id))
+                if (double v = length_unit_mm(squeeze(u->body)); v > 0) return v;
+        return 0.0;
+    };
+    if (const Entity* c = ctx ? st.find(ctx) : nullptr)
+        if (double v = first_length(assigned(squeeze(c->body))); v > 0) return v;
+    for (const auto& e : st.entities())
+        if (double v = first_length(assigned(squeeze(e.body))); v > 0) return v;
+    for (const auto& e : st.entities())
+        if (double v = length_unit_mm(squeeze(e.body)); v > 0) return v;
     return 1.0;
 }
 
@@ -547,7 +591,7 @@ NoticeEdit plan_assembly_notice(const StepText& st, const json& model, const std
     for (char& c : pname)
         if (std::string("/\\:*?\"<>|").find(c) != std::string::npos) c = '_';
 
-    long msb = notice_solid(text, model_box(model), 1.0 / unit_mm(st), next_id, out, ed.box);
+    long msb = notice_solid(text, model_box(model), 1.0 / unit_mm(st, geom_ctx), next_id, out, ed.box);
     long own = placement();
     long absr = add("ADVANCED_BREP_SHAPE_REPRESENTATION('',(" + ref(msb) + "," + ref(own) + ")," + ref(geom_ctx) + ")");
     long csr = add("SHAPE_REPRESENTATION(" + step_string(pname) + ",(" + ref(own) + ")," + ref(geom_ctx) + ")");
@@ -609,7 +653,7 @@ NoticeEdit plan_notice(const StepText& st, const json& model, const std::string&
         items += (items.empty() ? "" : ",") + ref(it.ref);
     }
 
-    long msb = notice_solid(text, model_box(model), 1.0 / unit_mm(st), next_id, ed.append, ed.box);
+    long msb = notice_solid(text, model_box(model), 1.0 / unit_mm(st, a[2].ref), next_id, ed.append, ed.box);
     items += (items.empty() ? "" : ",") + ref(msb);
 
     ed.remove.insert(rep->id);   // rewritten under the same id with the notice added

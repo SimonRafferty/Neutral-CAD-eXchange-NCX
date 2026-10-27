@@ -134,7 +134,7 @@ namespace Ncx.AddIn
                     string reportPath = Path.ChangeExtension(target, ".report.json");
                     File.WriteAllText(reportPath, Json.Write(res["report"]));
                     progress.Close();
-                    Finished("Export: " + Path.GetFileName(target), exp.Report, null, reportPath);
+                    Finished("NCX export report: " + Path.GetFileName(target), false, exp.Report, null, DocName(null), reportPath);
                 }
                 catch (OperationCanceledException)
                 {
@@ -194,8 +194,7 @@ namespace Ncx.AddIn
                         int err = 0;
                         sw.ActivateDoc3(Path.GetFileName(saved.Last()), false, 0, ref err);
                     }
-                    Finished((rep.Cancelled ? "Import cancelled: " : "Import: ") + Path.GetFileName(source),
-                             rep.Report, rep.Verification, reportPath);
+                    Finished("NCX import report: " + Path.GetFileName(source), true, rep.Report, rep.Verification, DocName(model), reportPath);
                 }
                 catch (Exception e)
                 {
@@ -267,12 +266,26 @@ namespace Ncx.AddIn
             finally { log?.Dispose(); }
         }
 
-        // the report window only when something needs attention; a clean run just says so in the status bar
-        void Finished(string title, Report report, List<JObj> verification, string reportPath)
+        /// <summary>A document id ("doc:x") as its name in the payload, or the id without its prefix.</summary>
+        static Func<string, string> DocName(JObj model)
         {
-            if (ReportForm.HasProblems(report, verification))
-                ReportForm.Show(Owner, title, report, verification, reportPath);
-            else
+            var names = new Dictionary<string, string>();
+            if (model != null)
+                foreach (JObj d in model.Arr("documents"))
+                    if (d.Str("id") != null && d.Str("name") != null) names[d.Str("id")] = d.Str("name");
+            return id =>
+            {
+                string n;
+                if (id != null && names.TryGetValue(id, out n)) return n;
+                return id != null && id.StartsWith("doc:") ? id.Substring(4) : id;
+            };
+        }
+
+        // the report box only when there is something to tell; a clean run just says so in the status bar. docName: a
+        // document id ("doc:x") as the name the user knows
+        void Finished(string title, bool import, Report report, List<JObj> verification, Func<string, string> docName, string reportPath)
+        {
+            if (!ReportForm.Show(Owner, title, import, report, verification, docName, reportPath))
             {
                 int notes = report.Count("note");
                 int features = report.Items.Count - notes;

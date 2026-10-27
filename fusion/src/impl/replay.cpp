@@ -123,6 +123,7 @@ std::string Replayer::replayPart(const json& doc, const Ptr<Component>& comp)
     const json* groupOf = nullptr;
     auto closeGroup = [&]() {
         if (!groupOf) return;
+        TimedSection ts("provenance (shape after each feature)");
         size_t end = tl->count();
         json def = *groupOf;
         def.erase("result");
@@ -184,11 +185,19 @@ std::string Replayer::replayPart(const json& doc, const Ptr<Component>& comp)
                                                                "sketch3d", "jog", "closedCorner", "miterFlange", "convertToSheetMetal"};
                 bool checkResult = nf.contains("result") && nf["result"].contains("bodies") && !selfChecked.count(nf.value("type", ""));
                 std::vector<json> before;
-                if (checkResult) before = solidFingerprints();
-                failure = replayFeature(nf);
+                if (checkResult)
+                {
+                    TimedSection ts("result check");
+                    before = solidFingerprints();
+                }
+                {
+                    TimedSection ts("feature: " + nf.value("type", std::string("?")));
+                    failure = replayFeature(nf);
+                }
                 if (failure.empty() && checkResult)
                 {
                     std::string detail;
+                    TimedSection ts("result check");
                     if (!matchesCarriedResult(nf, before, &detail, "exchange"))
                     {
                         auto fit = features.find(nf.value("id", ""));
@@ -210,7 +219,10 @@ std::string Replayer::replayPart(const json& doc, const Ptr<Component>& comp)
                 }
                 if (failure.empty())
                 {
-                    snapshot();
+                    {
+                        TimedSection ts("snapshot");
+                        snapshot();
+                    }
                     bool approx = nf.value("status", "") == "approximate";
                     report_.add(docName_, fname, approx ? "approximate" : "rebuilt", approx ? nf.value("note", "") : nf.value("info", ""));
                     continue;
@@ -232,8 +244,12 @@ std::string Replayer::replayPart(const json& doc, const Ptr<Component>& comp)
             report_.add(docName_, fname, "failed", failure);
             continue;
         }
-        std::string noResult = applyResult(nf);
-        snapshot();
+        std::string noResult;
+        {
+            TimedSection ts("carried result applied");
+            noResult = applyResult(nf);
+            snapshot();
+        }
         if (noResult.empty())
             report_.add(docName_, fname, "approximate", "carried as fixed geometry (its resulting bodies), not rebuilt: " + failure);
         else

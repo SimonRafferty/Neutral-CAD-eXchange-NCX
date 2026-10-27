@@ -1,4 +1,4 @@
-// Windows Forms used by the add-in: a progress window with a working Cancel, and the report window.
+// Windows Forms used by the add-in: a progress window with a working Cancel, and the report box.
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -45,62 +45,80 @@ namespace Ncx.AddIn
         }
     }
 
-    /// <summary>What carried across, what was approximated, what fell back and why.</summary>
+    /// <summary>The report at the end of an import or export, in plain words. Most people who open an NCX file are not
+    /// CAD specialists: a list of every approximated feature reads as a list of errors. So the box says the model came
+    /// through, names only the parts worth looking at, and counts the rest; the saved report file keeps every entry.</summary>
     static class ReportForm
     {
-        static readonly Dictionary<string, Color> Colours = new Dictionary<string, Color>
+        // "A, B, C and 4 more"
+        static string NameList(List<string> names, int most = 5)
         {
-            { "mapped", Color.Honeydew }, { "rebuilt", Color.Honeydew }, { "note", Color.AliceBlue }, { "approximate", Color.LightYellow },
-            { "fallback", Color.MistyRose }, { "opaque", Color.MistyRose }, { "failed", Color.LightPink }, { "cancelled", Color.Gainsboro }
-        };
-
-        // a note (e.g. an under-defined sketch) is information, not a problem: it does not open the window
-        static readonly HashSet<string> CleanStatus = new HashSet<string> { "mapped", "rebuilt", "note" };
-        // "topology": the same surfaces and areas, only cut into faces differently
-        static readonly HashSet<string> CleanVerification = new HashSet<string> { "match", "count_only", "topology" };
-
-        /// <summary>Anything approximated, dropped, failed or cancelled, or any verification that did not match.</summary>
-        public static bool HasProblems(Report report, List<JObj> verification)
-        {
-            return report.Items.Any(i => !CleanStatus.Contains(i.Str("status") ?? "")) ||
-                   (verification != null && verification.Any(v => !CleanVerification.Contains(v.Str("result") ?? "")));
+            string s = string.Join(", ", names.Take(most));
+            return names.Count > most ? s + " and " + (names.Count - most) + " more" : s;
         }
 
-        static string Doc(string id) { return id != null && id.StartsWith("doc:") ? id.Substring(4) : id; }
-
-        /// <summary>The report window: only the items and checks that need attention (the saved file has them all).</summary>
-        public static void Show(IWin32Window owner, string title, Report report, List<JObj> verification, string reportPath)
+        /// <summary>The summary text; empty when there is nothing to say beyond "it worked". warn: a part's shape may
+        /// differ from the original (the only real warning).</summary>
+        public static string Summary(bool import, Report report, List<JObj> verification, Func<string, string> docName, out bool warn)
         {
-            using (var f = new Form { Text = title, Width = 900, Height = 560, StartPosition = FormStartPosition.CenterParent, ShowInTaskbar = false })
+            warn = false;
+            var lines = new List<string>();
+            if (import)
             {
-                // only what needs attention: the counts say how much carried cleanly, the file lists everything
-                var summary = report.ToJson().Obj("summary");
-                var badChecks = (verification ?? new List<JObj>()).Where(v => !CleanVerification.Contains(v.Str("result") ?? "")).ToList();
-                var top = new Label
+                // parts replaced by the file's own geometry: right shape, no feature history (their features don't count)
+                var fixedDocs = new HashSet<string>(report.Items.Where(i => i.Str("status") == "fallback").Select(i => i.Str("document")));
+                // parts whose mass properties did not match and were not replaced. The face and structure checks
+                // ("doc:x (faces)", "(structure)") are details for the report file: faces cut differently, sketches
+                // less defined than the source's, with the shape the same
+                var check = (verification ?? new List<JObj>())
+                    .Where(v => (v.Str("document") ?? "").StartsWith("doc:") && !v.Str("document").Contains(" (") &&
+                                v.Str("result") == "mismatch" && !fixedDocs.Contains(v.Str("document")))
+                    .Select(v => docName(v.Str("document"))).Distinct().ToList();
+                int different = report.Items.Count(i => (i.Str("status") == "approximate" || i.Str("status") == "failed" || i.Str("status") == "opaque") &&
+                                                         !fixedDocs.Contains(i.Str("document")));
+                bool cancelled = report.Items.Any(i => i.Str("status") == "cancelled");
+                if (cancelled) lines.Add("- The import was cancelled before the end: only what was finished by then was built.");
+                if (check.Count > 0)
                 {
-                    Dock = DockStyle.Top, Height = 44, Padding = new Padding(6),
-                    Text = string.Join("   ", summary.Select(kv => kv.Key + ": " + kv.Value)) +
-                           (verification == null ? "" : badChecks.Count == 0 ? "\nVerification: every check matched"
-                               : "\nVerification did not match for: " + string.Join(", ", badChecks.Select(v => Doc(v.Str("document")) + " (" + v.Str("result") + ")")))
-                };
-                var list = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, GridLines = true };
-                list.Columns.Add("Document", 160);
-                list.Columns.Add("Feature", 200);
-                list.Columns.Add("Status", 90);
-                list.Columns.Add("Reason", 420);
-                foreach (var it in report.Items.Where(i => !CleanStatus.Contains(i.Str("status") ?? "")))
-                {
-                    var row = new ListViewItem(new[] { Doc(it.Str("document")), it.Str("feature"), it.Str("status"), it.Str("reason") ?? "" });
-                    Color c;
-                    if (Colours.TryGetValue(it.Str("status") ?? "", out c)) row.BackColor = c;
-                    list.Items.Add(row);
+                    warn = true;
+                    lines.Add("- Please look over " + (check.Count == 1 ? "this part" : "these parts") +
+                              ": the check found the shape may differ from the original: " + NameList(check) + ".");
                 }
-                var bottom = new Label { Dock = DockStyle.Bottom, Height = 24, Padding = new Padding(6), Text = "Only what needs attention is listed; the full report is " + reportPath };
-                f.Controls.Add(list);
-                f.Controls.Add(bottom);
-                f.Controls.Add(top);
-                f.ShowDialog(owner);
+                var fixedNames = fixedDocs.Select(docName).Distinct().ToList();
+                if (fixedNames.Count > 0)
+                    lines.Add("- " + NameList(fixedNames) + (fixedNames.Count == 1 ? " has" : " have") + " the right shape, but came in " +
+                              "without editable feature history (SolidWorks could not rebuild " + (fixedNames.Count == 1 ? "it" : "them") + " step by step).");
+                if (different > 0)
+                    lines.Add("- " + different + (different == 1 ? " item was" : " items were") + " carried over slightly differently, as SolidWorks " +
+                              "has no exact match" + (check.Count == 0 ? ". This does not change the shape." : "."));
+                if (lines.Count == 0) return "";
+                if (check.Count == 0 && !cancelled) lines.Insert(0, "- Every part was checked against the original, and its shape matches.");
+                return "Your model has been imported into SOLIDWORKS.\n\nThis is a short report on how the import went. It is not an error message.\n\n" +
+                       string.Join("\n", lines);
             }
+            int opaque = report.Count("opaque");
+            int approx = report.Count("approximate") + report.Count("failed");
+            if (opaque > 0)
+                lines.Add("- " + opaque + (opaque == 1 ? " feature" : " features") + " could not be written as editable " + (opaque == 1 ? "feature" : "features") +
+                          ": " + (opaque == 1 ? "it travels" : "they travel") + " as fixed shapes, so the other CAD program shows " +
+                          (opaque == 1 ? "it" : "them") + " correctly but cannot edit " + (opaque == 1 ? "it." : "them."));
+            if (approx > 0)
+                lines.Add("- " + approx + (approx == 1 ? " item is" : " items are") + " written slightly differently, as the NCX format has no exact match.");
+            if (lines.Count == 0) return "";
+            lines.Add("- The shape of every part is carried exactly.");
+            return "Your model has been exported.\n\nThis is a short report on how the export went. It is not an error message.\n\n" + string.Join("\n", lines);
+        }
+
+        /// <summary>The report box, when there is something to say; returns false (nothing shown) otherwise.</summary>
+        public static bool Show(IWin32Window owner, string title, bool import, Report report, List<JObj> verification,
+                                Func<string, string> docName, string reportPath)
+        {
+            bool warn;
+            string text = Summary(import, report, verification, docName, out warn);
+            if (text.Length == 0) return false;
+            text += "\n\nClick OK to carry on.\n\nFull details, for anyone helping you, are saved in:\n" + reportPath;
+            MessageBox.Show(owner, text, title, MessageBoxButtons.OK, warn ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+            return true;
         }
     }
 }

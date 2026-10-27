@@ -108,6 +108,13 @@ json fingerprint_compare(const json& expected, const json& actual, const Fingerp
         used[best] = true;
         rep["pairs"].push_back({i, best});
         const json& a = A[best];
+        // a body of a plain document (FORMAT-SPEC 3: no history in the source, its geometry only) is paired, so the
+        // others pair as they should, but not compared: it is the file's own B-rep, which two kernels measure
+        // differently (a user's STEP-made turret: up to 1e-3), and nothing is rebuilt from it
+        if (e.contains("plain") && e["plain"].is_boolean() && e["plain"].get<bool>()) {
+            rep["plain"] = rep.value("plain", 0) + 1;
+            continue;
+        }
         auto is_freeform = [](const json& b) { return b.contains("freeform") && b["freeform"].is_boolean() && b["freeform"].get<bool>(); };
         const bool ff = is_freeform(e) || is_freeform(a);
         const double vol_rel = ff ? tol.freeform_volume_rel : tol.volume_rel;
