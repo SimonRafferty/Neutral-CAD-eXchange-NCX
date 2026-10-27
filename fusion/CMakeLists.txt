@@ -11,7 +11,7 @@
 # libraries are taken from FUSION_SDK (default: %APPDATA%\Autodesk\Autodesk Fusion 360\API\CPP, which Fusion
 # keeps current with every update).
 cmake_minimum_required(VERSION 3.16)
-project(ncx_fusion VERSION 0.2.2 LANGUAGES C CXX)
+project(ncx_fusion VERSION 0.2.3 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

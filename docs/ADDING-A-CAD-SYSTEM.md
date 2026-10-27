@@ -289,14 +289,18 @@ one the user will try first.
 - The report: one line per feature (rebuilt / approximate / failed / fallback, with the reason), saved as a file.
   Most people who receive an NCX file are not CAD specialists, and a list of every approximated feature reads to
   them as a list of errors: a first user of the Fusion add-in saw a box of 170 such lines on a model that had come in
-  perfectly and decided the import had failed. So what you show is a short summary in plain words:
-  - Start with "Your model has been imported", and say it is a report on how the import went, not an error message.
-  - The only warning: a part whose mass properties do not match and that was not replaced by the file's geometry.
-    Face-by-face differences with matching mass properties (faces split differently), and sketches less defined
-    than the source's, belong in the file, not the box.
-  - Name the parts that came in as fixed geometry (right shape, no feature history).
-  - Count everything else in one line ("12 items were carried over slightly differently...").
-  - End with where the full report is saved, "for anyone helping you". A clean import: a one-line status, no box.
+  perfectly and decided the import had failed. Even a short summary of approximations worried them. So: unless
+  there is a serious problem, don't mention anything.
+  - Import: "Your model has been imported." and nothing more, unless a part's mass properties do not match (and it
+    was not replaced by the file's geometry) or the import was cancelled part way. Then name those parts in plain
+    words and say where the full report is saved, "for anyone helping you". Parts that came in without history,
+    features built another way, face-by-face differences with matching mass properties and sketches less defined
+    than the source's all have the right shape: they go in the report file only.
+  - Export: "Your design has been saved as an NCX file." Features written as their finished shape
+    and every other note are no problem for whoever receives the file (the shape always travels and is checked at
+    their end); only a file that fails NCX's own check is worth a warning. Save the notes as an export report.
+  - In the report file, say things that apply to many parts once (for example the parts with no history: one line
+    naming them all), not once per part.
 - The model opens upright (`orientation`, §3), with the sketches hidden that the source hides, and nothing of the
   import's own scaffolding in the way.
 

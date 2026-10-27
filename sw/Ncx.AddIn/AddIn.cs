@@ -285,13 +285,9 @@ namespace Ncx.AddIn
         // document id ("doc:x") as the name the user knows
         void Finished(string title, bool import, Report report, List<JObj> verification, Func<string, string> docName, string reportPath)
         {
+            // nothing serious: no box, one line on the status bar (the report file has the details)
             if (!ReportForm.Show(Owner, title, import, report, verification, docName, reportPath))
-            {
-                int notes = report.Count("note");
-                int features = report.Items.Count - notes;
-                ((IFrame)sw.Frame()).SetStatusBarText(title + " - " + features + " features, all carried exactly" +
-                    (notes == 0 ? "" : "; " + notes + " under-defined sketch(es) may edit differently in other CAD (see report file)"));
-            }
+                ((IFrame)sw.Frame()).SetStatusBarText((import ? "NCX: model imported" : "NCX: file saved") + ". Details: " + reportPath);
         }
 
         // ------------------------------------------------------------------------ registration

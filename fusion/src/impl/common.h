@@ -91,6 +91,8 @@ std::string readFile(const fs::path& p);
 void writeFile(const fs::path& p, const std::string& s);
 fs::path dataDir();   // %LOCALAPPDATA%\NcxFusion
 fs::path tempDir();   // dataDir()/tmp, created on demand
+fs::path reportsDir();   // Documents\NCX reports (import/export reports for whoever helps the user); "" if unavailable
+std::wstring reportBaseName(const fs::path& file);   // the file name without .ncx.step / .step: "<name> - import report.txt"
 void logLine(const std::string& msg);
 
 // Documents this add-in created (scratch imports, rebuilt designs): the only ones its tooling may close.

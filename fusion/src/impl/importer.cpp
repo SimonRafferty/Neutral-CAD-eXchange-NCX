@@ -501,10 +501,12 @@ std::string nameList(const std::vector<std::string>& names, size_t most = 5)
 
 } // namespace
 
-// The import report box in plain words. Most people who open an NCX file are not CAD specialists: a list of every
-// approximated feature reads as a list of errors. So the box says the model came in, names only the parts worth
-// looking at, and counts the rest; the saved report file keeps every entry.
-//   -> {"text", "clean" (nothing to say beyond "it worked"), "check" (a part's shape may differ: a warning)}
+// The import report box in plain words. Most people who open an NCX file are not CAD specialists, and anything more
+// than "it worked" reads as an error (user 2026-10-27: "Unless there's a serious problem, don't mention it"). So the
+// box says the model came in and warns only when a part's shape may differ from the original; parts that came in
+// without history and features built another way have the right shape, and only the saved report file lists them.
+//   -> {"text" (the box), "details" (the report file's summary), "clean" (nothing to say beyond "it worked"),
+//       "check" (a part's shape may differ: a warning)}
 json importSummary(const json& res)
 {
     const json& report = res.contains("report") ? res["report"] : json::array();
@@ -529,7 +531,7 @@ json importSummary(const json& res)
         if (v.contains("mass") && v["mass"].is_string() && v["mass"] == "mismatch") check.push_back(d);
     }
     // features built another way (approximate) or left out (failed) in parts that kept their history; notes are
-    // information only and are not mentioned
+    // information only and are not counted
     int different = 0;
     for (auto& e : report)
     {
@@ -538,37 +540,30 @@ json importSummary(const json& res)
     }
     std::vector<std::string> fixed(fixedSet.begin(), fixedSet.end());
 
-    json out{{"check", !check.empty()}};
+    // the report file's summary: everything, in the same plain words
+    std::string d;
     if (wholeFilePlain)
-    {
-        out["text"] = "Your model has been imported into Fusion.\n\n"
-                      "This is a short report on how the import went. It is not an error message.\n\n"
-                      "- The model has the right shape, but it came in as fixed shapes without its editable feature "
-                      "history (the NCX information in the file could not be used).";
-        return out;
-    }
-    if (check.empty() && fixed.empty() && different == 0)
-    {
-        out["clean"] = true;
-        out["text"] = "Your model has been imported into Fusion, and everything matches the original.";
-        return out;
-    }
-    std::string t = "Your model has been imported into Fusion.\n\n"
-                    "This is a short report on how the import went. It is not an error message.\n\n";
+        d += "- The model came in as fixed shapes without its editable feature history (the NCX information in the "
+             "file could not be used).\n";
     if (check.empty())
-        t += "- Every part was checked against the original, and its shape matches.\n";
+        d += "- Every part was checked against the original, and its shape matches.\n";
     else
-        t += "- Please look over " + std::string(check.size() == 1 ? "this part" : "these parts") +
-             ": the check found the shape may differ from the original: " + nameList(check) + ".\n";
+        d += "- The check found the shape may differ from the original: " + nameList(check, 1000) + ".\n";
     if (!fixed.empty())
-        t += "- " + nameList(fixed) + (fixed.size() == 1 ? " has" : " have") +
-             " the right shape, but came in without editable feature history (Fusion could not rebuild "
-             + (fixed.size() == 1 ? "it" : "them") + " step by step).\n";
+        d += "- " + nameList(fixed, 1000) + (fixed.size() == 1 ? " has" : " have") +
+             " the right shape, but came in without editable feature history.\n";
     if (different > 0)
-        t += "- " + std::to_string(different) + (different == 1 ? " item was" : " items were") +
-             " carried over slightly differently, as Fusion has no exact match" + (check.empty() ? ". This does not change the shape.\n" : ".\n");
-    if (!t.empty() && t.back() == '\n') t.pop_back();
-    out["text"] = t;
+        d += "- " + std::to_string(different) + (different == 1 ? " item was" : " items were") +
+             " carried over slightly differently, as Fusion has no exact match (listed below).\n";
+    if (!d.empty() && d.back() == '\n') d.pop_back();
+
+    json out{{"check", !check.empty()}, {"clean", check.empty()}, {"details", d}};
+    if (check.empty())
+        out["text"] = "Your model has been imported into Fusion.";
+    else
+        out["text"] = "Your model has been imported into Fusion.\n\nPlease look over " +
+                      std::string(check.size() == 1 ? "this part" : "these parts") +
+                      ", as the shape may differ from the original: " + nameList(check) + ".";
     return out;
 }
 
@@ -576,14 +571,9 @@ json importSummary(const json& res)
 // same file name), for whoever helps the user. Returns the path, or "" when it could not be written.
 std::string writeImportReport(const fs::path& source, const json& res, const std::string& summary)
 {
-    PWSTR p = nullptr;
-    fs::path dir;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &p))) dir = fs::path(p) / L"NCX reports";
-    CoTaskMemFree(p);
+    fs::path dir = reportsDir();
     if (dir.empty()) return "";
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    fs::path file = dir / (source.stem().wstring() + L" - import report.txt");
+    fs::path file = dir / (reportBaseName(source) + L" - import report.txt");
     std::ofstream f(file, std::ios::binary);
     if (!f) return "";
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -594,17 +584,41 @@ std::string writeImportReport(const fs::path& source, const json& res, const std
     for (size_t i = 0; (i = s.find('\n', i)) != std::string::npos; i += 2) s.replace(i, 1, "\r\n");
     f << s << "\r\n\r\n";
     f << "Shape checks against the original (per part)\r\n";
+    int plainChecks = 0;   // parts with no history are not checked (their shape is the file's own): one line for all
+    for (auto& v : res.value("verification", json::array()))
+        if (v.contains("mass") && v["mass"] == "plain") plainChecks++;
+    if (plainChecks > 0)
+        f << "  " << plainChecks << (plainChecks == 1 ? " part" : " parts") << " with no history: not checked, as "
+          << (plainChecks == 1 ? "its shape is" : "their shapes are") << " the file's own\r\n";
     for (auto& v : res.value("verification", json::array()))
     {
+        if (v.contains("mass") && v["mass"] == "plain") continue;
         f << "  " << v.value("document", "");
         for (const char* k : {"mass", "faces", "structure", "flex"})
             if (v.contains(k) && v[k].is_string()) f << "   " << k << ": " << v[k].get<std::string>();
         f << "\r\n";
     }
     f << "\r\nEvery item (part | item | result | reason)\r\n";
+    // the parts with no history said once for all of them, where the first stood (user 2026-10-27)
+    auto noHistory = [](const json& e) { return e.value("result", "") == "note" && e.value("reason", "").rfind("no history", 0) == 0; };
+    std::string plainNames;
+    int plainCount = 0;
     for (auto& e : res.value("report", json::array()))
+        if (noHistory(e)) { plainNames += (plainCount++ ? ", " : "") + e.value("document", ""); }
+    bool plainSaid = false;
+    for (auto& e : res.value("report", json::array()))
+    {
+        if (plainCount > 1 && noHistory(e))
+        {
+            if (!plainSaid)
+                f << "  " << plainCount << " parts (" << plainNames << ") | part | note | no history in the source "
+                  << "(imported geometry): carried as plain shapes, as the source has them\r\n";
+            plainSaid = true;
+            continue;
+        }
         f << "  " << e.value("document", "") << " | " << e.value("item", "") << " | " << e.value("result", "")
           << (e.value("reason", "").empty() ? "" : " | " + e.value("reason", "")) << "\r\n";
+    }
     if (!f) return "";
     return file.u8string();
 }
@@ -641,10 +655,10 @@ json uiImport(const json& req)
         return res;
     }
     json summary = importSummary(res);
-    std::string reportFile = writeImportReport(fs::u8path(path), res, summary.value("text", ""));
+    std::string reportFile = writeImportReport(fs::u8path(path), res, summary.value("details", ""));
     std::string box = summary.value("text", "");
-    if (!summary.value("clean", false))
-        box += "\n\nClick OK to carry on." + (reportFile.empty() ? "" : "\n\nFull details, for anyone helping you, are saved in:\n" + reportFile);
+    if (!summary.value("clean", false) && !reportFile.empty())
+        box += "\n\nDetails, for anyone helping you, are saved in:\n" + reportFile;
     res["summary"] = box;
     if (!reportFile.empty()) res["reportFile"] = reportFile;
     if (req.value("quiet", false)) return res;   // developer test: no modal box

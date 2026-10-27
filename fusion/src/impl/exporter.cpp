@@ -16,6 +16,9 @@
 #include "host.h"
 #include "replay.h"
 
+#include <ctime>
+#include <cwchar>
+#include <fstream>
 #include <functional>
 #include <sstream>
 
@@ -4296,17 +4299,70 @@ json exportFileInner(const fs::path& out, const json& opts)
     writeFile(out, std::string(outStep, outLen));
     ncx_free(outStep);
     if (opts.value("dumpModel", false)) writeFile(fs::path(out.wstring() + L".json"), model.dump(1));
+    // the parts with no history said once for all of them, not once per part (user 2026-10-27)
+    {
+        const std::string tag = ": no history, only imported geometry";
+        std::vector<std::string> plainNames;
+        json rest = json::array();
+        for (auto& n : notes)
+        {
+            std::string s = n.get<std::string>();
+            if (s.find(tag) != std::string::npos) plainNames.push_back(s.substr(0, s.find(tag)));
+            else rest.push_back(s);
+        }
+        if (plainNames.size() > 1)
+        {
+            std::string all;
+            for (auto& p : plainNames) all += (all.empty() ? "" : ", ") + p;
+            rest.insert(rest.begin(), std::to_string(plainNames.size()) + " parts have no history, only imported geometry, "
+                                      "and are written as plain parts: " + all);
+            notes = rest;
+        }
+    }
     int opaque = 0, mapped = 0;
+    json opaqueList = json::array();   // for the export report: what goes as its finished shape only, and why
     for (auto& d : model["documents"])
-        for (auto& f : d.value("features", json::array())) (f.value("status", "") == "opaque" ? opaque : mapped)++;
+        for (auto& f : d.value("features", json::array()))
+            if (f.value("status", "") == "opaque")
+            {
+                opaque++;
+                opaqueList.push_back(d.value("name", "") + " | " + f.value("name", "") + " | " + f.value("reason", ""));
+            }
+            else mapped++;
     return json{{"ok", true}, {"file", out.u8string()}, {"validate", statusName(vs)}, {"validateReport", json::parse(vrep.empty() ? "{}" : vrep, nullptr, false)},
-                {"mapped", mapped}, {"opaque", opaque}, {"notes", notes}};
+                {"mapped", mapped}, {"opaque", opaque}, {"opaqueList", opaqueList}, {"notes", notes}};
 }
 
 json exportJob(const json& req)
 {
     if (!req.contains("file")) return json{{"ok", false}, {"error", "export needs a file"}};
     return exportFile(fs::u8path(req["file"].get<std::string>()), req);
+}
+
+// The full export report as a text file in Documents\NCX reports, for whoever helps the user: every note and every
+// feature carried as its finished shape only. Returns the path, or "" when it could not be written.
+static std::string writeExportReport(const fs::path& file, const json& res)
+{
+    fs::path dir = reportsDir();
+    if (dir.empty()) return "";
+    fs::path path = dir / (reportBaseName(file) + L" - export report.txt");
+    std::ofstream f(path, std::ios::binary);
+    if (!f) return "";
+    auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    char ts[32];
+    std::strftime(ts, sizeof ts, "%Y-%m-%d %H:%M", std::localtime(&now));
+    f << "NCX export report\r\nFile: " << file.u8string() << "\r\nExported: " << ts << "\r\n\r\n";
+    f << "File check: " << res.value("validate", "") << "\r\n";
+    f << "Features written as features: " << res.value("mapped", 0) << "\r\n";
+    f << "Features written as their finished shape only: " << res.value("opaque", 0)
+      << " (the receiving system builds the shape, without that step's settings)\r\n";
+    for (auto& o : res.value("opaqueList", json::array())) f << "  " << o.get<std::string>() << "\r\n";
+    f << "\r\nNotes\r\n";
+    for (auto& n : res.value("notes", json::array())) f << "  " << n.get<std::string>() << "\r\n";
+    if (res.value("validate", "OK") != "OK")
+        f << "\r\nFile check report\r\n  " << res.value("validateReport", json::object()).dump() << "\r\n";
+    if (!f) return "";
+    return path.u8string();
 }
 
 json uiExport(const json& req)
@@ -4322,17 +4378,25 @@ json uiExport(const json& req)
         path = dlg->filename();
     }
     json res = exportFile(fs::u8path(path), req);
-    if (!req.value("quiet", false))
+    bool quiet = req.value("quiet", false);   // developer test: the box's text is returned, no modal box
+    if (res.value("status", "") == "cancelled") { if (!quiet) ui->messageBox("NCX export cancelled; no file was written.", "NCX"); }
+    else if (!res.value("ok", false)) { if (!quiet) ui->messageBox("NCX export failed: " + res.value("error", "?"), "NCX"); }
+    else
     {
-        if (res.value("status", "") == "cancelled") ui->messageBox("NCX export cancelled; no file was written.", "NCX");
-        else if (!res.value("ok", false)) ui->messageBox("NCX export failed: " + res.value("error", "?"), "NCX");
-        else
-        {
-            std::string msg = "NCX export: " + std::to_string(res.value("mapped", 0)) + " features carried";
-            if (res.value("opaque", 0) > 0) msg += ", " + std::to_string(res.value("opaque", 0)) + " as fixed geometry (no NCX mapping yet)";
-            for (auto& n : res.value("notes", json::array())) msg += "\n- " + n.get<std::string>();
-            ui->messageBox(msg, "NCX");
-        }
+        // Plain words, and only a serious problem gets a mention (user 2026-10-27: a box full of notes on a file
+        // that imported perfectly "looked concerning"). Features carried as their finished shape and the notes
+        // are no problem for whoever receives the file: the shape always travels and is checked at their end.
+        // Only a file that fails NCX's own check is worth a word. Everything goes in the report file.
+        std::string reportFile = writeExportReport(fs::u8path(path), res);
+        if (!reportFile.empty()) res["reportFile"] = reportFile;
+        std::string name = fs::u8path(path).filename().u8string();
+        bool good = res.value("validate", "OK") == "OK";
+        std::string box = good ? "Your design has been saved as an NCX file:\n" + name
+                               : "Your design has been saved as:\n" + name + "\n\nBut the file did not pass NCX's own check, "
+                                 "so the program that opens it may only be able to use its shape, without its feature history." +
+                                 (reportFile.empty() ? "" : "\n\nDetails, for anyone helping you, are saved in:\n" + reportFile);
+        res["summary"] = box;
+        if (!quiet) ui->messageBox(box, "NCX export", OKButtonType, good ? InformationIconType : WarningIconType);
     }
     return res;
 }

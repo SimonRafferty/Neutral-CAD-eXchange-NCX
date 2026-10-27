@@ -123,6 +123,29 @@ fs::path tempDir()
     return d;
 }
 
+std::wstring reportBaseName(const fs::path& file)
+{
+    std::wstring stem = file.filename().wstring();
+    for (const wchar_t* ext : {L".ncx.step", L".ncx.stp", L".step", L".stp"})
+    {
+        size_t n = wcslen(ext);
+        if (stem.size() > n && _wcsicmp(stem.c_str() + stem.size() - n, ext) == 0) { stem.resize(stem.size() - n); break; }
+    }
+    return stem;
+}
+
+fs::path reportsDir()
+{
+    PWSTR p = nullptr;
+    fs::path d;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &p))) d = fs::path(p) / L"NCX reports";
+    CoTaskMemFree(p);
+    if (d.empty()) return d;
+    std::error_code ec;
+    fs::create_directories(d, ec);
+    return d;
+}
+
 void logLine(const std::string& msg)
 {
     std::error_code ec;

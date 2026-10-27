@@ -61,62 +61,42 @@ namespace Ncx.AddIn
         /// differ from the original (the only real warning).</summary>
         public static string Summary(bool import, Report report, List<JObj> verification, Func<string, string> docName, out bool warn)
         {
+            // Only a serious problem gets a box (user 2026-10-27: "Unless there's a serious problem, don't mention it"):
+            // a part whose shape may differ from the original, or an import cancelled part way. Parts that came in
+            // without history, items carried over another way and features exported as fixed shapes all have the
+            // right shape: the report file lists them for whoever helps the user, the box does not.
             warn = false;
+            if (!import) return "";
             var lines = new List<string>();
-            if (import)
+            // parts replaced by the file's own geometry: right shape, no feature history (not checked again)
+            var fixedDocs = new HashSet<string>(report.Items.Where(i => i.Str("status") == "fallback").Select(i => i.Str("document")));
+            // parts whose mass properties did not match and were not replaced. The face and structure checks
+            // ("doc:x (faces)", "(structure)") are details for the report file: faces cut differently, sketches
+            // less defined than the source's, with the shape the same
+            var check = (verification ?? new List<JObj>())
+                .Where(v => (v.Str("document") ?? "").StartsWith("doc:") && !v.Str("document").Contains(" (") &&
+                            v.Str("result") == "mismatch" && !fixedDocs.Contains(v.Str("document")))
+                .Select(v => docName(v.Str("document"))).Distinct().ToList();
+            if (report.Items.Any(i => i.Str("status") == "cancelled"))
+                lines.Add("The import was cancelled before the end: only what was finished by then was built.");
+            if (check.Count > 0)
             {
-                // parts replaced by the file's own geometry: right shape, no feature history (their features don't count)
-                var fixedDocs = new HashSet<string>(report.Items.Where(i => i.Str("status") == "fallback").Select(i => i.Str("document")));
-                // parts whose mass properties did not match and were not replaced. The face and structure checks
-                // ("doc:x (faces)", "(structure)") are details for the report file: faces cut differently, sketches
-                // less defined than the source's, with the shape the same
-                var check = (verification ?? new List<JObj>())
-                    .Where(v => (v.Str("document") ?? "").StartsWith("doc:") && !v.Str("document").Contains(" (") &&
-                                v.Str("result") == "mismatch" && !fixedDocs.Contains(v.Str("document")))
-                    .Select(v => docName(v.Str("document"))).Distinct().ToList();
-                int different = report.Items.Count(i => (i.Str("status") == "approximate" || i.Str("status") == "failed" || i.Str("status") == "opaque") &&
-                                                         !fixedDocs.Contains(i.Str("document")));
-                bool cancelled = report.Items.Any(i => i.Str("status") == "cancelled");
-                if (cancelled) lines.Add("- The import was cancelled before the end: only what was finished by then was built.");
-                if (check.Count > 0)
-                {
-                    warn = true;
-                    lines.Add("- Please look over " + (check.Count == 1 ? "this part" : "these parts") +
-                              ": the check found the shape may differ from the original: " + NameList(check) + ".");
-                }
-                var fixedNames = fixedDocs.Select(docName).Distinct().ToList();
-                if (fixedNames.Count > 0)
-                    lines.Add("- " + NameList(fixedNames) + (fixedNames.Count == 1 ? " has" : " have") + " the right shape, but came in " +
-                              "without editable feature history (SolidWorks could not rebuild " + (fixedNames.Count == 1 ? "it" : "them") + " step by step).");
-                if (different > 0)
-                    lines.Add("- " + different + (different == 1 ? " item was" : " items were") + " carried over slightly differently, as SolidWorks " +
-                              "has no exact match" + (check.Count == 0 ? ". This does not change the shape." : "."));
-                if (lines.Count == 0) return "";
-                if (check.Count == 0 && !cancelled) lines.Insert(0, "- Every part was checked against the original, and its shape matches.");
-                return "Your model has been imported into SOLIDWORKS.\n\nThis is a short report on how the import went. It is not an error message.\n\n" +
-                       string.Join("\n", lines);
+                warn = true;
+                lines.Add("Please look over " + (check.Count == 1 ? "this part" : "these parts") +
+                          ", as the shape may differ from the original: " + NameList(check) + ".");
             }
-            int opaque = report.Count("opaque");
-            int approx = report.Count("approximate") + report.Count("failed");
-            if (opaque > 0)
-                lines.Add("- " + opaque + (opaque == 1 ? " feature" : " features") + " could not be written as editable " + (opaque == 1 ? "feature" : "features") +
-                          ": " + (opaque == 1 ? "it travels" : "they travel") + " as fixed shapes, so the other CAD program shows " +
-                          (opaque == 1 ? "it" : "them") + " correctly but cannot edit " + (opaque == 1 ? "it." : "them."));
-            if (approx > 0)
-                lines.Add("- " + approx + (approx == 1 ? " item is" : " items are") + " written slightly differently, as the NCX format has no exact match.");
             if (lines.Count == 0) return "";
-            lines.Add("- The shape of every part is carried exactly.");
-            return "Your model has been exported.\n\nThis is a short report on how the export went. It is not an error message.\n\n" + string.Join("\n", lines);
+            return "Your model has been imported into SOLIDWORKS.\n\n" + string.Join("\n\n", lines);
         }
 
-        /// <summary>The report box, when there is something to say; returns false (nothing shown) otherwise.</summary>
+        /// <summary>The report box, when there is something serious to say; returns false (nothing shown) otherwise.</summary>
         public static bool Show(IWin32Window owner, string title, bool import, Report report, List<JObj> verification,
                                 Func<string, string> docName, string reportPath)
         {
             bool warn;
             string text = Summary(import, report, verification, docName, out warn);
             if (text.Length == 0) return false;
-            text += "\n\nClick OK to carry on.\n\nFull details, for anyone helping you, are saved in:\n" + reportPath;
+            text += "\n\nDetails, for anyone helping you, are saved in:\n" + reportPath;
             MessageBox.Show(owner, text, title, MessageBoxButtons.OK, warn ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
             return true;
         }

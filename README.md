@@ -22,8 +22,8 @@ If you have received an NCX file and your CAD system has no NCX add-in, you can 
 
 | CAD system | add-in | download | state |
 |---|---|---|---|
-| SolidWorks | `sw/` | [0.6.2](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/v0.6.2) | import and export; of a 61-model test corpus, 60 rebuild exactly in 2018 and 2026 (one hexagon sketch arrives under-defined, reported); also tested on a real production assembly (19 parts and sub-assemblies) |
-| Autodesk Fusion | `fusion/` | [0.2.2](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/fusion-v0.2.2) | import and export. Of the 61 test files, 27 rebuild exactly in Fusion and 34 approximately (features Fusion lacks, such as weldments, cut lists and configurations, are built as functional equivalents and reported), none fall back to plain geometry; the 19-part assembly rebuilds in Fusion with every part parametric. Exported from Fusion and imported into SolidWorks, the other test files and a real 19-part assembly rebuild with their history, mates, materials and colours: whatever is unchanged in Fusion goes back as its original definition, and Fusion's own features are written natively. Parts with no history (imported STEP, direct designs) travel as plain geometry without warnings |
+| SolidWorks | `sw/` | [0.6.3](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/v0.6.3) | import and export; of a 61-model test corpus, 60 rebuild exactly in 2018 and 2026 (one hexagon sketch arrives under-defined, reported); also tested on a real production assembly (19 parts and sub-assemblies) |
+| Autodesk Fusion | `fusion/` | [0.2.3](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/fusion-v0.2.3) | import and export. Of the 61 test files, 27 rebuild exactly in Fusion and 34 approximately (features Fusion lacks, such as weldments, cut lists and configurations, are built as functional equivalents and reported), none fall back to plain geometry; the 19-part assembly rebuilds in Fusion with every part parametric. Exported from Fusion and imported into SolidWorks, the other test files and a real 19-part assembly rebuild with their history, mates, materials and colours: whatever is unchanged in Fusion goes back as its original definition, and Fusion's own features are written natively. Parts with no history (imported STEP, direct designs) travel as plain geometry without warnings |
 | Onshape | | | not started here: open for anyone to add (see below) |
 | *your CAD system* | | | see "Adding a CAD system" below |
 
@@ -48,8 +48,8 @@ Every import reports, feature by feature, anything that did not carry exactly an
 
 ## Installing the SolidWorks add-in
 
-1. Download the installer: **[NCX-Translator-Setup-0.6.2.exe](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/v0.6.2/NCX-Translator-Setup-0.6.2.exe)**
-   ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/v0.6.2)).
+1. Download the installer: **[NCX-Translator-Setup-0.6.3.exe](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/v0.6.3/NCX-Translator-Setup-0.6.3.exe)**
+   ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/v0.6.3)).
 2. Close SolidWorks, run the downloaded file and follow the steps. It works with SolidWorks 2018 and every later
    version, and asks for administrator permission once.
    If Windows says "Windows protected your PC", click **More info**, then **Run anyway** (the installer is not
@@ -64,8 +64,8 @@ Studio Build Tools, a SolidWorks 2018 install (for its interop libraries), the c
 
 ## Installing the Fusion add-in
 
-1. Download the installer: **[NCX-Fusion-Setup-0.2.2.exe](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/fusion-v0.2.2/NCX-Fusion-Setup-0.2.2.exe)**
-   ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/fusion-v0.2.2)).
+1. Download the installer: **[NCX-Fusion-Setup-0.2.3.exe](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/fusion-v0.2.3/NCX-Fusion-Setup-0.2.3.exe)**
+   ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/fusion-v0.2.3)).
 2. Run it and click **Install**, then **Finish**. If Fusion is open, it asks you to close it first. No administrator
    permission is needed.
    If Windows says "Windows protected your PC", click **More info**, then **Run anyway** (the installer is not
