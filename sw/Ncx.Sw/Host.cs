@@ -608,19 +608,52 @@ namespace Ncx.Sw
                 if (bodies == null) continue;
                 var m = Exporter.ToMatrix((double[])((IMathTransform)c.Transform2).ArrayData);
                 bool cp = plain(c.GetPathName());
-                foreach (IBody2 b in bodies) res.Add(cp ? mark(Placed(BodyFingerprint(b), m)) : Placed(BodyFingerprint(b), m));
+                foreach (IBody2 b in bodies) res.Add(cp ? mark(Placed(BodyFingerprint(b), m, b)) : Placed(BodyFingerprint(b), m, b));
             }
             return new JObj { { "bodies", res } };
         }
 
         /// <summary>A body fingerprint moved by a rigid transform (row-major 4x4, mm): centroid and box move,
-        /// volume, area and principal moments do not.</summary>
-        static JObj Placed(JObj fp, double[] m)
+        /// volume, area and principal moments do not. A body turned off the assembly's axes gets its true box from its
+        /// extreme points along those axes: the box round its turned part-frame box is larger (the right-hand folding
+        /// step's links and bolts measured up to 31 mm too big, and every importer warned about them).</summary>
+        static JObj Placed(JObj fp, double[] m, IBody2 body = null)
         {
             fp["centroid"] = Apply(m, fp.Vec("centroid") ?? (double[])fp["centroid"]);
             var bb = (double[])fp["bbox"];
-            fp["bbox"] = BoxOf(Corners(bb).Select(p => Apply(m, p)));
+            fp["bbox"] = body != null && !AxisAligned(m) ? PlacedBox(body, m) : BoxOf(Corners(bb).Select(p => Apply(m, p)));
             return fp;
+        }
+
+        /// <summary>True when the rotation only swaps or flips axes, so a turned box is still tight.</summary>
+        static bool AxisAligned(double[] m)
+        {
+            for (int r = 0; r < 3; r++)
+                for (int c = 0; c < 3; c++)
+                {
+                    double a = Math.Abs(m[r * 4 + c]);
+                    if (a > 1e-9 && Math.Abs(a - 1) > 1e-9) return false;
+                }
+            return true;
+        }
+
+        /// <summary>The assembly-frame box of a part-frame body placed by m: for each assembly axis, the body's extreme
+        /// points along that axis turned into the part frame (both ways).</summary>
+        static double[] PlacedBox(IBody2 body, double[] m)
+        {
+            var box = new double[6];
+            for (int k = 0; k < 3; k++)
+                for (int s = 0; s < 2; s++)
+                {
+                    double sign = s == 0 ? -1 : 1;
+                    // assembly axis k in the part frame: row k of the rotation
+                    double dx = sign * m[k * 4], dy = sign * m[k * 4 + 1], dz = sign * m[k * 4 + 2];
+                    double px, py, pz;
+                    if (!body.GetExtremePoint(dx, dy, dz, out px, out py, out pz))
+                        return BoxOf(Corners(U.Mm((double[])body.GetBodyBox())).Select(p => Apply(m, p)));
+                    box[s * 3 + k] = Apply(m, U.Mm(new[] { px, py, pz }))[k];
+                }
+            return box;
         }
 
         public static double[] Apply(double[] m, double[] p)

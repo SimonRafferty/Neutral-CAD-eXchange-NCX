@@ -1,6 +1,6 @@
 # NCX add-in for Autodesk Fusion
 
-Version **0.2.4**. Imports and exports NCX files (Neutral CAD eXchange, see `../README.md` and `../FORMAT-SPEC.md`)
+Version **0.2.5**. Imports and exports NCX files (Neutral CAD eXchange, see `../README.md` and `../FORMAT-SPEC.md`)
 in Autodesk Fusion: an NCX file opens as a parametric Fusion design with its history, checked against the file's own
 geometry, and a Fusion design can be written as an NCX file.
 
@@ -19,8 +19,8 @@ with the format or the core: `ISSUES.md`.
 ## Installing
 
 1. Download the installer:
-   **[NCX-Fusion-Setup-0.2.4.exe](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/fusion-v0.2.4/NCX-Fusion-Setup-0.2.4.exe)**
-   ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/fusion-v0.2.4)).
+   **[NCX-Fusion-Setup-0.2.5.exe](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/fusion-v0.2.5/NCX-Fusion-Setup-0.2.5.exe)**
+   ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/fusion-v0.2.5)).
 2. Double-click it. If Windows says "Windows protected your PC", click **More info**, then **Run anyway** (the
    installer is not signed by a paid certificate).
 3. Click **Install**, then **Finish**. If Fusion is open, the installer asks you to close it first.

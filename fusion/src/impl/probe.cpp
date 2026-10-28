@@ -410,7 +410,8 @@ json probe(const json& req)
         {
             Ptr<Component> comp = comps[c];
             res["trace"] = "component " + std::to_string(c) + (comp ? " " + comp->name() : std::string(" null"));
-            auto one = [&](const std::string& kind, const std::string& name, const Ptr<JointMotion>& jm, const Ptr<Occurrence>& o1,
+            res["jointsFolderLightBulb"][comp->name()] = comp->isJointsFolderLightBulbOn();
+            auto one =[&](const std::string& kind, const std::string& name, const Ptr<JointMotion>& jm, const Ptr<Occurrence>& o1,
                            const Ptr<Occurrence>& o2, const Ptr<TimelineObject>& to, bool supp, bool bulb) {
                 json j{{"kind", kind}, {"name", name}, {"in", comp->name()}, {"type", jm ? jointTypeName(jm->jointType()) : "?"},
                        {"one", occPath(o1)}, {"two", occPath(o2)}, {"suppressed", supp}, {"lightBulb", bulb},

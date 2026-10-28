@@ -658,6 +658,9 @@ json importAssembly(const json& model, Reference& ref, const Ptr<Design>& des, R
         else aside->isGrounded(true);
     }
     xfDebug("after tidying");
+    // joints hidden in every assembly and sub-assembly, as Fusion shows a new design: the user turns them on when needed
+    for (size_t i = 0; i < des->allComponents()->count(); i++)
+        if (Ptr<Component> c = des->allComponents()->item(i)) c->isJointsFolderLightBulbOn(false);
     // Provenance of whole documents (exporter.cpp, document passthrough): every document's component keeps the source
     // document and its state as imported (recordDocument); every placed occurrence its component entry (NCX/component).
     // An export writes a document Fusion left as it was back as the source's own, so SolidWorks -> Fusion -> SolidWorks
