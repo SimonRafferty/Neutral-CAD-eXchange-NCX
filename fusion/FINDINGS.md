@@ -1102,3 +1102,21 @@ can rebuild wrongly (a fillet's tangent propagation took 4 of its 6 edges). Impo
 **Not yet native:** configurations. L10: Fusion keeps a body cut in two as one body of two lumps (SolidWorks: two
 bodies), so the assembly's body count differs.
 
+
+**The right-hand folding step (2026-10-27/28, Fusion 0.2.4 and 0.2.5, SolidWorks add-in 0.6.5 and 0.6.6):** the mirror
+image of the left-hand step, and it came apart in Fusion. Three causes, none of them in any sample:
+- Its short link is mated to the hanger only through its pivot bolt: the direct concentric mate the left-hand step
+  has had lost its bolt in SolidWorks (8 such mates are left out of the file). With the bolt joined only to the hanger
+  (fasteners get one joint), the short link kept a planar joint and slid off. Now a connector concentric with its
+  partner and, on the same axis, with another part that is not a connector is that part's pin: the part's concentric
+  mate with it also joins the part to the partner (`joints.cpp`). The four-bar then drives from every joint.
+- The step sub-assembly's own file kept its fixed plate 69.4 mm from where the top assembly showed it (its mate to a
+  rung no longer held there; SolidWorks reported nothing). The SolidWorks exporter took the placement from the
+  sub-assembly's file; it now takes a rigid sub-assembly's parts as the top assembly places them (FORMAT-SPEC 4).
+- Every part at an angle (the links, bolts, plates) was reported with a box a few mm too big (up to 31 mm), with its
+  centroid exact: the SolidWorks exporter boxed the part's own box turned into place. It now measures the body's
+  extreme points along the assembly's axes (FORMAT-SPEC 6), and Fusion's boxes match to 0.01 mm.
+
+Also: joints are hidden after an import in every component (`isJointsFolderLightBulbOn(false)`), as Fusion shows a
+new design. Fusion loop run 18 (all 61 samples both modes, 15 Fusion-made models) matched run 15; P27's two failures
+in run 15 did not recur in four runs (a one-off of a long run).

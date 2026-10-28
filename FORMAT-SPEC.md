@@ -243,6 +243,10 @@ other systems may use them where they understand them, and otherwise ignore them
   sub-assembly, also holds its parts to it (a rigid group, or each part grounded to its parent). In a flexible
   sub-assembly its `fixed` parts stay fixed to it, and a parent mate that names a part inside it (by its `path`)
   acts on that part, not on the sub-assembly as a whole.
+- A sub-assembly document's `transform`s place its parts where the assembly that uses it shows them. A source system
+  can keep a sub-assembly's own file in another state (SolidWorks: a fixed part left where the sub-assembly's mates
+  no longer agree, while the parent assembly shows the solved place); the exporter writes the parent's placement,
+  which is the one its geometry and the parent's mates were measured in.
 - Every document reachable from `root` MUST be in the same payload. The layout part, its derived
   parts and the assembly travel together: one file.
 
@@ -813,7 +817,10 @@ within 0.01 mm.
 ## 6. Fingerprint
 
 **Per body:** `volume, area, centroid[3], moments[3]` (principal, sorted), `bbox[6]`, and
-`faces` / `edges` (informational), all in mm. `freeform: true` when any face is not a plane, cylinder, cone,
+`faces` / `edges` (informational), all in mm. `bbox` is the body's smallest box aligned with the axes of the
+file's frame (an assembly fingerprint: the assembly's frame, the body as placed). A body turned in an assembly is
+measured as placed (its extreme points along the assembly's axes), never as the box round its own turned box: that
+box is larger (up to 31 mm on a linkage, which every importer then reported as a box mismatch). `freeform: true` when any face is not a plane, cylinder, cone,
 sphere or torus (omitted otherwise).
 
 **File fingerprint:** `{bodies: [...]}`. Fingerprints cover **solid** bodies only: surface (sheet) bodies are not

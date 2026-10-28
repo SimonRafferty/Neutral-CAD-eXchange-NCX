@@ -244,7 +244,7 @@ one the user will try first.
 - **Fixed and free.** Only components with `fixed: true` are fixed in space, and only at the level they belong to.
   Check that your system did not fix anything else by itself (Fusion gave "ground to parent" to the first part
   component it created, and its copies inherited it, so seven bolts were fixed in space).
-- **Sub-assemblies: rigid or flexible** (spec §5, components). A sub-assembly's own mates always hold its parts. A
+- **Sub-assemblies: rigid or flexible** (spec §4, components). A sub-assembly's own mates always hold its parts. A
   rigid one (the default) moves as one piece in its parent: also hold each of its parts to it (a rigid group, or each
   part grounded to its parent). A `flexible: true` one keeps only its mates, so they can move with the parent's
   motion. Make the sub-assembly's mates inside it, against its own parts. A system that shares one sub-assembly's
@@ -265,12 +265,22 @@ one the user will try first.
   (Fusion: cylindrical). A part held on two parallel pins cannot turn: join it rigidly.
 - **Fasteners**: a bolt or nut mated to two parts is joined to one of them only (a part much smaller than every part
   it is mated to); joining it to both, and to the fasteners it touches, can lock the whole solver.
+  - **But a fastener can be the only pivot.** A part may be mated to its neighbour only through the bolt it turns on
+    (concentric with the bolt, the bolt concentric with the neighbour, on the same axis). With the bolt joined to
+    the neighbour alone, that part keeps nothing but its face contact and slides off when dragged (the right-hand
+    folding step's short link: its direct mate to the hanger had lost its geometry in the source, so it was not in
+    the file). Treat the fastener as the pin: the part's concentric mate with it also joins the part to the
+    fastener's partner.
 - **Check every joint by numbers.** Read back each joint's origin and axis in the design's frame and compare with its
   mate's `frame` and with the pin's axis: a joint at the wrong place turns the parts about a point far away. A joint
   your code had to place at a default (a component origin) because it found no face is a failure to report.
 - **Suppressed mates** (`suppressed`, spec §5): make the mate and suppress it, or leave it out and say so. Either
   way every component stays at its `transform`: a suppressed mate may not hold in the placement (sample L11's
-  `Distance-Lift`). Mates whose source lost their geometry are not in the file.
+  `Distance-Lift`). Mates whose source lost their geometry are not in the file, so a real assembly can be held
+  together by fewer mates than it looks (see Fasteners).
+- **Read the box warnings before chasing them.** An assembly check that reports a part's box smaller at both ends
+  while its centroid matches is a loose box in the file (files from the SolidWorks add-in before 0.6.6 boxed a turned
+  part's own box), not a misplaced part. A misplaced part moves its centroid and both ends of its box the same way.
 - **Assembly cuts** in a system whose assemblies cannot cut: cutting the part itself is right only when the cut
   changes every instance the same way. Otherwise report the cut failed and keep the instances uncut (each part still
   matches its own fingerprint).
@@ -303,6 +313,8 @@ one the user will try first.
     naming them all), not once per part.
 - The model opens upright (`orientation`, §3), with the sketches hidden that the source hides, and nothing of the
   import's own scaffolding in the way.
+- Joints (or mates, constraints) hidden in every assembly and sub-assembly, as your system shows a new design: a
+  real assembly arrives with dozens, and their glyphs bury the model. The user shows them when needed.
 
 ### Step 6: export
 Walk the target's model and write the payload: the reverse of every step above, with descriptors measured in the
@@ -368,6 +380,12 @@ A few writing rules:
 On the import side, check every written feature that carries a result against it, and when the rebuild differs,
 remove it and use the result (the rest of the history then still rebuilds).
 - **Cuts:** never write `merge` on a cut.
+- **Sub-assembly placements as the parent shows them** (spec §4, components). Read a sub-assembly's parts where the
+  assembly that uses it places them, not from the sub-assembly's own document opened alone: SolidWorks kept a fixed
+  plate 69 mm from where the top assembly showed it (its mate to a rung no longer held in the sub-assembly's own
+  file, and SolidWorks gave no error), and the plate arrived off its rung.
+- **Fingerprint boxes of placed bodies** (spec §6): the body's own extreme points along the assembly's axes, or your
+  system's box of the body as placed, never the box round the part's turned box.
 - **Document order:** dependencies first (a layout before the parts inserting it). An importer should not rely on
   that either; order the documents itself.
 **Run `validator/ncx_validate.py` on every file you export** (it needs the core: build it with `core/build.ps1`, or
@@ -406,6 +424,16 @@ system's own app store, sign-in, a server) would need, and where progress and ca
 - Iterate on something small: reproduce a problem of a large model on a sample or on one sub-assembly of it
   (the developer option of Step 2), not by importing the whole model again and again; a person watching sees only
   the same long import repeating.
+- **Compare every test run with the last one**, model by model, not only the totals: a change that fixes one model
+  can break another. A model that fails once in a long run and passes alone, again and again, was hurt by what
+  earlier models left open in the CAD system (SolidWorks rebuilt a part wrongly with same-named documents still
+  open). Rerun it alone before you chase it, and start each import in a clean session where you can.
+- **Clean up only what your tests made.** A test tool that closes "every unsaved NCX import" also closed a person's
+  own unsaved design. Record the documents each job opens and close those; list what is open before any clean-up.
+- **Real models hide what samples cannot.** In a real assembly a sub-assembly's own file disagreed with its parent
+  (a fixed part 69 mm off), a part was mated only through its pivot bolt, and parts at an angle got boxes too large:
+  none of the samples had any of these. When a person reports a problem on a real model, ask for that model (or
+  export it yourself), find the cause in the file, and add a sample that has it.
 
 ## 6. Done means
 
@@ -452,7 +480,10 @@ add yours. Ones that cost a debugging round each:
     not rigid in the parent unless ground to parent, a rigid group or rigid joints hold them; pinning a nested
     occurrence does not tie it to its parent. A joint reports its axis in the coordinates of the occurrence it was
     built on and its origin in the design's; a sub-assembly's own joints cannot be read back afterwards (no
-    occurrences, no geometry): record each joint's frame as you build it. Fusion's model orientation
+    occurrences, no geometry): record each joint's frame as you build it. Joints are hidden per component
+    (`Component.isJointsFolderLightBulbOn(false)`, for every component in `Design.allComponents`, after the joints
+    are made). Driving a revolute's value across its 360° wrap (359.5° + 10°) moved nothing: step the other way
+    when testing a joint's motion. Fusion's model orientation
     (`GeneralPreferences.defaultModelingOrientation`) is often Z-up. A cut made without naming its participant
     bodies also cuts other parts' bodies built at the same origin (and `participantBodies()` then reads empty).
   - Geometry: `measureMinimumDistance` measures a planar face as its whole infinite plane (measure to its edges when
