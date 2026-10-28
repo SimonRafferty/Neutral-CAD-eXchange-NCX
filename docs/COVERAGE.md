@@ -66,6 +66,7 @@ with the source export.
 | L08 | an assembly reference plane and a mate to it | exact | exact |
 | L09 | rack-and-pinion mate (pinion on a hinge, rack sliding) | exact | exact⁵ |
 | L10 | assembly-level sketch and through-all assembly cut across two components | exact | exact |
+| L13 | four-bar with links turned 30° (boxes of placed bodies) and a link pivoting only on its bolt; a rigid sub-assembly | exact | not run yet |
 
 "exact": every feature rebuilt, fingerprints match (volume/area 1e-5, centroid 0.001 mm, moments 1e-4), and the
 re-export is structurally identical. ² Reported *approximate* by design: 2018 takes the profile from its own library file

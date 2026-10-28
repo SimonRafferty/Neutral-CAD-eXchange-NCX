@@ -48,11 +48,13 @@ dragged, or that lies on its side, does not work. Section 4 says how to check ea
 | `docs/COVERAGE.md` | what the SolidWorks add-in carries, its test corpus and its known gaps |
 | sample NCX files | exported from SolidWorks, one per feature area: your test inputs. `NCX-samples-<version>.zip` on the latest SolidWorks add-in release (GitHub Releases); or export your own with the SolidWorks add-in |
 
-The samples: `P01`-`P49` are parts, one feature area each; `L01`-`L12` are layout-driven parts and assemblies.
+The samples: `P01`-`P49` are parts, one feature area each; `L01`-`L13` are layout-driven parts and assemblies.
 Some carry the cases a real assembly showed and earlier samples did not: `P47` slots, `P48` polygons, `P49`
 nested and crossing contours, picked regions with their boundary and a reversed start offset, `L11` layout points
 into sheet metal with a suppressed mate, `L12` a four-bar mechanism of sub-assemblies mated at the top level, one of
-them flexible.
+them flexible, `L13` a four-bar whose links hang at 30° (boxes of turned parts) and whose short link pivots only
+on its bolt (no mate between the link and the hanger's hole: a fastener as the only pivot). L13 is exported with
+the SolidWorks add-in 0.6.6, the others with 0.6.0.
 
 ## 3. Rules
 
@@ -432,8 +434,9 @@ system's own app store, sign-in, a server) would need, and where progress and ca
   own unsaved design. Record the documents each job opens and close those; list what is open before any clean-up.
 - **Real models hide what samples cannot.** In a real assembly a sub-assembly's own file disagreed with its parent
   (a fixed part 69 mm off), a part was mated only through its pivot bolt, and parts at an angle got boxes too large:
-  none of the samples had any of these. When a person reports a problem on a real model, ask for that model (or
-  export it yourself), find the cause in the file, and add a sample that has it.
+  none of the samples had any of these (`L13` now has the last two; the first could not be made through the
+  SolidWorks API: SolidWorks re-solved the parent each time). When a person reports a problem on a real model, ask
+  for that model (or export it yourself), find the cause in the file, and add a sample that has it.
 
 ## 6. Done means
 
