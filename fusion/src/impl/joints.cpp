@@ -348,6 +348,50 @@ struct JointBuilder
             }
             if (bestPrio >= 0) bestOf[x] = best;
         }
+        // A connector concentric with its chosen partner and, on the same axis, with another part that is not a
+        // connector is the pin that part pivots on: the part's concentric mate with the pin also joins it to the
+        // partner (the right-hand folding step: the short link is mated only to its pivot bolt, the bolt to the
+        // hanger; with the bolt's other pairs skipped, the short link kept only a planar joint and came adrift).
+        auto concentricLine = [&](size_t i, std::pair<V3, V3>& line) {
+            std::string t = mates[i].value("type", "");
+            if ((t != "concentric" && t != "hinge") || !mates[i].contains("frame")) return false;
+            line = {v3(mates[i]["frame"]["origin"]), unit(v3(mates[i]["frame"]["z"]))};
+            return true;
+        };
+        for (auto& bo : bestOf)
+        {
+            const std::string& c = bo.first;
+            const std::string partner = bo.second.first == c ? bo.second.second : bo.second.first;
+            std::vector<std::pair<V3, V3>> pinLines;   // the connector's axes shared with its partner
+            for (size_t i : byPair[bo.second])
+            {
+                std::pair<V3, V3> l;
+                if (concentricLine(i, l)) pinLines.push_back(l);
+            }
+            if (pinLines.empty()) continue;
+            for (auto& kv : byPair)
+            {
+                if (kv.first == bo.second || (kv.first.first != c && kv.first.second != c)) continue;
+                std::string y = kv.first.first == c ? kv.first.second : kv.first.first;
+                if (y.empty() || y == partner || connectors.count(y)) continue;
+                for (size_t i : kv.second)
+                {
+                    std::pair<V3, V3> l;
+                    if (!concentricLine(i, l)) continue;
+                    bool same = false;
+                    for (auto& p : pinLines)
+                    {
+                        V3 d = sub(l.first, p.first);
+                        V3 perp = sub(d, mul(p.second, dot(d, p.second)));
+                        if (std::fabs(std::fabs(dot(l.second, p.second)) - 1) < 1e-6 && norm(perp) < 1e-3) same = true;
+                    }
+                    if (!same) continue;
+                    auto key = std::minmax(y, partner);
+                    auto& into = byPair[{key.first, key.second}];
+                    if (std::find(into.begin(), into.end(), i) == into.end()) into.push_back(i);
+                }
+            }
+        }
         std::set<std::pair<std::string, std::string>> skip;
         std::map<std::pair<std::string, std::string>, std::string> moverOf;   // a connector's pair: the connector moves
         for (auto& kv : byPair)

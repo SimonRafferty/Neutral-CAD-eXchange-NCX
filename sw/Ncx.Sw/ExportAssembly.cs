@@ -162,6 +162,9 @@ namespace Ncx.Sw
             asm.ResolveAllLightWeightComponents(false);
             var comps = ((object[])asm.GetComponents(true) ?? new object[0]).Cast<IComponent2>().ToList();
             CollectMirrorSources(d, comps);
+            RecordPlacements(comps);
+            Dictionary<string, double[]> inContext;
+            placedInContext.TryGetValue(d.GetPathName() ?? "", out inContext);
             var components = new List<object>();
             var compIds = new Dictionary<string, string>();
             foreach (var c in comps)
@@ -175,11 +178,22 @@ namespace Ncx.Sw
                     continue;
                 }
                 string docRef = ExportDoc(md);
+                var transform = ToMatrix((double[])((IMathTransform)c.Transform2).ArrayData);
+                double[] placed;
+                if (inContext != null && inContext.TryGetValue(c.Name2, out placed))
+                {
+                    double moved = 0;
+                    for (int k = 0; k < 16; k++) moved = Math.Max(moved, Math.Abs(placed[k] - transform[k]) * (k % 4 == 3 ? 1 : 1000));
+                    if (moved > 1e-3)
+                        Report.Add(id, c.Name2, "note", "placed as the top assembly shows it: this sub-assembly's own file keeps it " +
+                                                        "somewhere else (a fixed part its mates no longer agree with)");
+                    transform = placed;
+                }
                 var jc = new JObj
                 {
                     { "id", cid }, { "document", docRef }, { "name", c.Name2 },
                     { "configuration", c.ReferencedConfiguration },
-                    { "transform", ToMatrix((double[])((IMathTransform)c.Transform2).ArrayData) },
+                    { "transform", transform },
                     { "fixed", c.IsFixed() }
                 };
                 if (c.IsSuppressed()) jc["suppressed"] = new JObj { { "cfg:active", true } };
@@ -237,6 +251,36 @@ namespace Ncx.Sw
             // appearances on components (top level, by component id); nested ones are not carried yet
             AddAppearances(d, id, json, c => compIds.TryGetValue(c.Name2, out var cid) ? new JObj { { "kind", "component" }, { "id", cid } } : null);
             return json;
+        }
+
+        /// <summary>Where the top assembly places each rigid sub-assembly's parts, relative to the sub-assembly. A
+        /// sub-assembly's own file can keep a fixed part somewhere its mates no longer agree with; the top assembly
+        /// shows the solved place, which the file's geometry and the sub-assembly's mate frames have (the right-hand
+        /// folding step: a step plate 69.4 mm off its rung in the sub-assembly's file). The first placement of each
+        /// sub-assembly file wins, so the top assembly's (recorded before its sub-assemblies are exported) is kept.</summary>
+        void RecordPlacements(IEnumerable<IComponent2> comps)
+        {
+            foreach (var c in comps)
+            {
+                var md = c.GetModelDoc2() as IModelDoc2;
+                if (md == null || md.GetType() != 2 || c.Solving == 1 || c.IsSuppressed()) continue;   // rigid sub-assemblies
+                var children = ((object[])c.GetChildren() ?? new object[0]).Cast<IComponent2>().ToList();
+                string path = md.GetPathName() ?? "";
+                if (!placedInContext.ContainsKey(path))
+                {
+                    var inv = (IMathTransform)((IMathTransform)c.Transform2).Inverse();
+                    var map = new Dictionary<string, double[]>();
+                    foreach (var ch in children)
+                    {
+                        // the child's name in its own assembly: the last segment of "Sub-1/Part-1"
+                        string name = ch.Name2.Substring(ch.Name2.LastIndexOf('/') + 1);
+                        var local = (IMathTransform)((IMathTransform)ch.Transform2).Multiply(inv);
+                        map[name] = ToMatrix((double[])local.ArrayData);
+                    }
+                    placedInContext[path] = map;
+                }
+                RecordPlacements(children);
+            }
         }
 
         /// <summary>A mated datum plane as a reference into its component's document: an origin plane or a

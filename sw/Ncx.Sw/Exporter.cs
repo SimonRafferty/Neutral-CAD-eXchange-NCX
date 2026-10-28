@@ -14,7 +14,7 @@ namespace Ncx.Sw
 {
     public partial class Exporter
     {
-        public const string Version = "0.6.4";
+        public const string Version = "0.6.5";
         readonly ISldWorks sw;
         public readonly Report Report = new Report();
 
@@ -44,6 +44,8 @@ namespace Ncx.Sw
         readonly Dictionary<string, Dictionary<string, SketchIds>> sketchIdsByDoc = new Dictionary<string, Dictionary<string, SketchIds>>();
         readonly List<IModelDoc2> openedHere = new List<IModelDoc2>();
         readonly HashSet<string> plainPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);   // plain parts' files (FORMAT-SPEC 4)
+        // a rigid sub-assembly's parts as the top assembly places them (sub-assembly file -> component name -> matrix)
+        readonly Dictionary<string, Dictionary<string, double[]>> placedInContext = new Dictionary<string, Dictionary<string, double[]>>(StringComparer.OrdinalIgnoreCase);
         // per part: items an Insert Part brought in (derived feature name -> reference into the source document)
         readonly Dictionary<string, JObj> transferred = new Dictionary<string, JObj>();
         readonly List<KeyValuePair<IFeature, JObj>> exportedFeatures = new List<KeyValuePair<IFeature, JObj>>();
