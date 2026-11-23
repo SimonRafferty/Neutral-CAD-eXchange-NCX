@@ -15,7 +15,9 @@
 #include <Fusion/FusionAll.h>
 
 #include <windows.h>
+#include <shellapi.h>
 #include <shlobj.h>
+#include <winhttp.h>
 
 #include <atomic>
 #include <chrono>
@@ -25,6 +27,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -250,12 +253,157 @@ void watch()
     }
 }
 
+// --------------------------------------------------------------------------------------- update notice
+// (user 2026-11-23: "a warning to the user with a click here to update link", never mandatory; same behaviour as
+// the SolidWorks add-in's UpdateCheck.cs.) When Fusion loads the add-in, a background thread asks GitHub for the
+// releases (at most once a day; the answer is kept in %LOCALAPPDATA%\NcxFusion\update.json), so no command waits for
+// the network. At the next Import or Export, if a newer Fusion release (tag "fusion-v<version>") exists, one box
+// offers its page: Yes opens it in the browser, No carries on. Once per Fusion session. Offline or any error: nothing.
+// No personal details are sent. Off switch: UpdateCheck = 0 (DWORD) under HKCU\Software\NCX Translator.
+// NOT TESTED in Fusion (2026-11-23, no Fusion licence here): compiled against the SDK only.
+std::mutex updateMutex;
+std::string updateVersion, updateUrl;   // the newest Fusion release found
+bool updateOffered = false;
+std::thread updateThread;
+
+std::vector<int> versionParts(const std::string& v)
+{
+    std::vector<int> out;
+    std::stringstream ss(v);
+    std::string part;
+    while (std::getline(ss, part, '.'))
+    {
+        try { out.push_back(std::stoi(part)); }
+        catch (...) { return {}; }
+    }
+    return out;
+}
+
+bool newer(const std::string& a, const std::string& b)   // a > b
+{
+    std::vector<int> x = versionParts(a), y = versionParts(b);
+    if (x.empty() || y.empty()) return false;
+    size_t n = std::max(x.size(), y.size());
+    x.resize(n);
+    y.resize(n);
+    return x > y;
+}
+
+bool updateCheckDisabled()
+{
+    DWORD v = 1, size = sizeof(v);
+    return RegGetValueW(HKEY_CURRENT_USER, L"Software\\NCX Translator", L"UpdateCheck", RRF_RT_REG_DWORD, nullptr, &v, &size) == ERROR_SUCCESS && v == 0;
+}
+
+std::string httpsGet(const wchar_t* host, const wchar_t* path)
+{
+    std::string body;
+    HINTERNET s = WinHttpOpen(L"NCX-Fusion-update-check", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!s) return body;
+    WinHttpSetTimeouts(s, 8000, 8000, 8000, 8000);
+    HINTERNET c = WinHttpConnect(s, host, INTERNET_DEFAULT_HTTPS_PORT, 0);
+    HINTERNET r = c ? WinHttpOpenRequest(c, L"GET", path, nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : nullptr;
+    DWORD status = 0, len = sizeof(status);
+    if (r && WinHttpAddRequestHeaders(r, L"Accept: application/vnd.github+json", static_cast<DWORD>(-1), WINHTTP_ADDREQ_FLAG_ADD) &&
+        WinHttpSendRequest(r, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(r, nullptr) &&
+        WinHttpQueryHeaders(r, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &len, WINHTTP_NO_HEADER_INDEX) &&
+        status == 200)
+    {
+        DWORD avail = 0;
+        while (!stopping && WinHttpQueryDataAvailable(r, &avail) && avail > 0)
+        {
+            std::string chunk(avail, '\0');
+            DWORD got = 0;
+            if (!WinHttpReadData(r, &chunk[0], avail, &got) || got == 0) break;
+            body.append(chunk.data(), got);
+        }
+    }
+    if (r) WinHttpCloseHandle(r);
+    if (c) WinHttpCloseHandle(c);
+    WinHttpCloseHandle(s);
+    return status == 200 ? body : std::string();
+}
+
+void checkForUpdate()
+{
+    try
+    {
+        if (updateCheckDisabled()) return;
+        fs::path cache = dataDir() / L"update.json";
+        std::error_code ec;
+        json cached;
+        if (fs::exists(cache, ec))
+        {
+            std::ifstream in(cache);
+            cached = json::parse(in, nullptr, false);
+        }
+        long long now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        if (cached.is_object() && now - cached.value("checked", 0LL) < 24 * 3600)
+        {
+            std::lock_guard<std::mutex> lock(updateMutex);
+            updateVersion = cached.value("version", "");
+            updateUrl = cached.value("url", "");
+            return;
+        }
+        json releases = json::parse(httpsGet(L"api.github.com", L"/repos/SimonRafferty/Neutral-CAD-eXchange-NCX/releases?per_page=50"), nullptr, false);
+        if (!releases.is_array()) return;
+        std::string best, bestUrl;
+        const std::string prefix = "fusion-v";   // the Fusion add-in's releases; the SolidWorks ones are "v..."
+        for (auto& r : releases)
+        {
+            if (!r.is_object() || r.value("draft", false) || r.value("prerelease", false)) continue;
+            std::string tag = r.value("tag_name", "");
+            if (tag.compare(0, prefix.size(), prefix) != 0) continue;
+            std::string v = tag.substr(prefix.size());
+            if (best.empty() || newer(v, best))
+            {
+                best = v;
+                bestUrl = r.value("html_url", "");
+            }
+        }
+        if (best.empty()) return;
+        {
+            std::lock_guard<std::mutex> lock(updateMutex);
+            updateVersion = best;
+            updateUrl = bestUrl;
+        }
+        fs::create_directories(dataDir(), ec);
+        std::ofstream out(cache);
+        out << json{{"checked", now}, {"version", best}, {"url", bestUrl}}.dump();
+    }
+    catch (...) {}   // never disturb Fusion
+}
+
+// Before Import or Export: offer the download page if a newer release exists (once per session).
+void offerUpdate()
+{
+    std::string v, url;
+    {
+        std::lock_guard<std::mutex> lock(updateMutex);
+        if (updateOffered || updateVersion.empty() || updateUrl.empty() || !newer(updateVersion, kVersion)) return;
+        updateOffered = true;
+        v = updateVersion;
+        url = updateUrl;
+    }
+    if (!ui) return;
+    DialogResults r = ui->messageBox("A newer NCX add-in for Fusion is available: " + v + " (this computer has " + kVersion + ").\n\n"
+                                     "Open the download page now? (Close Fusion before you run the new installer.)\n\n"
+                                     "Choose No to carry on with this version.",
+                                     "NCX", YesNoButtonType, InformationIconType);
+    if (r == DialogYes)
+    {
+        std::wstring w(url.begin(), url.end());   // a GitHub URL: ASCII
+        ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+}
+
 // --------------------------------------------------------------------------------------- UI commands
 class UiEventHandler : public CustomEventHandler
 {
 public:
     void notify(const Ptr<CustomEventArgs>& args) override
     {
+        offerUpdate();   // a newer release? one Yes/No box, once per session
         json reply = callImpl(json{{"cmd", args->additionalInfo()}, {"ui", true}});
         if (!reply.value("ok", false) && reply.contains("error") && ui)
             ui->messageBox("NCX: " + reply["error"].get<std::string>());
@@ -348,6 +496,7 @@ extern "C" XI_EXPORT bool run(const char* /*context*/)
     if (!loadImpl()) log("implementation not loaded: " + implError);
     stopping = false;
     watcher = std::thread(watch);
+    updateThread = std::thread(checkForUpdate);   // in the background: is a newer release out?
     return true;
 }
 
@@ -355,6 +504,7 @@ extern "C" XI_EXPORT bool stop(const char* /*context*/)
 {
     stopping = true;
     if (watcher.joinable()) watcher.join();
+    if (updateThread.joinable()) updateThread.join();   // at most the 8 s network timeout
     unloadImpl();
     if (ui) removeCommands();
     app->unregisterCustomEvent(kJobEvent);

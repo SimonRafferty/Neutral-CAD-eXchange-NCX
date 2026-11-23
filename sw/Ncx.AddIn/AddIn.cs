@@ -56,6 +56,7 @@ namespace Ncx.AddIn
             cookie = Cookie;
             active = ChosenFor(sw);
             if (!active) return true;   // dormant in a version the user did not choose
+            UpdateCheck.Start();        // in the background: is a newer release out? (offered at Import/Export)
             // P/Invoke looks for ncx_core.dll beside sldworks.exe, not beside the add-in: load it from here
             // first so the DllImports bind to the already-loaded module
             LoadLibrary(Path.Combine(Path.GetDirectoryName(typeof(NcxAddIn).Assembly.Location), "ncx_core.dll"));
@@ -107,6 +108,7 @@ namespace Ncx.AddIn
 
         public void OnExport()
         {
+            UpdateCheck.Offer(Owner, Title);   // a newer release? one Yes/No box, once per session
             var d = sw.ActiveDoc as IModelDoc2;
             if (d == null) return;
             if (string.IsNullOrEmpty(d.GetPathName()))
@@ -153,6 +155,7 @@ namespace Ncx.AddIn
 
         public void OnImport()
         {
+            UpdateCheck.Offer(Owner, Title);   // a newer release? one Yes/No box, once per session
             string source;
             using (var dlg = new OpenFileDialog { Title = "Import Neutral (NCX)", Filter = "NCX / STEP file (*.step;*.stp)|*.step;*.stp" })
             {

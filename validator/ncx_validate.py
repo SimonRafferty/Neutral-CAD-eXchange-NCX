@@ -1077,12 +1077,19 @@ def check_id_ref(rep, M, did, ref, where, feature_index):
 
 
 # ------------------------------------------------------------------------------------------------ level 4
-INTEGRATION_EPS = 1e-7    # adaptive integration: OpenCASCADE's default Gauss rule is ~1e-3 out on spline faces
+# Integration rule, chosen per solid:
+# - a solid with a spline (freeform) face: OpenCASCADE's adaptive rule, as its default Gauss rule is ~1e-3 out there;
+# - a solid of analytic faces only (planes, cylinders, cones, spheres, tori): the default Gauss rule. The adaptive rule
+#   mis-integrates cylinders with many boundary edges: a stator with 18 slots notched into its outer and bore cylinders
+#   came out with its two equal transverse moments 1.5 % apart (G-STALE on a good file), whatever the tolerance or
+#   position; the Gauss rule gave SolidWorks' moments to 13 digits (2026-11-23).
+INTEGRATION_EPS = 1e-7
 
 
 def measure(shape):
-    """Per-solid fingerprints (FORMAT-SPEC 6) with adaptive integration, each marked freeform when it has a face that
-    is not a plane, cylinder, cone, sphere or torus; and whether any solid is."""
+    """Per-solid fingerprints (FORMAT-SPEC 6), each marked freeform when it has a face that is not a plane, cylinder,
+    cone, sphere or torus; and whether any solid is. Freeform solids are integrated adaptively, the others with the
+    default Gauss rule (see INTEGRATION_EPS)."""
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepGProp import BRepGProp
@@ -1097,13 +1104,6 @@ def measure(shape):
     ex = TopExp_Explorer(shape, TopAbs_SOLID)
     while ex.More():
         s = ex.Current()
-        g, ga = GProp_GProps(), GProp_GProps()
-        BRepGProp.VolumeProperties_s(s, g, INTEGRATION_EPS)
-        BRepGProp.SurfaceProperties_s(s, ga, INTEGRATION_EPS)
-        ix, iy, iz = g.PrincipalProperties().Moments()
-        bb = Bnd_Box()
-        BRepBndLib.AddOptimal_s(s, bb, False, False)
-        c = g.CentreOfMass()
         nf = ne = 0
         body_ff = False
         fx = TopExp_Explorer(s, TopAbs_FACE)
@@ -1113,6 +1113,17 @@ def measure(shape):
                 body_ff = True
             fx.Next()
         freeform = freeform or body_ff
+        g, ga = GProp_GProps(), GProp_GProps()
+        if body_ff:
+            BRepGProp.VolumeProperties_s(s, g, INTEGRATION_EPS)
+            BRepGProp.SurfaceProperties_s(s, ga, INTEGRATION_EPS)
+        else:
+            BRepGProp.VolumeProperties_s(s, g)
+            BRepGProp.SurfaceProperties_s(s, ga)
+        ix, iy, iz = g.PrincipalProperties().Moments()
+        bb = Bnd_Box()
+        BRepBndLib.AddOptimal_s(s, bb, False, False)
+        c = g.CentreOfMass()
         ee = TopExp_Explorer(s, TopAbs_EDGE)
         while ee.More():
             ne += 1

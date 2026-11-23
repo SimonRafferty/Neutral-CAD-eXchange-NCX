@@ -103,7 +103,9 @@ the SolidWorks add-in 0.6.6, the others with 0.6.0.
   through the component's **full path** (every nested transform), never through only its last parent.
 - **Origin planes by geometry, not by name.** `originPlane` names are defined by geometry in spec §5 (`front` = XY,
   `top` = XZ, `right` = YZ). Your system may give the same words to other planes (Onshape's *Front* is XZ; Fusion
-  set to Z-up calls XY its top).
+  set to Z-up calls XY its top). This holds on export too: name each of your origin planes by its normal, never by
+  its name or its place in your tree. Parts made from some SolidWorks templates have a "Top Plane" that is XY (sample
+  P50); naming it `top` sent every sketch to the wrong plane at import.
 - **Which way is up.** The file's `orientation.up` (spec §4, top level; absent: `y`) says which axis the source shows
   as up. If your system's convention differs, place the model so it is upright in your system's own frame (its
   Top view looks down the file's up axis), and say so in a note. Turning only the camera is not enough: the user's
@@ -208,7 +210,11 @@ Implement in this order, testing each on its sample before moving on:
 7. **Sweep, loft, sheet metal, hole wizard, weldments** (functionally equivalent where needed).
 8. **Properties, materials, appearances, cut lists**: these are not features and are easy to forget. Report each of
    them per document (carried, approximate or dropped) even when you carry nothing, or a part with lost appearances
-   reports "exact".
+   reports "exact". A material your libraries lack may carry a `definition` (spec 4.6: density, colour, physical
+   properties in SI): recreate it under the source's name rather than substitute a near one, and say so in a note
+   (`complete: false` means the source only knew its density and colour). Convert every value through your system's
+   own unit handling, not a hand-written factor. A part that falls back to plain geometry still gets its material,
+   properties and appearances.
 
 From step 1 on, any feature you have not implemented yet (or whose rebuild fails) takes its carried `result` when
 it has one. Exporters attach results only to opaque features and to the feature types few systems share (spec §4),
@@ -352,7 +358,11 @@ Measured on the Fusion add-in: the folding step went SolidWorks → Fusion → S
 
 Write the rest of what users see:
 - **Materials:** under the source's name when the import mapped it (Fusion's "Stainless Steel AISI 304" goes back as
-  "AISI 304"); none when the source had none and your default stands in for it.
+  "AISI 304"); none when the source had none and your default stands in for it. Write each material's `definition`
+  (spec 4.6) so a system without it can recreate it; a material only embedded in the model, whose full definition
+  your API cannot read, still gives its density and colour (`complete: false`).
+- **Component patterns:** `angle` is the step between neighbouring instances. A system that stores a total angle
+  with "equal spacing" (SolidWorks does) must divide it: by the count for a full turn, else by count - 1 (sample L04).
 - **Appearances**, with the source's exact values when you recorded them.
 - **Custom properties.**
 - **Equations and global variables** in the neutral grammar, under the source's names (Fusion renames `W` to `W_`;
@@ -402,7 +412,11 @@ tree (delete the build output first) that works exactly as your README says; the
 dependencies a user would not have (link the C runtime statically, or ship it); an installer (or, at least, a script
 that writes a zip of the ready-to-install add-in folder) with install instructions in your README, tested on a
 machine by installing it and importing a sample. Users of these add-ins are often not computer literate: one
-download and one click to install. The installer is published as a release asset, not committed. For a web-API
+download and one click to install. The installer is published as a release asset, not committed. Tag your
+add-in's releases with a prefix of its own (`v<version>` is SolidWorks, `fusion-v<version>` Fusion) and let the
+add-in tell its users when a newer one exists: check the repository's releases in the background when it loads (at
+most daily, cached, silent offline), and at the next import or export offer the release page in one Yes/No box,
+once per session, never blocking (both existing add-ins do; spec-independent). For a web-API
 client the package is its scripts plus the core library; describe in the README what a real distribution (the
 system's own app store, sign-in, a server) would need, and where progress and cancel would live in its UI.
 
