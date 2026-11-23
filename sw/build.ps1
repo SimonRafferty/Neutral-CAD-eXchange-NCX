@@ -23,7 +23,7 @@ $sw = Get-ChildItem "$env:ProgramFiles\SOLIDWORKS Corp" -Directory |
     Select-Object -First 1
 if (-not $sw) { throw "SolidWorks interop assemblies of version $SwApi.x not found" }
 $swrefs = @('sldworks', 'swconst') | ForEach-Object { "/link:$($sw.FullName)\SolidWorks.Interop.$_.dll" }
-$fwrefs = @('System.dll', 'System.Core.dll', 'Microsoft.CSharp.dll') | ForEach-Object { "/reference:$fw\$_" }
+$fwrefs = @('System.dll', 'System.Core.dll', 'Microsoft.CSharp.dll', 'System.Xml.dll', 'System.Xml.Linq.dll') | ForEach-Object { "/reference:$fw\$_" }
 $common = @('/nologo', '/noconfig', '/nostdlib+', "/reference:$fw\mscorlib.dll", '/langversion:7.3', '/platform:x64',
             '/optimize+', '/debug:pdbonly', '/warnaserror+', '/nowarn:1701,1702') + $fwrefs
 

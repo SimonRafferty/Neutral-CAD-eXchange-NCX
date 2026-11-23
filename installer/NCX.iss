@@ -7,7 +7,7 @@
 ; and in the others it stays dormant. Uninstall unregisters it and removes everything it put there.
 
 #ifndef AppVersion
-  #define AppVersion "0.6.6"
+  #define AppVersion "0.6.7"
 #endif
 
 [Setup]

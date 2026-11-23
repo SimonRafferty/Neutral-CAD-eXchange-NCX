@@ -14,7 +14,7 @@ namespace Ncx.Sw
 {
     public partial class Exporter
     {
-        public const string Version = "0.6.6";
+        public const string Version = "0.6.7";
         readonly ISldWorks sw;
         public readonly Report Report = new Report();
 
@@ -237,14 +237,17 @@ namespace Ncx.Sw
                 // history either
                 importedBodies = real.Count(f => f.GetTypeName2() == "BaseBody");
                 plain = importedBodies > 0 && real.All(f => f.GetTypeName2() == "BaseBody" || f.GetTypeName2() == "DeleteBody");
+                // the origin planes, named by where they lie (not by their place in the tree)
+                var originNames = OriginPlanes.Map(all.Where(f => !transferred.ContainsKey(f.Name)));
                 foreach (var f in plain ? new List<IFeature>() : all)
                 {
                     string t = f.GetTypeName2();
                     if (Skip.Contains(t) || t.EndsWith("Folder")) continue;
                     if (transferred.ContainsKey(f.Name)) continue;   // brought in by an Insert Part
-                    if (t == "RefPlane" && originPlanes.Count < 3)
+                    string originName;
+                    if (t == "RefPlane" && originNames.TryGetValue(f.Name, out originName))
                     {
-                        originPlanes[f.Name] = new[] { "front", "top", "right" }[originPlanes.Count];
+                        originPlanes[f.Name] = originName;
                         continue;
                     }
                     var nf = ExportFeature(f, t, fm);

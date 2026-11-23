@@ -63,7 +63,12 @@
             "resolved": {"type": "string"}, "configuration": {"type": "string"}, "native": {"type": "object"}}}},
         "materials": {"type": "array", "items": {
           "type": "object", "required": ["name"],
-          "properties": {"configuration": {"type": "string"}, "name": {"type": "string"}, "database": {"type": "string"}}}},
+          "properties": {"configuration": {"type": "string"}, "name": {"type": "string"}, "database": {"type": "string"},
+            "definition": {"type": "object", "description": "what the material is (FORMAT-SPEC 4.6), SI units",
+              "properties": {"complete": {"type": "boolean"}, "density": {"type": "number"},
+                "color": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+                "classification": {"type": "string"}, "description": {"type": "string"},
+                "properties": {"type": "object", "additionalProperties": {"type": "number"}}}}}}},
         "appearances": {"type": "array", "items": {
           "type": "object", "required": ["target", "kind"],
           "properties": {

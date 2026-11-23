@@ -47,13 +47,39 @@ namespace Ncx.Sw
             var res = new List<object>();
             var part = d as IPartDoc;
             if (part == null) return res;
+            string active = ((IConfiguration)d.ConfigurationManager.ActiveConfiguration)?.Name;
             foreach (string cfg in (string[])d.GetConfigurationNames() ?? new string[0])
             {
                 string db;
                 string name = part.GetMaterialPropertyName2(cfg, out db);
-                if (!string.IsNullOrEmpty(name)) res.Add(new JObj { { "configuration", cfg }, { "name", name }, { "database", db } });
+                if (string.IsNullOrEmpty(name)) continue;
+                var m = new JObj { { "configuration", cfg }, { "name", name }, { "database", db } };
+                // what the material is, so a system without it can recreate it (FORMAT-SPEC 4.6): from this
+                // computer's libraries, else what the part shows of it (measurable in the active configuration only)
+                var def = MaterialDefinitions.FromLibrary(sw, db, name) ?? (cfg == active ? MeasuredMaterial(d, part) : null);
+                if (def != null) m["definition"] = def;
+                res.Add(m);
             }
             return res;
+        }
+
+        /// <summary>A material embedded in the part but in no library on this computer: the API cannot read its
+        /// definition, so its density (mass properties) and its colour (when the part shows the material's
+        /// appearance) are measured. Marked incomplete: its other properties are not known here.</summary>
+        static JObj MeasuredMaterial(IModelDoc2 d, IPartDoc part)
+        {
+            var def = new JObj { { "complete", false } };
+            try
+            {
+                var mp = (IMassProperty)d.Extension.CreateMassProperty();
+                if (mp != null && mp.Density > 0) def["density"] = mp.Density;   // kg/m^3
+            }
+            catch (System.Runtime.InteropServices.COMException) { }
+            var vis = part.GetMaterialVisualProperties() as IMaterialVisualPropertiesData;
+            var mpv = d.MaterialPropertyValues as double[];
+            if ((vis == null || vis.ApplyAppearance) && mpv != null && mpv.Length >= 3)
+                def["color"] = new[] { mpv[0], mpv[1], mpv[2] };
+            return def.Has("density") || def.Has("color") ? def : null;
         }
 
         /// <summary>Properties and material, added to a document's JSON with a report line.</summary>

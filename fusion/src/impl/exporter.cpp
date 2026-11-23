@@ -15,6 +15,7 @@
 // the same way whichever system wrote it.
 #include "host.h"
 #include "replay.h"
+#include "materialdef.h"
 
 #include <ctime>
 #include <cwchar>
@@ -3166,13 +3167,21 @@ struct DocWriter
         {
             // the source's material, or none when the source had none (Fusion's default stood in for it)
             if (!src.value("name", "").empty())
-                out.push_back(json{{"configuration", "Default"}, {"name", src["name"]}, {"database", src.value("database", "")}});
+            {
+                json jm{{"configuration", "Default"}, {"name", src["name"]}, {"database", src.value("database", "")}};
+                // the source's own definition, else what Fusion holds (FORMAT-SPEC 4.6)
+                jm["definition"] = src.contains("definition") ? src["definition"] : materialDefinition(m, des->unitsManager());
+                out.push_back(jm);
+            }
         }
         else
         {
             std::string lib;
             if (Ptr<MaterialLibrary> l = m->parent()) lib = l->name();
-            out.push_back(json{{"configuration", "Default"}, {"name", m->name()}, {"database", lib.empty() ? "Fusion" : lib}});
+            json jm{{"configuration", "Default"}, {"name", m->name()}, {"database", lib.empty() ? "Fusion" : lib}};
+            json def = materialDefinition(m, des->unitsManager());   // NOT TESTED in Fusion (materialdef.cpp)
+            if (def.contains("density") || def.contains("properties")) jm["definition"] = def;
+            out.push_back(jm);
         }
         return out;
     }

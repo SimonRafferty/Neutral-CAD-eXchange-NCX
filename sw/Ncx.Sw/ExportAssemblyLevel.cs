@@ -35,9 +35,11 @@ namespace Ncx.Sw
                 originPlanes.Clear();
                 sketchMaps.Clear();
                 foreach (var kv in assemblySketchMaps) sketchMaps[kv.Key] = kv.Value;
+                var originNames = OriginPlanes.Map((IFeature)asmDoc.FirstFeature());   // by where they lie
                 for (var g = (IFeature)asmDoc.FirstFeature(); g != null; g = (IFeature)g.GetNextFeature())
                 {
-                    if (g.GetTypeName2() == "RefPlane" && originPlanes.Count < 3) originPlanes[g.Name] = new[] { "front", "top", "right" }[originPlanes.Count];
+                    string originName;
+                    if (g.GetTypeName2() == "RefPlane" && originNames.TryGetValue(g.Name, out originName)) originPlanes[g.Name] = originName;
                     else featureIds[g.Name] = "a:" + g.Name;
                 }
                 fm.EditRollback(3, f.Name);   // references in the state the feature saw

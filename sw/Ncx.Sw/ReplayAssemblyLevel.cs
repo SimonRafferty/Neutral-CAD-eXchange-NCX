@@ -38,6 +38,7 @@ namespace Ncx.Sw
                         if (pts != null && pts.Length > 0) originPoint = (ISketchPoint)pts[0];
                     }
                 }
+                SortOriginPlanes();
                 features.Clear();
                 foreach (var kv in assemblyFeatures) features[kv.Key] = kv.Value;
                 sketchMaps.Clear();

@@ -10,6 +10,7 @@
 //    the words of their file name, else skipped with a note. Applied document -> body -> feature -> face.
 #include "host.h"
 #include "replay.h"
+#include "materialdef.h"
 
 #include <cctype>
 #include <sstream>
@@ -102,7 +103,49 @@ std::string fmtColor(const json& c)
     return o.str();
 }
 
+// a design appearance of one plain colour, named by the colour (shared by everything of that colour)
+Ptr<Appearance> colorAppearance(const Ptr<Design>& design, const json& c, double transparency)
+{
+    Ptr<Appearances> designApps = design->appearances();
+    std::string nm = fmtColor(c);
+    Ptr<Appearance> app = designApps->itemByName(nm);
+    if (!app)
+    {
+        app = designApps->add(nm);
+        if (app)
+            app->color(Color::create(static_cast<short>(c[0].get<double>() * 255 + 0.5), static_cast<short>(c[1].get<double>() * 255 + 0.5),
+                                     static_cast<short>(c[2].get<double>() * 255 + 0.5), static_cast<short>((1 - transparency) * 255 + 0.5)));
+    }
+    return app;
+}
+
 } // namespace
+
+// A material no Fusion library has under the source's name, recreated from the file's definition (FORMAT-SPEC 4.6):
+// a design material copied from the nearest one (else Fusion's steel), renamed and given the carried properties.
+// Fusion's Material.appearance cannot be set, so the carried colour goes on the part's bodies. Null if Fusion
+// refused the copy. NOT TESTED in Fusion (see materialdef.cpp).
+Ptr<Material> Replayer::recreateMaterial(const std::string& name, const json& def, const Ptr<Material>& nearest, std::string& note)
+{
+    Ptr<Materials> mine = design_->materials();
+    if (!mine) return nullptr;
+    Ptr<Material> made = mine->itemByName(name);   // an earlier part of this import made it already
+    if (!made)
+    {
+        Ptr<Material> base = nearest ? nearest : anyMaterial();
+        if (!base) return nullptr;
+        made = mine->addByCopy(base, name);
+        if (!made) return nullptr;
+        if (made->name() != name) made->name(name);
+        std::string missed;
+        applyMaterialDefinition(made, def, design_->unitsManager(), missed);
+        note = missed;
+    }
+    if (def.contains("color") && def["color"].is_array() && def["color"].size() >= 3)
+        if (Ptr<Appearance> app = colorAppearance(design_, def["color"], 0))
+            for (auto& b : bodies()) b->appearance(app);
+    return made;
+}
 
 void Replayer::replayProperties(const json& doc)
 {
@@ -138,6 +181,15 @@ void Replayer::replayProperties(const json& doc)
         if (!cfg.empty() && cfg != active) continue;
         std::string how;
         Ptr<Material> mat = findMaterial(m.value("name", ""), how);
+        // not in Fusion's libraries under the source's name, but the file says what it is: recreate it under its
+        // own name rather than take a near one
+        std::string madeNote;
+        if (how != "exact" && m.contains("definition"))
+            if (Ptr<Material> made = recreateMaterial(m.value("name", ""), m["definition"], mat, madeNote))
+            {
+                mat = made;
+                how = "recreated";
+            }
         if (!mat)
         {
             report_.add(docName_, "material " + m.value("name", ""), "approximate", "not found in Fusion's material libraries; the part keeps its default material");
@@ -147,9 +199,15 @@ void Replayer::replayProperties(const json& doc)
         for (auto& b : bodies()) b->material(mat);
         // the source's name, for the export: while the component keeps this material, it is written back under
         // the source's own name, so the source system finds its material again (exporter.cpp, materialsJson)
-        comp_->attributes()->add("NCX", "material",
-                                 json{{"name", m.value("name", "")}, {"database", m.value("database", "")}, {"fusion", mat->name()}}.dump());
+        json srcMat{{"name", m.value("name", "")}, {"database", m.value("database", "")}, {"fusion", mat->name()}};
+        if (m.contains("definition")) srcMat["definition"] = m["definition"];   // written back unchanged by the export
+        comp_->attributes()->add("NCX", "material", srcMat.dump());
         if (how == "exact") report_.add(docName_, "material " + m.value("name", ""), "rebuilt", "");
+        else if (how == "recreated")
+            report_.add(docName_, "material " + m.value("name", ""), "note",
+                        std::string("in no Fusion library: recreated from the file") +
+                            (m["definition"].value("complete", true) ? "" : " (density and colour only: the exporting computer had no library with it)") +
+                            (madeNote.empty() ? "" : "; " + madeNote));
         else report_.add(docName_, "material " + m.value("name", ""), "approximate", "matched to Fusion's \"" + mat->name() + "\" " + how);
     }
     // ------------------------------------------------------------------ cut lists (weldments)
@@ -203,18 +261,7 @@ void Replayer::replayProperties(const json& doc)
             else if (a.contains("color"))
             {
                 std::string nm = fmtColor(a["color"]);
-                app = designApps->itemByName(nm);
-                if (!app)
-                {
-                    app = designApps->add(nm);
-                    if (app)
-                    {
-                        const json& c = a["color"];
-                        double tr = a.contains("optical") ? a["optical"].value("transparency", 0.0) : 0.0;
-                        app->color(Color::create(static_cast<short>(c[0].get<double>() * 255 + 0.5), static_cast<short>(c[1].get<double>() * 255 + 0.5),
-                                                 static_cast<short>(c[2].get<double>() * 255 + 0.5), static_cast<short>((1 - tr) * 255 + 0.5)));
-                    }
-                }
+                app = colorAppearance(design_, a["color"], a.contains("optical") ? a["optical"].value("transparency", 0.0) : 0.0);
                 // the source's exact colour and optical values, by appearance name, for the export (Fusion keeps
                 // 8-bit colour and no ambient/specular/shininess)
                 if (app)

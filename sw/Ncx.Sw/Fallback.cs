@@ -277,6 +277,13 @@ namespace Ncx.Sw
             }
             Report.Add(d.Str("id"), d.Str("name"), "fallback",
                        "imported reference geometry used (" + reason + "); partial parametric rebuild kept as " + Path.GetFileName(keep));
+            // the material, custom properties and appearances went with the partial rebuild: apply them again to
+            // the part that is kept (as a plain part gets them), reporting them once, for this part
+            Report.Items.RemoveAll(i => i.Str("document") == d.Str("id") && (i.Str("feature") == "properties" || i.Str("feature") == "appearances"));
+            doc = nd;
+            part = nd as IPartDoc;
+            ReplayPropertiesAndMaterials(nd, d);
+            ReplayAppearances(nd, d);
             return nd;
         }
     }

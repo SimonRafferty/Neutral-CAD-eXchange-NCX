@@ -301,6 +301,11 @@ namespace Ncx.Sw
             var rootN = new[] { p[3], p[4], p[5] };
             Func<double[], double[], double[], double[], bool> same = (n, o, q, m) =>
                 1 - Math.Abs(V.Dot(V.Unit(n), V.Unit(m))) < 1e-9 && Math.Abs(V.Dot(V.Sub(q, o), V.Unit(n))) < 1e-7;
+            // the part's origin planes by where they lie in the part (the part's own tree, not the component's,
+            // whose planes may report the assembly frame)
+            Dictionary<string, string> originNames;
+            if (!originPlanesByDoc.TryGetValue(docRef, out originNames) || originNames.Count < 3)
+                originNames = OriginPlanes.Map((IFeature)md.FirstFeature());
             // a component's plane should report its part frame; the assembly frame is the fallback
             for (int pass = 0; pass < 2; pass++)
             {
@@ -313,7 +318,10 @@ namespace Ncx.Sw
                     var n = new[] { a[6], a[7], a[8] };
                     var o = new[] { a[9], a[10], a[11] };
                     if (!(pass == 0 ? same(n, o, pt, nv) : same(n, o, rootPt, rootN))) continue;
-                    if (planes <= 3) return new JObj { { "kind", "originPlane" }, { "by", "id" }, { "plane", new[] { "front", "top", "right" }[planes - 1] } };
+                    string originName;
+                    if (planes <= 3 && originNames.TryGetValue(f.Name, out originName))
+                        return new JObj { { "kind", "originPlane" }, { "by", "id" }, { "plane", originName } };
+                    if (planes <= 3) return new JObj { { "kind", "originPlane" }, { "by", "id" }, { "plane", OriginPlanes.Names[planes - 1] } };
                     Dictionary<string, string> ids;
                     string fid;
                     if (featureIdsByDoc.TryGetValue(docRef, out ids) && ids.TryGetValue(f.Name, out fid))
@@ -390,14 +398,25 @@ namespace Ncx.Sw
                 }
                 else
                 {
+                    // the angle between neighbouring instances (FORMAT-SPEC componentPattern). With Equal spacing ticked
+                    // SolidWorks' Spacing is the TOTAL angle: a full turn shares 360 degrees among all the instances,
+                    // a part turn puts the last instance at the total angle (2026-11-23: a 10-magnet rotor came out
+                    // as 10 copies 360 degrees apart, all on the seed)
+                    double step = cir.Spacing;
+                    int count = cir.TotalInstances;
+                    bool equal = false;
+                    try { equal = Convert.ToBoolean(Late(cir, "EqualSpacing")); }   // not in the 2018 API: never equal there
+                    catch (Exception) { }
+                    if (equal && count > 1)
+                        step = Math.Abs(cir.Spacing - 2 * Math.PI) < 1e-6 ? cir.Spacing / count : cir.Spacing / (count - 1);
                     var ax = AssemblyEntityRef(asmDoc, cir.Axis, compIds)
                              // a cylindrical face as the axis reads back as nothing: find it from where the pattern put
                              // its first instance
-                             ?? (cir.Axis == null ? CoaxialFace(f, seedObjs, cir.Spacing, comps, compIds) : null);
+                             ?? (cir.Axis == null ? CoaxialFace(f, seedObjs, step, comps, compIds) : null);
                     if (ax == null) return AssemblyOpaque(nf, "pattern axis not recognised (axis type " + cir.GetAxisType() + ", " + KindOf(cir.Axis) + ")", asmId);
                     def["axis"] = ax;
-                    def["count"] = cir.TotalInstances;
-                    def["angle"] = U.Deg(cir.Spacing);   // between neighbouring instances
+                    def["count"] = count;
+                    def["angle"] = U.Deg(step);   // between neighbouring instances
                     def["reverse"] = cir.ReverseDirection;
                 }
                 var skipped = (int[])(linear ? lin.SkippedItemArray : cir.SkippedItemArray);
@@ -676,14 +695,14 @@ namespace Ncx.Sw
             var feat = ent as IFeature;
             if (feat != null && feat.GetTypeName2() == "RefPlane")
             {
-                int planes = 0;
+                var originNames = OriginPlanes.Map((IFeature)asmDoc.FirstFeature());   // by where they lie
                 for (var f = (IFeature)asmDoc.FirstFeature(); f != null; f = (IFeature)f.GetNextFeature())
                 {
                     if (f.GetTypeName2() != "RefPlane") continue;
-                    planes++;
                     if (f.Name != feat.Name) continue;
-                    if (planes <= 3)
-                        return new JObj { { "ref", new JObj { { "kind", "originPlane" }, { "by", "id" }, { "plane", new[] { "front", "top", "right" }[planes - 1] } } } };
+                    string originName;
+                    if (originNames.TryGetValue(f.Name, out originName))
+                        return new JObj { { "ref", new JObj { { "kind", "originPlane" }, { "by", "id" }, { "plane", originName } } } };
                     return new JObj { { "ref", new JObj { { "kind", "feature" }, { "by", "id" }, { "id", "a:" + f.Name } } } };   // an assembly plane
                 }
             }
@@ -961,19 +980,19 @@ namespace Ncx.Sw
         {
             if (rt == 4 && p != null && p.Length >= 6)   // swSelDATUMPLANES: point + normal, assembly metres
             {
-                int planes = 0;
+                var originNames = OriginPlanes.Map((IFeature)asmDoc.FirstFeature());   // by where they lie
                 for (var f = (IFeature)asmDoc.FirstFeature(); f != null; f = (IFeature)f.GetNextFeature())
                 {
                     if (f.GetTypeName2() != "RefPlane") continue;
-                    planes++;
                     var a = (double[])((IMathTransform)((IRefPlane)f.GetSpecificFeature2()).Transform).ArrayData;
                     var n = V.Unit(new[] { a[6], a[7], a[8] });
                     var o = new[] { a[9], a[10], a[11] };
                     var pn = V.Unit(new[] { p[3], p[4], p[5] });
                     var pt = new[] { p[0], p[1], p[2] };
+                    string originName;
                     if (1 - Math.Abs(V.Dot(n, pn)) < 1e-9 && Math.Abs(V.Dot(V.Sub(pt, o), n)) < 1e-7)
-                        return planes <= 3
-                            ? new JObj { { "kind", "originPlane" }, { "by", "id" }, { "plane", new[] { "front", "top", "right" }[planes - 1] } }
+                        return originNames.TryGetValue(f.Name, out originName)
+                            ? new JObj { { "kind", "originPlane" }, { "by", "id" }, { "plane", originName } }
                             : new JObj { { "kind", "feature" }, { "by", "id" }, { "id", "a:" + f.Name } };   // an assembly plane
                 }
                 return null;

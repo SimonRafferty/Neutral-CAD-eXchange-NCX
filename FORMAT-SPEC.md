@@ -641,9 +641,21 @@ linked to the source's parameters: the source then still drives the part, and th
   the entry's name, so the links resolve, and sets the properties. A system without cut lists keeps them as
   per-body properties, or reports them.
 
-**Materials** (`materials`, parts): `[{configuration, name, database}]`. An importer looks the name up in
+**Materials** (`materials`, parts): `[{configuration, name, database, definition?}]`. An importer looks the name up in
 its own material library. If it is missing, the part is still rebuilt, and the report says which
 material was not found.
+- `definition` (optional) says what the material is, so an importer without it can recreate it under its own
+  name (SolidWorks: a material library written for the import; the part keeps the material). SI units:
+  - `density` (kg/m³);
+  - `color` (RGB 0–1, the material's own colour);
+  - `classification` and `description` (text);
+  - `properties`, any of `elasticModulus`, `shearModulus`, `tensileStrength`, `compressiveStrength`,
+    `yieldStrength` (Pa), `poissonRatio`, `thermalExpansion` (1/K), `thermalConductivity` (W/(m·K)) and
+    `specificHeat` (J/(kg·K)).
+- `complete: false` means the exporter could only measure what the part showed (density and colour), because no
+  library on the exporting computer had the material. An importer recreates it all the same and says so.
+- Order at import: the exporter's material by name, then a recreated one from `definition`, then the importer's
+  nearest material (another system's name for a common material), else reported as missing.
 
 **Appearances** (`appearances`, parts and assemblies): what the user sees. Each is `{target, kind,
 color, optical?, file?, mapping?}`.

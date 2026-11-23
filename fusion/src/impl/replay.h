@@ -87,6 +87,7 @@ private:
     void replayParameters(const json& doc);
     void replayEquations(const json& doc);
     void replayProperties(const json& doc);   // props.cpp
+    Ptr<Material> recreateMaterial(const std::string& name, const json& def, const Ptr<Material>& nearest, std::string& note);   // props.cpp
     bool plainGeometry_ = false;              // replayProperties on a fallback's plain geometry (no features)
 
 public:

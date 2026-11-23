@@ -740,7 +740,7 @@ namespace Ncx.Sw
                     return originPoint;
                 case "originPlane":   // a datum plane (a point kept on where the sketch plane meets it)
                 {
-                    int i = Array.IndexOf(new[] { "front", "top", "right" }, r.Str("plane"));
+                    int i = OriginPlanes.Index(r.Str("plane"))   /* originPlanes is in that order */;
                     return i >= 0 && i < originPlanes.Count ? originPlanes[i] : null;
                 }
                 case "feature":

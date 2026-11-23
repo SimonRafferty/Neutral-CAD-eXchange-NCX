@@ -71,11 +71,7 @@ namespace Ncx.Sw
             if (src == null) return null;
             // (no ActivateDoc: activating documents during an import lets SolidWorks 2018's FeatureWorks prompt to
             // recognise features in the imported reference, a modal box that stalls the import)
-            int index = Array.IndexOf(new[] { "front", "top", "right" }, def.Obj("plane")?.Str("plane"));
-            int planes = 0;
-            IFeature plane = null;
-            for (var f = (IFeature)src.FirstFeature(); f != null && plane == null; f = (IFeature)f.GetNextFeature())
-                if (f.GetTypeName2() == "RefPlane" && planes++ == index) plane = f;
+            var plane = OriginPlanes.Find((IFeature)src.FirstFeature(), def.Obj("plane")?.Str("plane"));   // by where it lies
             if (plane == null) return null;
             src.ClearSelection2(true);
             plane.Select2(false, 0);
@@ -690,11 +686,9 @@ namespace Ncx.Sw
             }
             if (kind == "originPlane")
             {
-                int index = Array.IndexOf(new[] { "front", "top", "right" }, rf.Str("plane"));
-                int planes = 0;
-                for (var f = (IFeature)adoc.FirstFeature(); f != null; f = (IFeature)f.GetNextFeature())
-                    if (f.GetTypeName2() == "RefPlane" && planes++ == index)
-                        return f.Select2(append, sd.Mark) ? null : "could not select the assembly's " + rf.Str("plane") + " plane";
+                var f = OriginPlanes.Find((IFeature)adoc.FirstFeature(), rf.Str("plane"));   // by where it lies
+                if (f != null)
+                    return f.Select2(append, sd.Mark) ? null : "could not select the assembly's " + rf.Str("plane") + " plane";
                 return "the assembly has no " + rf.Str("plane") + " plane";
             }
             if (kind == "origin")
@@ -956,7 +950,12 @@ namespace Ncx.Sw
                 var nf = d?.Arr("features").Cast<JObj>().FirstOrDefault(x => x.Str("id") == rf.Str("id"));
                 return nf == null ? null : (IFeature)comp.FeatureByName(nf.Str("name"));
             }
-            int index = Array.IndexOf(new[] { "front", "top", "right" }, rf.Str("plane"));
+            // by where it lies in the part (the part's own tree: a component's planes may report the assembly frame),
+            // then the component's feature of that name
+            var md = comp.GetModelDoc2() as IModelDoc2;
+            var own = md == null ? null : OriginPlanes.Find((IFeature)md.FirstFeature(), rf.Str("plane"));
+            if (own != null) return (IFeature)comp.FeatureByName(own.Name);
+            int index = OriginPlanes.Index(rf.Str("plane"));   // no document (lightweight): tree order, as before
             int planes = 0;
             for (var f = (IFeature)comp.FirstFeature(); f != null; f = (IFeature)f.GetNextFeature())
                 if (f.GetTypeName2() == "RefPlane" && planes++ == index) return f;

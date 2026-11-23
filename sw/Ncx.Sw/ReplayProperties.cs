@@ -24,6 +24,7 @@ namespace Ncx.Sw
             }
             var part = d as IPartDoc;
             var substituted = new List<string>();
+            var recreated = new List<string>();
             foreach (var m in mats)
             {
                 if (part == null) break;
@@ -31,6 +32,24 @@ namespace Ncx.Sw
                 part.SetMaterialPropertyName2(cfg, m.Str("database") ?? "", name);   // a void call
                 string db;
                 if (part.GetMaterialPropertyName2(cfg, out db) == name) continue;
+                // not in this SolidWorks' libraries, but the file says what it is: recreate it under its own name
+                // (the part keeps it, as a part made elsewhere keeps its material)
+                var def = m.Obj("definition");
+                if (def != null)
+                {
+                    var lib = ImportMaterials();
+                    string libPath = lib.PathFor(name, def);
+                    if (libPath != null)
+                    {
+                        part.SetMaterialPropertyName2(cfg, libPath, name);
+                        if (part.GetMaterialPropertyName2(cfg, out db) == name)
+                        {
+                            recreated.Add(name + (def.Bool("complete", true) ? "" : " (density and colour only: the exporting computer had no library with it)"));
+                            continue;
+                        }
+                    }
+                    else problems.Add("material " + name + " could not be recreated: " + lib.Problem);
+                }
                 // another system's name for it ("Stainless Steel AISI 304", "Steel"): this SolidWorks' nearest material
                 var near = MaterialLibrary.Nearest(sw, name);
                 if (near != null)
@@ -50,6 +69,30 @@ namespace Ncx.Sw
             Report.Add(docId, "properties", problems.Count == 0 ? "rebuilt" : "approximate",
                        problems.Count == 0 ? props.Count + " custom properties" + (names.Count == 0 ? "" : "; material " + string.Join(", ", names))
                                            : string.Join("; ", problems));
+            foreach (var r in recreated.Distinct())
+                Report.Add(docId, "properties", "note", "material " + r + " is in no material library here: recreated from the file and kept in the part");
+        }
+
+        // the carried material definitions of the whole model, in one temporary library (made when first needed,
+        // deleted when the import ends)
+        MaterialDefinitions.ImportLibrary importMaterials;
+
+        MaterialDefinitions.ImportLibrary ImportMaterials()
+        {
+            if (importMaterials != null) return importMaterials;
+            // every carried definition: each part gets its own (one material can differ between parts, as in the source)
+            var defs = new List<KeyValuePair<string, JObj>>();
+            foreach (JObj doc in Model?.Arr("documents") ?? new List<object>())
+                foreach (JObj m in doc.Arr("materials"))
+                    if (m.Obj("definition") != null && !string.IsNullOrEmpty(m.Str("name")))
+                        defs.Add(new KeyValuePair<string, JObj>(m.Str("name"), m.Obj("definition")));
+            return importMaterials = new MaterialDefinitions.ImportLibrary(sw, defs);
+        }
+
+        void DisposeImportMaterials()
+        {
+            importMaterials?.Dispose();
+            importMaterials = null;
         }
 
         // a material written under another system's name -> the SolidWorks material it was set as

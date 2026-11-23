@@ -28,7 +28,17 @@ namespace Ncx.Sw
         IPartDoc part;
         string docId;
         readonly Dictionary<string, IFeature> features = new Dictionary<string, IFeature>();   // neutral id -> feature
-        readonly List<IFeature> originPlanes = new List<IFeature>();
+        readonly List<IFeature> originPlanes = new List<IFeature>();   // front, top, right (OriginPlanes.Names order)
+
+        /// <summary>Put the document's origin planes (collected in tree order) in neutral order, each found by where
+        /// it lies (FORMAT-SPEC 5): a template whose second plane is not XZ still gets `top` on its XZ plane.</summary>
+        void SortOriginPlanes()
+        {
+            if (originPlanes.Count != 3) return;
+            var ordered = OriginPlanes.Ordered(originPlanes);
+            originPlanes.Clear();
+            originPlanes.AddRange(ordered);
+        }
         // feature types whose replay chooses its variant by the carried result itself (TryVariants, MatchesResult):
         // the general result check after a replay leaves them alone
         static readonly HashSet<string> SelfCheckedResult = new HashSet<string> { "linearPattern", "circularPattern", "convertToSheetMetal",
@@ -189,6 +199,7 @@ namespace Ncx.Sw
                 quiet.Dispose();
                 quiet = null;
                 CloseReference();
+                DisposeImportMaterials();   // the temporary material library: the saved parts keep their materials
             }
             return saved;
         }
@@ -313,6 +324,7 @@ namespace Ncx.Sw
                     if (pts != null && pts.Length > 0) originPoint = (ISketchPoint)pts[0];
                 }
             }
+            SortOriginPlanes();
 
             ReplayParameters(d);
             foreach (JObj nf in d.Arr("features"))
@@ -579,7 +591,7 @@ namespace Ncx.Sw
                 }
                 case "originPlane":
                 {
-                    int i = Array.IndexOf(new[] { "front", "top", "right" }, r.Str("plane"));
+                    int i = OriginPlanes.Index(r.Str("plane"))   /* originPlanes is in that order */;
                     return originPlanes[i].Select2(append, mark) ? null : "could not select origin plane";
                 }
                 case "feature":
