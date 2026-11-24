@@ -44,7 +44,7 @@ One program for each operating system SolidCraft runs on. Each release of the tr
 
 | system | download | state |
 |---|---|---|
-| Windows (64-bit) | first release coming: see [Releases](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases) | 0.1.0: MSI built, installed and tested (Windows 10), sample files |
+| Windows 10 and 11 (64-bit) | **[NCX-SolidCraft-0.1.0.msi](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.0/NCX-SolidCraft-0.1.0.msi)** ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/solidcraft-v0.1.0)) | 0.1.0, the first release |
 | Linux | | planned (the shared core already builds for it) |
 | macOS | | planned (the shared core already builds for it) |
 
@@ -53,9 +53,9 @@ the design to someone on Linux or a Mac.
 
 ## Install (Windows)
 
-Run `NCX-SolidCraft-<version>.msi` and follow the steps (it asks for administrator permission once). It installs
+Download the MSI from the table above, run it and follow the steps (it asks for administrator permission once). It installs
 for all users in `C:\Program Files\NCX SolidCraft`, with a Start menu and a desktop shortcut, and adds NCX
-Translator to "Open with" for STEP files and SolidCraft designs. Uninstall it from Windows' *Installed apps*.
+SolidCraft to "Open with" for STEP files and SolidCraft designs. Uninstall it from Windows' *Installed apps*.
 If Windows says "Windows protected your PC", click **More info**, then **Run anyway** (the installer is not signed
 with a paid certificate).
 
