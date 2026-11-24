@@ -10,6 +10,31 @@ It never overwrites a file: if the name is taken it saves as `name (2).sc`. It n
 same computer: it drives SolidCraft's own command-line program (`solidcraft-cli`) in a private, hidden session, so
 SolidCraft's own window, and any design open there, is never touched.
 
+## What it looks like
+
+Drop a file on the window, or click to choose one:
+
+![The NCX Translator window, waiting for a file](docs/window-start.png)
+
+The import rebuilds the model feature by feature, and shows where it has got to. **Cancel** stops it and leaves
+no half-made design behind:
+
+![Importing: rebuilding a part, feature by feature](docs/window-importing.png)
+
+When it is done it says so in one line, and offers to open the design in SolidCraft. Anything worth knowing
+in detail is in the report saved beside the design:
+
+![The import is done](docs/window-imported.png)
+
+The design in SolidCraft: a SolidWorks part (sample P02, made Y-up) rebuilt with its sketches, extrude, cut,
+fillets and chamfer, and stood upright for SolidCraft's Z-up world:
+
+![The imported part in SolidCraft](docs/imported-in-solidcraft.png)
+
+Dropping a SolidCraft design on the window makes an NCX file beside it:
+
+![The export is done](docs/window-exported.png)
+
 ## Download
 
 One program for each operating system SolidCraft runs on. Each release of the translator is tagged
@@ -17,7 +42,7 @@ One program for each operating system SolidCraft runs on. Each release of the tr
 
 | system | download | state |
 |---|---|---|
-| Windows (64-bit) | first release coming: see [Releases](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases) | 0.1.0, built and tested on the sample files |
+| Windows (64-bit) | first release coming: see [Releases](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases) | 0.1.0: MSI built, installed and tested (Windows 10), sample files |
 | Linux | | planned (the shared core already builds for it) |
 | macOS | | planned (the shared core already builds for it) |
 

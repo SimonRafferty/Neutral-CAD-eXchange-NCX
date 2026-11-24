@@ -188,7 +188,15 @@ impl eframe::App for App {
 
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &root.ctx().clone();
-        crate::snapshot::tick(ctx);
+        let (label, ready) = match &self.state {
+            State::Idle => ("idle", true),
+            State::Working { progress, .. } => {
+                let p = progress.lock().map(|g| g.clone()).unwrap_or_default();
+                ("working", p.fraction > 0.3 && !p.detail.is_empty())
+            }
+            State::Finished(_) => ("done", true),
+        };
+        crate::snapshot::tick(ctx, label, ready);
         // a file dropped on the window, or given on the command line
         if matches!(self.state, State::Idle | State::Finished(_)) {
             let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()));
@@ -279,11 +287,14 @@ impl eframe::App for App {
                         });
                         if let Some(out) = &done.output {
                             ui.add_space(4.0);
-                            ui.label(RichText::new(format!("Saved as {}", out.display())).small().color(style::DIM));
+                            let file = out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            let folder = out.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            ui.label(RichText::new(format!("Saved as {file}, in the folder \u{201c}{folder}\u{201d}")).small().color(style::DIM))
+                                .on_hover_text(out.display().to_string());
                         }
                     });
                     ui.add_space(14.0);
-                    if drop_zone(ui, "Drop another file here", "or click to choose one") {
+                    if drop_zone_sized(ui, "Drop another file here", "or click to choose one", 110.0) {
                         start_pick = true;
                     }
                     let _ = &mut back_to_idle;
@@ -298,8 +309,12 @@ impl eframe::App for App {
 
 /// The big drop target; true when clicked.
 fn drop_zone(ui: &mut egui::Ui, title: &str, hint: &str) -> bool {
+    drop_zone_sized(ui, title, hint, 170.0)
+}
+
+fn drop_zone_sized(ui: &mut egui::Ui, title: &str, hint: &str, height: f32) -> bool {
     let hovering = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
-    let size = egui::vec2(ui.available_width(), 170.0);
+    let size = egui::vec2(ui.available_width(), height.min(ui.available_height().max(80.0)));
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let lit = hovering || resp.hovered();
     let painter = ui.painter_at(rect);

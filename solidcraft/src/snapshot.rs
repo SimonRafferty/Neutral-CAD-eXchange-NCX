@@ -5,9 +5,17 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 static FRAMES: AtomicU32 = AtomicU32::new(0);
 
-/// Call once per frame.
-pub fn tick(ctx: &egui::Context) {
+/// Call once per frame with the window's state ("idle", "working", "done") and whether it is worth a picture
+/// yet. NCX_UI_SNAPSHOT_WHEN=<state> waits for that state (a real job's progress or outcome).
+pub fn tick(ctx: &egui::Context, state: &str, ready: bool) {
     let Some(path) = std::env::var_os("NCX_UI_SNAPSHOT") else { return };
+    if let Ok(when) = std::env::var("NCX_UI_SNAPSHOT_WHEN") {
+        if when != state || !ready {
+            FRAMES.store(0, Ordering::Relaxed);
+            ctx.request_repaint_after(std::time::Duration::from_millis(30));
+            return;
+        }
+    }
     let n = FRAMES.fetch_add(1, Ordering::Relaxed);
     if n < 6 {
         ctx.request_repaint();

@@ -13,7 +13,8 @@
            UpgradeCode="818CD351-42F5-4D93-BE25-C56ABAC62F27">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64"
              Description="NCX Translator: NCX files to SolidCraft designs and back" />
-    <MajorUpgrade DowngradeErrorMessage="A newer NCX Translator is already installed." />
+    <!-- a rebuilt MSI of the same version replaces the installed one too (no second entry in the Apps list) -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer NCX Translator is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <Icon Id="NcxIcon" SourceFile="$(var.Assets)\icon.ico" />

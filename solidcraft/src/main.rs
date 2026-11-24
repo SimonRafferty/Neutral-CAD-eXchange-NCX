@@ -95,24 +95,35 @@ fn main() {
 fn run_cli(args: &[String]) -> anyhow::Result<i32> {
     let mut pos: Vec<&str> = Vec::new();
     let (mut log, mut plain, mut cli) = (false, false, None);
+    let mut cancel_after: Option<u64> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--log" => log = true,
             "--plain" => plain = true,
             "--cli" => cli = it.next().map(PathBuf::from),
+            // developer test of Cancel: press it after this many milliseconds
+            "--cancel-after" => cancel_after = it.next().and_then(|v| v.parse::<u64>().ok()),
             "-h" | "--help" => usage(),
             _ => pos.push(a),
         }
     }
     let cli = sc::find_cli(cli.as_deref()).ok_or_else(|| anyhow::anyhow!("SolidCraft's command-line program was not found"))?;
+    let cancel = Arc::new(AtomicBool::new(false));
+    if let Some(ms) = cancel_after {
+        let c = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            c.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+    }
     match pos.as_slice() {
         ["import", input, output] => {
             let job = import::Job {
                 input: PathBuf::from(input),
                 output: std::path::absolute(output)?,
                 cli,
-                cancel: Arc::new(AtomicBool::new(false)),
+                cancel: cancel.clone(),
                 progress: Arc::new(Mutex::new(import::Progress::default())),
                 log,
                 plain_only: plain,
@@ -127,7 +138,7 @@ fn run_cli(args: &[String]) -> anyhow::Result<i32> {
                 input: std::path::absolute(input)?,
                 output: std::path::absolute(output)?,
                 cli,
-                cancel: Arc::new(AtomicBool::new(false)),
+                cancel: cancel.clone(),
                 progress: Arc::new(Mutex::new(import::Progress::default())),
                 log,
             };

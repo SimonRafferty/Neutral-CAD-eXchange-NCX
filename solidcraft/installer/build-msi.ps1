@@ -31,11 +31,18 @@ if (-not (Test-Path $candle)) {
 
 # a clean release build
 if (-not $NoBuild) {
+    # cargo: on PATH, else where rustup puts it
+    $cargo = (Get-Command cargo.exe -ErrorAction SilentlyContinue).Source
+    if (-not $cargo) { $cargo = Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe' }
+    if (-not (Test-Path $cargo)) { throw 'cargo (Rust) not found' }
     Push-Location $crate
+    # cargo reports progress on stderr, which Windows PowerShell 5.1 turns into errors under 'Stop':
+    # judge it by its exit code instead
+    $ErrorActionPreference = 'Continue'
     try {
-        & cargo build --release
+        & $cargo build --release 2>&1 | ForEach-Object { "$_" }
         if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
-    } finally { Pop-Location }
+    } finally { Pop-Location; $ErrorActionPreference = 'Stop' }
 }
 $exe = Join-Path $crate 'target\release\ncx-translator.exe'
 if (-not (Test-Path $exe)) { throw "no release build at $exe" }
