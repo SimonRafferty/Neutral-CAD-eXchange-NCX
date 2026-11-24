@@ -38,9 +38,31 @@ pub fn find_cli(configured: Option<&Path>) -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     {
-        candidates.push(PathBuf::from("/usr/bin").join(exe));
-        candidates.push(PathBuf::from("/usr/local/bin").join(exe));
-        candidates.push(PathBuf::from("/Applications/SolidCraft.app/Contents/MacOS").join(exe));
+        // Linux: the .deb/.rpm packages and the tarball unpacked into /usr/local or /opt.
+        // macOS: SolidCraft ships the CLI as a zip of its own (solidcraft-cli-<ver>-macos-universal/solidcraft-cli),
+        // which people tend to leave in Downloads or copy to /usr/local/bin.
+        for dir in ["/usr/bin", "/usr/local/bin", "/opt/solidcraft/bin", "/opt/SolidCraft/bin", "/opt/homebrew/bin",
+                    "/Applications/SolidCraft.app/Contents/MacOS"] {
+            candidates.push(PathBuf::from(dir).join(exe));
+        }
+        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+            for dir in [".local/bin", "bin", "Applications/SolidCraft.app/Contents/MacOS"] {
+                candidates.push(home.join(dir).join(exe));
+            }
+            // unpacked downloads: ~/Downloads/solidcraft-cli-<ver>-macos-universal/, ~/Downloads/solidcraft-<ver>-linux-*/bin/
+            for base in [home.join("Downloads"), home.join("Applications"), home.clone()] {
+                let mut found: Vec<PathBuf> = std::fs::read_dir(&base)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.file_name().map(|n| n.to_string_lossy().starts_with("solidcraft")).unwrap_or(false))
+                    .flat_map(|d| [d.join(exe), d.join("bin").join(exe)])
+                    .collect();
+                found.sort();
+                found.reverse(); // the newest version first (names sort by version)
+                candidates.extend(found);
+            }
+        }
     }
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {

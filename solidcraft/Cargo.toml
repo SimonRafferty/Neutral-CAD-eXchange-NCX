@@ -1,6 +1,6 @@
 [package]
 name = "ncx-solidcraft"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "NCX SolidCraft: converts NCX files to SolidCraft designs and back"
 license = "MIT"
@@ -12,12 +12,18 @@ path = "src/main.rs"
 
 [dependencies]
 # The same UI toolkit SolidCraft uses (egui 0.37, rfd 0.17), with NCX's own look: see src/style.rs.
-eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "persistence"] }
+#   links: hyperlinks open the browser. x11/wayland: the Linux windowing systems (Wayland loaded at run time below).
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "persistence", "links", "x11", "wayland"] }
 egui = "0.37"
-rfd = "0.17"
+# File dialogs: native on Windows and macOS, the desktop portal on Linux (no GTK or Wayland library linked in).
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 anyhow = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Load the Wayland client library at run time, so the program builds without it and runs on X11-only systems too.
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita"] }
 
 [build-dependencies]
 # Compiles the shared NCX core (../core, C++17) into the program: no separate DLL to ship.

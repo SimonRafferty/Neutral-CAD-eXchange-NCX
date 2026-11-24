@@ -169,13 +169,25 @@ fn show_in_folder(p: &Path) {
     }
 }
 
-/// Opens a design in SolidCraft (the app beside its command-line program).
+/// Opens a design in SolidCraft: the app beside its command-line program (Windows, Linux packages), the
+/// SolidCraft app bundle (macOS), else whatever the system opens .sc files with.
 fn open_in_solidcraft(cli: &Path, design: &Path) {
-    let app = cli.with_file_name(if cfg!(windows) { "solidcraft.exe" } else { "solidcraft" });
-    if app.is_file() {
-        let _ = std::process::Command::new(app).arg(design).spawn();
-    } else {
-        open_path(design);
+    #[cfg(target_os = "macos")]
+    {
+        let _ = cli;
+        let ok = std::process::Command::new("open").args(["-a", "SolidCraft"]).arg(design).status().map(|s| s.success());
+        if !matches!(ok, Ok(true)) {
+            open_path(design);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let app = cli.with_file_name(if cfg!(windows) { "solidcraft.exe" } else { "solidcraft" });
+        if app.is_file() {
+            let _ = std::process::Command::new(app).arg(design).spawn();
+        } else {
+            open_path(design);
+        }
     }
 }
 

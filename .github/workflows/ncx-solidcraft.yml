@@ -1,0 +1,73 @@
+# Builds NCX SolidCraft for Linux (AppImage) and macOS (dmg), after running the NCX core's self-test on each.
+# Started by hand (Actions > NCX SolidCraft > Run workflow). With a release tag (e.g. solidcraft-v0.1.1) the
+# builds are added to that existing release; without one they are kept as the run's artifacts.
+# The Windows MSI is built on Windows with solidcraft/installer/build-msi.ps1.
+name: NCX SolidCraft (Linux and macOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Add the builds to this existing release (e.g. solidcraft-v0.1.1); leave empty to keep them as artifacts"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04   # glibc 2.35, the oldest SolidCraft supports
+    steps:
+      - uses: actions/checkout@v4
+      - name: NCX core self-test
+        run: |
+          cmake -S core -B core/build-ci -DCMAKE_BUILD_TYPE=Release
+          cmake --build core/build-ci -j 4
+          ctest --test-dir core/build-ci --output-on-failure
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        working-directory: solidcraft
+        run: cargo build --release
+      - name: AppImage
+        run: sh solidcraft/packaging/linux/make-appimage.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ncx-solidcraft-linux
+          path: solidcraft/out/*.AppImage
+      - name: Add to the release
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ inputs.release_tag }}" solidcraft/out/*.AppImage --clobber
+
+  macos:
+    runs-on: macos-14
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: NCX core self-test
+        run: |
+          cmake -S core -B core/build-ci -DCMAKE_BUILD_TYPE=Release
+          cmake --build core/build-ci -j 4
+          ctest --test-dir core/build-ci --output-on-failure
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - name: Build (Apple silicon and Intel)
+        working-directory: solidcraft
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+      - name: App and disk image
+        run: sh solidcraft/packaging/macos/make-dmg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ncx-solidcraft-macos
+          path: solidcraft/out/*.dmg
+      - name: Add to the release
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ inputs.release_tag }}" solidcraft/out/*.dmg --clobber

@@ -77,7 +77,10 @@ def main():
         f.write(images[64].tobytes())
     with open(os.path.join(HERE, "..", "docs", "icon.png"), "wb") as f:
         f.write(pngs[-1])
-    print("icon.ico, icon64.rgba, docs/icon.png written")
+    # the macOS app icon (packaging/macos/make-dmg.sh makes its .icns from this) and the Linux AppImage icon
+    with open(os.path.join(HERE, "icon-512.png"), "wb") as f:
+        f.write(png_bytes(scaled(sq, 512)))
+    print("icon.ico, icon64.rgba, icon-512.png, docs/icon.png written")
 
 
 if __name__ == "__main__":
