@@ -16,8 +16,8 @@ What was learned building the NCX translator for SolidCraft (0.47.0, design form
   (`a mounting plate requires a direct persistent planar face`), and the format number changes between releases.
 - SolidCraft's look (theme, colours, icons, UI kit, name, logo) is under its Brand and Interface Licence: another
   program may not use it or look like SolidCraft without the maintainers' written permission. The app uses egui
-  and IBM Plex (both open) with NCX's own colours, and its own icon (the NCX tile, a two-way arrow and a stepped
-  part in outline: similar in spirit to SolidCraft's filled blue block mark, not a copy). It is called "NCX
+  and IBM Plex (both open) with NCX's own colours, and its own icon (a stepped block between two chevrons, drawn by the
+  user, assets/icon-source.jpg; not SolidCraft's logo). It is called "NCX
   SolidCraft" (user's choice, 2026-11-24; the licence asks for the maintainers' permission to use the name).
 
 ## SolidCraft behaviour that mattered

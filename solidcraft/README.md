@@ -99,6 +99,6 @@ the sample corpus and compares each run with the last.
 ## Look
 
 The window uses egui, the toolkit SolidCraft is built with, and the IBM Plex Sans font (SIL Open Font License,
-`assets/fonts/OFL.txt`), in NCX's own colours. The icon is our own drawing: the NCX tile, a two-way arrow and a
-stepped part in outline. SolidCraft's theme, colours, logo and icons are under its Brand and Interface Licence
+`assets/fonts/OFL.txt`), in NCX's own colours. The icon (a stepped block between two chevrons) was drawn for the
+project: `assets/icon-source.jpg`, made into the icon files by `assets/make_icon.py`. SolidCraft's theme, colours, logo and icons are under its Brand and Interface Licence
 and are not used.
