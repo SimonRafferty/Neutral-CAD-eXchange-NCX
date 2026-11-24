@@ -12,6 +12,23 @@ It never overwrites a file: if the name is taken it saves as `name (2).sc`. It n
 same computer: it drives SolidCraft's own command-line program (`solidcraft-cli`) in a private, hidden session, so
 SolidCraft's own window, and any design open there, is never touched.
 
+## Part of NCX: the other CAD systems
+
+NCX SolidCraft is one part of **[NCX (Neutral CAD eXchange)](../README.md)**, a single-file format that carries a
+complete parametric model between CAD systems. This program covers the SolidCraft side only. To move a model
+between SolidCraft and another CAD system, whoever uses the other system needs the NCX add-in for it:
+
+- **SolidWorks** (2018 and later): [install the NCX add-in for SolidWorks](../README.md#installing-the-solidworks-add-in).
+- **Autodesk Fusion**: [install the NCX add-in for Fusion](../README.md#installing-the-fusion-add-in).
+
+For example, to send a SolidWorks part to SolidCraft: in SolidWorks choose *File > NCX Translator > Export
+Neutral (NCX)...*, then drop the NCX file it saves on NCX SolidCraft. The other way round: drop your SolidCraft
+design on NCX SolidCraft, then import the NCX file it makes with the add-in (SolidWorks: *File > NCX Translator >
+Import Neutral (NCX)...*; Fusion: *File > Import NCX...*).
+
+Without an add-in, any CAD program still opens an NCX file as plain geometry (STEP), without the feature history.
+For other CAD systems, see [the main page](../README.md), including how to add one.
+
 ## What it looks like
 
 Drop a file on the window, or click to choose one:
