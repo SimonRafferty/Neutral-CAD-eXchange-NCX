@@ -151,6 +151,9 @@ pub fn convert(sk: &Value, feature_id: &str, sketch_name: &str, plane: Value, pa
                     ("distance", ends.unwrap_or_default())
                 }
                 "diameter" => ("diameter", cc.clone().into_iter().collect()),
+                // twice a point's (or line's) distance from the revolve axis: NCX's diameter on two entities, the
+                // measured one and the centreline (as SolidWorks writes its revolve diameters)
+                "linear_diameter" => ("diameter", vec![p.clone().or(cc.clone()).or(a.clone()), l.clone().or(b.clone())].into_iter().flatten().collect()),
                 "radius" => ("radius", cc.clone().into_iter().collect()),
                 "angle" => ("angle", vec![a.clone(), b.clone()].into_iter().flatten().collect()),
                 _ => ("", Vec::new()),

@@ -174,6 +174,10 @@ namespace Ncx.Sw
             string last0 = LastFeature()?.Name;
             IFeature feat;
             bool reverse = def.Bool("reverse") != ProfileMirrored(def.Obj("profile"));
+            // the start offset's sense is along the file's frame.z too: turned the same way as the direction where the
+            // file's frame faces against SolidWorks' sketch normal (SolidCraft's face sketches: the user's Rear AC fan
+            // got its tabs 5 mm off the wrong side of the face, as three loose bodies)
+            if (ProfileMirrored(def.Obj("profile"))) flipStart = !flipStart;
             var thin = def.Obj("thin");
             if (thin != null)
             {

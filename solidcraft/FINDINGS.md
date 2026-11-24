@@ -146,8 +146,17 @@ revolved and planar surfaces, knit; extrudes starting at a face (`from`).
   distance; the exporter writes equal chamfers as `angleDistance` at 45 degrees, as SolidWorks does, and the
   importer is fixed for the next add-in release); a picked loop's holes must be listed as contours; sketches on
   SolidCraft's custom planes are written on the face or origin plane they lie in. The user's Rear AC: 66 features
-  rebuilt, the sheet-metal and carried features as their shapes; the fan falls back (a carried shape changes its
-  body count), a few Half Shell mates do not resolve (its faces split differently in SolidWorks).
+  rebuilt, the sheet-metal and carried features as their shapes; a few Half Shell mates do not resolve (its faces
+  split differently in SolidWorks).
+- **The Rear AC fan** fell back in SolidWorks 0.1.4: its three tabs (an extrude starting 5 mm off the fan's y=0
+  face) came out at y -5..-1, three loose bodies, where SolidCraft and the SolidWorks original have them at y 5..9
+  inside the fan. SolidCraft's face sketch has its frame normal (+Y) into the material; SolidWorks' sketch normal is
+  the face's outward one (-Y). The SolidWorks importer turned the extrude's direction for that (ProfileMirrored)
+  but not the start offset's sense: now both (sw/Ncx.Sw/ReplayFeatures.cs; SolidWorks' own files are never
+  mirrored, so unchanged for them). Its revolve sketch also lacked two dimensions: SolidCraft's linear diameters
+  (twice a point's distance from the axis) are now NCX two-entity diameters, as SolidWorks writes its revolve
+  diameters. Replayed in SolidWorks 2018 (development driver): the fan rebuilds with its history, mass, faces and
+  structure matching.
 
 ## Corpus
 
