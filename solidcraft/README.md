@@ -61,11 +61,11 @@ One program for each operating system SolidCraft runs on. Each release of the tr
 
 | system | download | state |
 |---|---|---|
-| Windows 10 and 11 (64-bit) | **[NCX-SolidCraft-0.1.1.msi](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.1/NCX-SolidCraft-0.1.1.msi)** | tested |
-| Linux (x86_64, glibc 2.35 or later) | **[NCX-SolidCraft-0.1.1-x86_64.AppImage](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.1/NCX-SolidCraft-0.1.1-x86_64.AppImage)** | **untested**: built and checked automatically, but not yet tried on a Linux computer |
-| macOS 11 or later (Apple silicon and Intel) | **[NCX-SolidCraft-0.1.1-macos.dmg](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.1/NCX-SolidCraft-0.1.1-macos.dmg)** | **untested**: built and checked automatically, but not yet tried on a Mac |
+| Windows 10 and 11 (64-bit) | **[NCX-SolidCraft-0.1.3.msi](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.3/NCX-SolidCraft-0.1.3.msi)** | tested |
+| Linux (x86_64, glibc 2.35 or later) | **[NCX-SolidCraft-0.1.3-x86_64.AppImage](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.3/NCX-SolidCraft-0.1.3-x86_64.AppImage)** | **untested**: built and checked automatically, but not yet tried on a Linux computer |
+| macOS 11 or later (Apple silicon and Intel) | **[NCX-SolidCraft-0.1.3-macos.dmg](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.3/NCX-SolidCraft-0.1.3-macos.dmg)** | **untested**: built and checked automatically, but not yet tried on a Mac |
 
-All three are on the [release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/solidcraft-v0.1.1).
+All three are on the [release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/solidcraft-v0.1.3).
 The Linux and macOS versions are built by GitHub from the same source as the Windows one, and the NCX core's own
 tests pass on both, but nobody has run them on a real Linux computer or Mac yet. If you try one, please say how it
 went in a [GitHub issue](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/issues).
@@ -87,7 +87,7 @@ with a paid certificate).
    command-line program, `solidcraft-cli`; the AppImage, Flatpak and Snap versions of SolidCraft keep it inside
    themselves, where NCX SolidCraft cannot reach it.
 2. Download the AppImage from the table above, make it executable (right-click > Properties > Allow executing
-   as program, or `chmod +x NCX-SolidCraft-0.1.1-x86_64.AppImage`) and double-click it.
+   as program, or `chmod +x NCX-SolidCraft-0.1.3-x86_64.AppImage`) and double-click it.
 3. If it says SolidCraft was not found, click **Where is SolidCraft?** and choose `solidcraft-cli`.
 
 ## Install (macOS, untested)
@@ -103,11 +103,21 @@ with a paid certificate).
 
 ## What it carries (this version)
 
-- **Import:** single parts are rebuilt natively, feature by feature (sketches with their relations and
-  dimensions, parameters and equations, extrudes and cuts, revolves, fillets, chamfers, offset planes), and
-  checked against the file's own fingerprints. A feature it cannot rebuild comes in as the shape the file
-  carries for it; a part whose rebuild does not match comes in as the file's own geometry, and the report says
-  why. Assemblies and layout-driven parts come in as their geometry for now. Y-up models are stood upright.
+- **Parts:** rebuilt natively, feature by feature: sketches with their relations and dimensions, parameters and
+  equations, extrudes and cuts, revolves, fillets, chamfers, shells, drafts, patterns, mirrors, holes, reference
+  planes and axes, sweeps, lofts, ribs, splits, body operations, sheet metal (base, contour and edge flanges,
+  convert, unfold and fold), weldment frame members and surfaces. Each part is checked against the file's own
+  fingerprints. A feature SolidCraft cannot make comes in as the shape the file carries for it; a part whose
+  rebuild does not match comes in as the file's own geometry, and the report says why. Of the 62 NCX sample
+  files, 52 rebuild with their history.
+- **Assemblies:** every part in its own component, sub-assemblies nested as in the source, every part placed
+  where the file puts it, fixed parts grounded, and the mates made as SolidCraft constraints (mate, flush,
+  concentric, distance, angle, parallel, perpendicular, tangent, lock, hinge), so the parts move as they did.
+  Gear, screw and rack mates place the parts without coupling them. Y-up models are stood upright.
+- **Materials and colours:** a part's material by name, recreated from the file (density and colour) where
+  SolidCraft has none of that name; body and face colours.
+- **Not yet:** face and full-round fillets, thin revolves, flange offsets, 3D sketches, some weldment corner
+  treatments; parts made from a layout come in as their shape.
 - **Export:** the design's exact shape and its parameters, written as a part without feature history (`plain`).
   The feature history follows in a later version.
 
