@@ -34,15 +34,15 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ncx-solidcraft-linux
-          path: solidcraft/out/*.AppImage
+          path: solidcraft/out/NCX-SolidCraft-*.AppImage
       - name: Add to the release
         if: inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ inputs.release_tag }}" solidcraft/out/*.AppImage --clobber
+        run: gh release upload "${{ inputs.release_tag }}" solidcraft/out/NCX-SolidCraft-*.AppImage --clobber
 
   macos:
-    runs-on: macos-14
+    runs-on: macos-latest   # GitHub retires numbered macOS images (macos-14 was refused, 2026-11)
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
@@ -65,9 +65,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ncx-solidcraft-macos
-          path: solidcraft/out/*.dmg
+          path: solidcraft/out/NCX-SolidCraft-*.dmg
       - name: Add to the release
         if: inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ inputs.release_tag }}" solidcraft/out/*.dmg --clobber
+        run: gh release upload "${{ inputs.release_tag }}" solidcraft/out/NCX-SolidCraft-*.dmg --clobber

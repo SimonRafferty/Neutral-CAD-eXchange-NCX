@@ -34,7 +34,8 @@ chmod +x "$APPDIR/AppRun" "$APPDIR/usr/bin/ncx-solidcraft"
 
 TOOL=$(command -v appimagetool || true)
 if [ -z "$TOOL" ]; then
-    TOOL=$OUT/appimagetool-x86_64.AppImage
+    # kept out of $OUT, so it is never taken for the program's own AppImage
+    TOOL=${TMPDIR:-/tmp}/appimagetool-x86_64.AppImage
     [ -f "$TOOL" ] || curl -sSfL -o "$TOOL" \
         https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
     chmod +x "$TOOL"
