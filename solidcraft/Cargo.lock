@@ -1004,7 +1004,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ncx-translator"
+name = "ncx-solidcraft"
 version = "0.1.0"
 dependencies = [
  "anyhow",

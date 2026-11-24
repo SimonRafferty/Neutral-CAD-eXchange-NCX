@@ -1,4 +1,6 @@
-# NCX Translator (SolidCraft)
+# NCX SolidCraft
+
+<img src="docs/icon.png" width="96" alt="NCX SolidCraft icon">
 
 A small desktop program that turns NCX files into SolidCraft designs, with their feature history, and SolidCraft
 designs into NCX files. Drop a file on its window (or on its icon, or use "Open with"):
@@ -14,7 +16,7 @@ SolidCraft's own window, and any design open there, is never touched.
 
 Drop a file on the window, or click to choose one:
 
-![The NCX Translator window, waiting for a file](docs/window-start.png)
+![The NCX SolidCraft window, waiting for a file](docs/window-start.png)
 
 The import rebuilds the model feature by feature, and shows where it has got to. **Cancel** stops it and leaves
 no half-made design behind:
@@ -51,8 +53,8 @@ the design to someone on Linux or a Mac.
 
 ## Install (Windows)
 
-Run `NCX-Translator-<version>.msi` and follow the steps (it asks for administrator permission once). It installs
-for all users in `C:\Program Files\NCX Translator\App`, with a Start menu and a desktop shortcut, and adds NCX
+Run `NCX-SolidCraft-<version>.msi` and follow the steps (it asks for administrator permission once). It installs
+for all users in `C:\Program Files\NCX SolidCraft`, with a Start menu and a desktop shortcut, and adds NCX
 Translator to "Open with" for STEP files and SolidCraft designs. Uninstall it from Windows' *Installed apps*.
 If Windows says "Windows protected your PC", click **More info**, then **Run anyway** (the installer is not signed
 with a paid certificate).
@@ -77,8 +79,8 @@ WiX 3 tools.
 
 ```
 cd solidcraft
-cargo build --release                                   # target\release\ncx-translator.exe
-powershell -ExecutionPolicy Bypass -File installer\build-msi.ps1   # installer\out\NCX-Translator-<ver>.msi
+cargo build --release                                   # target\release\ncx-solidcraft.exe
+powershell -ExecutionPolicy Bypass -File installer\build-msi.ps1   # installer\out\NCX-SolidCraft-<ver>.msi
 ```
 
 The version is set in `Cargo.toml` only. The NCX core (`../core`) is compiled into the program by `build.rs`; the C
@@ -87,8 +89,8 @@ runtime is linked statically (`.cargo/config.toml`), so the program needs nothin
 Command line (for testing):
 
 ```
-ncx-translator import <file.ncx.step> <design.sc> [--log] [--plain]
-ncx-translator export <design.sc> <file.ncx.step> [--log]
+ncx-solidcraft import <file.ncx.step> <design.sc> [--log] [--plain]
+ncx-solidcraft export <design.sc> <file.ncx.step> [--log]
 ```
 
 `--log` writes every SolidCraft command and its answer beside the output. `results/solidcraft/run_corpus.py` runs
@@ -97,5 +99,6 @@ the sample corpus and compares each run with the last.
 ## Look
 
 The window uses egui, the toolkit SolidCraft is built with, and the IBM Plex Sans font (SIL Open Font License,
-`assets/fonts/OFL.txt`), in NCX's own colours. SolidCraft's own theme, colours, icons and name are under its
-Brand and Interface Licence and are not used.
+`assets/fonts/OFL.txt`), in NCX's own colours. The icon is our own drawing: the NCX tile, a two-way arrow and a
+stepped part in outline. SolidCraft's theme, colours, logo and icons are under its Brand and Interface Licence
+and are not used.

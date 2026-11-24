@@ -215,7 +215,7 @@ impl eframe::App for App {
 
         egui::Panel::bottom("footer").frame(egui::Frame::new().fill(style::PANEL).inner_margin(10)).show(root, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("NCX Translator {}", env!("CARGO_PKG_VERSION"))).small().color(style::DIM));
+                ui.label(RichText::new(format!("NCX SolidCraft {}", env!("CARGO_PKG_VERSION"))).small().color(style::DIM));
                 ui.label(RichText::new("·").small().color(style::DIM));
                 match &self.cli {
                     Some(p) => ui.label(RichText::new("SolidCraft found").small().color(style::DIM)).on_hover_text(p.display().to_string()),
@@ -234,7 +234,7 @@ impl eframe::App for App {
         });
 
         egui::CentralPanel::no_frame().frame(egui::Frame::new().fill(style::BG).inner_margin(24)).show(root, |ui| {
-            ui.heading("NCX Translator");
+            ui.heading("NCX SolidCraft");
             ui.label(RichText::new("Turns NCX files into SolidCraft designs, with their history, and SolidCraft designs into NCX files.").color(style::DIM));
             ui.add_space(16.0);
 

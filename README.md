@@ -24,7 +24,7 @@ If you have received an NCX file and your CAD system has no NCX add-in, you can 
 |---|---|---|---|
 | SolidWorks | `sw/` | [0.6.8](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/v0.6.8) | import and export; of a 63-model test corpus, 62 rebuild exactly in 2018 and 2026 (one hexagon sketch arrives under-defined, reported); also tested on a real production assembly (19 parts and sub-assemblies) |
 | Autodesk Fusion | `fusion/` | [0.2.7](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/fusion-v0.2.7) | import and export. Of the 61 test files, 27 rebuild exactly in Fusion and 34 approximately (features Fusion lacks, such as weldments, cut lists and configurations, are built as functional equivalents and reported), none fall back to plain geometry; the 19-part assembly rebuilds in Fusion with every part parametric. Exported from Fusion and imported into SolidWorks, the other test files and a real 19-part assembly rebuild with their history, mates, materials and colours: whatever is unchanged in Fusion goes back as its original definition, and Fusion's own features are written natively. Parts with no history (imported STEP, direct designs) travel as plain geometry without warnings. Since 0.2.6, materials missing from Fusion's libraries are recreated from the file; 0.2.6 and 0.2.7 are not yet tested in Fusion |
-| SolidCraft | `solidcraft/` | [Windows, Linux, macOS](solidcraft/README.md#download) | a desktop program (NCX Translator) beside SolidCraft, one version for each operating system; Windows first. Import: of the 62 test files, every one comes in, 14 parts rebuild exactly with their history and the rest as plain geometry while more features are added; assemblies still come in as geometry. Export: the design's shape and parameters (feature history to follow). Not yet released |
+| SolidCraft | `solidcraft/` | [Windows, Linux, macOS](solidcraft/README.md#download) | a desktop program (NCX SolidCraft) beside SolidCraft, one version for each operating system; Windows first. Import: of the 62 test files, every one comes in, 14 parts rebuild exactly with their history and the rest as plain geometry while more features are added; assemblies still come in as geometry. Export: the design's shape and parameters (feature history to follow). Not yet released |
 | *your CAD system* | | | see "Adding a CAD system" below |
 
 What carries across, what is approximated and what is not yet carried is listed in
@@ -79,7 +79,7 @@ Details, building it yourself and what it carries: [`fusion/README.md`](fusion/R
 ## The SolidCraft translator
 
 SolidCraft's plugins cannot run long enough or reach files to carry a whole model, so NCX for SolidCraft is a
-small program of its own, **NCX Translator**: drop an NCX file on it and it makes a SolidCraft design beside it; drop
+small program of its own, **NCX SolidCraft**: drop an NCX file on it and it makes a SolidCraft design beside it; drop
 a SolidCraft design on it and it makes an NCX file. It uses SolidCraft's own command-line program in the
 background, so SolidCraft must be installed on the same computer. There is one version for each operating system
 SolidCraft runs on; the downloads, installing and what it carries: [`solidcraft/README.md`](solidcraft/README.md).

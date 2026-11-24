@@ -1,13 +1,13 @@
 [package]
-name = "ncx-translator"
+name = "ncx-solidcraft"
 version = "0.1.0"
 edition = "2021"
-description = "NCX Translator: converts NCX files to SolidCraft designs and back"
+description = "NCX SolidCraft: converts NCX files to SolidCraft designs and back"
 license = "MIT"
 publish = false
 
 [[bin]]
-name = "ncx-translator"
+name = "ncx-solidcraft"
 path = "src/main.rs"
 
 [dependencies]

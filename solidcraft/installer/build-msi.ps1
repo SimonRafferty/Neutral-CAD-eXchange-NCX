@@ -1,5 +1,5 @@
 <#
-  Builds the NCX Translator installer: solidcraft\installer\out\NCX-Translator-<version>.msi
+  Builds the NCX SolidCraft installer: solidcraft\installer\out\NCX-SolidCraft-<version>.msi
 
   Needs: Rust (cargo) and the WiX 3 tools (candle.exe, light.exe). WiX is looked for in $env:WIX_BIN, then in
   work\tools\wix3 of this repository, then on PATH. The version comes from solidcraft\Cargo.toml only.
@@ -44,7 +44,7 @@ if (-not $NoBuild) {
         if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
     } finally { Pop-Location; $ErrorActionPreference = 'Stop' }
 }
-$exe = Join-Path $crate 'target\release\ncx-translator.exe'
+$exe = Join-Path $crate 'target\release\ncx-solidcraft.exe'
 if (-not (Test-Path $exe)) { throw "no release build at $exe" }
 
 $out = Join-Path $here 'out'
@@ -67,12 +67,12 @@ foreach ($ch in $licence.ToCharArray()) {
 $rtf = Join-Path $obj 'License.rtf'
 [System.IO.File]::WriteAllText($rtf, $sb.ToString(), (New-Object System.Text.ASCIIEncoding))
 
-$msi = Join-Path $out "NCX-Translator-$version.msi"
+$msi = Join-Path $out "NCX-SolidCraft-$version.msi"
 & $candle -nologo -arch x64 -ext WixUIExtension -ext WixUtilExtension `
     "-dVersion=$version" "-dExePath=$exe" "-dAssets=$(Join-Path $crate 'assets')" "-dRepoRoot=$repo" "-dLicence=$rtf" `
-    -out (Join-Path $obj 'ncx-translator.wixobj') (Join-Path $here 'ncx-translator.wxs')
+    -out (Join-Path $obj 'ncx-solidcraft.wixobj') (Join-Path $here 'ncx-solidcraft.wxs')
 if ($LASTEXITCODE -ne 0) { throw 'candle failed' }
 & $light -nologo -ext WixUIExtension -ext WixUtilExtension -spdb `
-    -out $msi (Join-Path $obj 'ncx-translator.wixobj')
+    -out $msi (Join-Path $obj 'ncx-solidcraft.wixobj')
 if ($LASTEXITCODE -ne 0) { throw 'light failed' }
 Write-Host "built $msi"

@@ -1,4 +1,4 @@
-// Windows resources for ncx-translator.exe: the icon Explorer shows, and the version information.
+// Windows resources for ncx-solidcraft.exe: the icon Explorer shows, and the version information.
 // build.rs compiles this with the Windows SDK's rc.exe; NCX_VERSION_* come from Cargo.toml.
 #include <winver.h>
 
@@ -15,12 +15,12 @@ BEGIN
     BLOCK "040904B0"
     BEGIN
       VALUE "CompanyName", "NCX project"
-      VALUE "FileDescription", "NCX Translator"
+      VALUE "FileDescription", "NCX SolidCraft"
       VALUE "FileVersion", NCX_VERSION_TEXT
-      VALUE "ProductName", "NCX Translator"
+      VALUE "ProductName", "NCX SolidCraft"
       VALUE "ProductVersion", NCX_VERSION_TEXT
       VALUE "LegalCopyright", "MIT License"
-      VALUE "OriginalFilename", "ncx-translator.exe"
+      VALUE "OriginalFilename", "ncx-solidcraft.exe"
     END
   END
   BLOCK "VarFileInfo"

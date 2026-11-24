@@ -127,7 +127,7 @@ impl Session {
         s.request(
             "initialize",
             json!({"protocolVersion": "2025-06-18", "capabilities": {},
-                   "clientInfo": {"name": "ncx-translator", "version": env!("CARGO_PKG_VERSION")}}),
+                   "clientInfo": {"name": "ncx-solidcraft", "version": env!("CARGO_PKG_VERSION")}}),
             Duration::from_secs(60),
         )?;
         s.notify("notifications/initialized")?;

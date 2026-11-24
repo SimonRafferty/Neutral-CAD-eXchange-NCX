@@ -125,7 +125,7 @@ fn allowed_folders(job: &Job) -> Vec<PathBuf> {
 
 /// The translator's own scratch folder (result STEP snippets).
 pub fn scratch_dir() -> PathBuf {
-    let d = std::env::temp_dir().join("ncx-translator");
+    let d = std::env::temp_dir().join("ncx-solidcraft");
     let _ = std::fs::create_dir_all(&d);
     d.canonicalize().unwrap_or(d)
 }

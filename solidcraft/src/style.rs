@@ -1,4 +1,4 @@
-//! NCX Translator's look: egui (the toolkit SolidCraft is built with) and IBM Plex Sans (SIL Open Font
+//! NCX SolidCraft's look: egui (the toolkit SolidCraft is built with) and IBM Plex Sans (SIL Open Font
 //! License, assets/fonts/OFL.txt), with NCX's own colours. SolidCraft's own theme, colours and icons are
 //! not used: they are under SolidCraft's Brand and Interface Licence.
 

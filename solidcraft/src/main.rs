@@ -17,38 +17,17 @@ use std::sync::{Arc, Mutex};
 
 fn usage() -> ! {
     eprintln!(
-        "NCX Translator {}\n\
-         usage:\n  ncx-translator                      (the window)\n  \
-         ncx-translator import <file.ncx.step> <design.sc> [--log] [--plain] [--cli <solidcraft-cli>]\n",
+        "NCX SolidCraft {}\n\
+         usage:\n  ncx-solidcraft                      (the window)\n  \
+         ncx-solidcraft import <file.ncx.step> <design.sc> [--log] [--plain] [--cli <solidcraft-cli>]\n",
         env!("CARGO_PKG_VERSION")
     );
     std::process::exit(2)
 }
 
-/// The window icon: NCX's own mark, drawn here (an amber rounded square with a white "N").
+/// The window icon: the same artwork as the program's icon (assets/make_icon.py writes icon64.rgba).
 fn icon() -> egui::IconData {
-    const S: usize = 64;
-    let mut rgba = vec![0u8; S * S * 4];
-    for y in 0..S {
-        for x in 0..S {
-            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-            // rounded square, radius 12
-            let r = 12.0;
-            let cx = fx.clamp(r, S as f32 - r);
-            let cy = fy.clamp(r, S as f32 - r);
-            let inside = ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt() <= r;
-            // the N: two uprights and a diagonal
-            let n = (16.0..24.0).contains(&fx) && (14.0..50.0).contains(&fy)
-                || (40.0..48.0).contains(&fx) && (14.0..50.0).contains(&fy)
-                || (14.0..50.0).contains(&fy) && ((fx - 16.0) - (fy - 14.0) * (24.0 / 36.0)).abs() < 5.0;
-            let i = (y * S + x) * 4;
-            if inside {
-                let c = if n { [0xff, 0xff, 0xff] } else { [0xe8, 0xa3, 0x3d] };
-                rgba[i..i + 4].copy_from_slice(&[c[0], c[1], c[2], 0xff]);
-            }
-        }
-    }
-    egui::IconData { rgba, width: S as u32, height: S as u32 }
+    egui::IconData { rgba: include_bytes!("../assets/icon64.rgba").to_vec(), width: 64, height: 64 }
 }
 
 #[cfg(windows)]
@@ -71,14 +50,14 @@ fn main() {
         let start_with = args.first().map(PathBuf::from);
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_title("NCX Translator")
+                .with_title("NCX SolidCraft")
                 .with_inner_size([660.0, 470.0])
                 .with_min_inner_size([520.0, 400.0])
                 .with_drag_and_drop(true)
                 .with_icon(icon()),
             ..Default::default()
         };
-        let _ = eframe::run_native("NCX Translator", options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, start_with)))));
+        let _ = eframe::run_native("NCX SolidCraft", options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, start_with)))));
         return;
     }
     attach_console();
