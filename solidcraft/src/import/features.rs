@@ -104,6 +104,7 @@ fn extrude(s: &mut Session, st: &mut PartState, f: &Value, cut: bool) -> Result<
 
     // profiles: picked contours (by their segments) and regions (by a point inside)
     let mut profiles: Vec<Value> = Vec::new();
+    let mut loops: Vec<Vec<String>> = Vec::new();
     for c in def["contours"].as_array().into_iter().flatten() {
         let curves: Vec<String> = c
             .as_array()
@@ -112,8 +113,29 @@ fn extrude(s: &mut Session, st: &mut PartState, f: &Value, cut: bool) -> Result<
             .filter_map(|id| id.as_str().and_then(|i| sk.ents.get(i)).map(|e| e.sc.clone()))
             .collect();
         if !curves.is_empty() {
-            profiles.push(json!({"curves": curves}));
+            loops.push(curves);
         }
+    }
+    // NCX lists a contour's holes as contours of their own; SolidCraft's loop already leaves out the loops inside
+    // it, and picking a hole as well would fill it: holes of another listed contour's region are not passed
+    if loops.len() > 1 {
+        if let Ok(info) = s.exec("sketch.inspect", json!({"sketch": sk.name})) {
+            let set = |v: &Vec<String>| v.iter().cloned().collect::<std::collections::BTreeSet<String>>();
+            let mut holes: Vec<std::collections::BTreeSet<String>> = Vec::new();
+            for pr in info["profiles"].as_array().into_iter().flatten() {
+                let outer: std::collections::BTreeSet<String> =
+                    pr["curves"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(String::from)).collect();
+                if loops.iter().any(|l| set(l) == outer) {
+                    for h in pr["holes"].as_array().into_iter().flatten() {
+                        holes.push(h.as_array().into_iter().flatten().filter_map(|c| c.as_str().map(String::from)).collect());
+                    }
+                }
+            }
+            loops.retain(|l| !holes.contains(&set(l)));
+        }
+    }
+    for curves in loops {
+        profiles.push(json!({"curves": curves}));
     }
     for r in def["regions"].as_array().into_iter().flatten() {
         if let Some(pt) = geom::v2(&r["point"]) {
@@ -251,6 +273,8 @@ fn revolve(s: &mut Session, st: &mut PartState, f: &Value, cut: bool) -> Result<
                 json!({"sketch": other.name, "curve": e.sc})
             }
         }
+        // an origin axis: SolidCraft's world axis
+        Some("originAxis") => json!(axis_ref["axis"].as_str().unwrap_or("z").to_uppercase()),
         Some("feature") => {
             let id = axis_ref["id"].as_str().unwrap_or("");
             // a construction axis by its name, else the axis feature's line
@@ -392,6 +416,34 @@ fn plane(s: &mut Session, st: &mut PartState, f: &Value) -> Result<Built> {
     let Some((b, _axis, k)) = base else {
         return Ok(Built::Skipped("a plane at an angle is not made by this version (nothing here uses it)".into()));
     };
+    // offset from an origin plane: made so, following its distance (and the parameter driving it); the distance
+    // runs along the origin plane's normal, or against it when flipped
+    let refs = def["references"].as_array().cloned().unwrap_or_default();
+    if refs.len() == 1 && refs[0]["constraint"] == "distance" {
+        let r = &refs[0]["ref"];
+        let fid = f["id"].as_str().unwrap_or("");
+        let base_of = match r["kind"].as_str() {
+            Some("originPlane") => match r["plane"].as_str() {
+                Some("front") => Some(("XY".to_string(), [0.0, 0.0, 1.0])),
+                Some("top") => Some(("XZ".to_string(), [0.0, 1.0, 0.0])),
+                Some("right") => Some(("YZ".to_string(), [1.0, 0.0, 0.0])),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((bname, _)) = base_of {
+            let v = num(&refs[0]["value"]);
+            let flip = refs[0]["flip"].as_bool() == Some(true);
+            let mut ex = length(st, fid, "references.0.value", v, "mm");
+            if flip {
+                ex = format!("-({ex})");
+            }
+            if s.exec("construct.plane.offset", json!({"base": bname, "offset": ex, "name": name})).is_ok() {
+                st.names.insert(fid.to_string(), name.to_string());
+                return Ok(Built::Done);
+            }
+        }
+    }
     // the plane holds the origin, whichever way its normal points: offset = that coordinate
     s.exec("construct.plane.offset", json!({"base": b, "offset": format!("{} mm", origin[k]), "name": name}))?;
     st.names.insert(f["id"].as_str().unwrap_or("").to_string(), name.to_string());
@@ -405,8 +457,38 @@ pub fn apply_result(s: &mut Session, st: &mut PartState, f: &Value) -> Result<()
     let replaces: Vec<Value> = r["replaces"].as_array().cloned().unwrap_or_default();
     let have = super::measure_fingerprints(s, st)?;
     let mut remove: Vec<String> = Vec::new();
+    // surface bodies (volume 0) are matched by area and box among the part's open bodies
+    let open: Vec<Value> = if replaces.iter().any(|fp| num(&fp["volume"]) <= 0.0) {
+        let m = s.tool("measure", json!({}))?;
+        m["bodies"].as_array().into_iter().flatten()
+            .filter(|b| b["closed"].as_bool() == Some(false) && !st.exclude.contains(b["name"].as_str().unwrap_or("")))
+            .cloned().collect()
+    } else {
+        Vec::new()
+    };
+    let box_mid = |b: &Value| -> Option<geom::V3> {
+        if let Some(a) = b.as_array().filter(|a| a.len() == 6) {
+            let n: Vec<f64> = a.iter().map(|x| x.as_f64().unwrap_or(0.0)).collect();
+            return Some([(n[0] + n[3]) / 2.0, (n[1] + n[4]) / 2.0, (n[2] + n[5]) / 2.0]);
+        }
+        let (mn, mx) = (v3(&b["min"])?, v3(&b["max"])?);
+        Some([(mn[0] + mx[0]) / 2.0, (mn[1] + mx[1]) / 2.0, (mn[2] + mx[2]) / 2.0])
+    };
     for fp in &replaces {
         let v = num(&fp["volume"]);
+        if v <= 0.0 {
+            let a = num(&fp["area"]);
+            let want = box_mid(&fp["bbox"]).unwrap_or([0.0; 3]);
+            let hit = open.iter().filter(|b| !remove.iter().any(|r| b["name"] == r.as_str())).find(|b| {
+                (num(&b["area_mm2"]) - a).abs() <= 2e-3 * a.max(1.0)
+                    && box_mid(&b["bbox"]).map(|m| geom::norm(geom::sub(m, want)) < 0.05).unwrap_or(false)
+            });
+            match hit.and_then(|b| b["name"].as_str()) {
+                Some(n) => remove.push(n.to_string()),
+                None => bail!("the part as rebuilt so far differs from the file just before this feature (a surface)"),
+            }
+            continue;
+        }
         let c = v3(&fp["centroid"]).unwrap_or([0.0; 3]);
         let best = have
             .iter()

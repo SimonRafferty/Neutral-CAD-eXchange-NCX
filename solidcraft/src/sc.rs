@@ -195,6 +195,12 @@ impl Session {
 
     /// Calls one MCP tool; returns its answer (JSON where the tool answers JSON).
     pub fn tool(&mut self, name: &str, args: Value) -> Result<Value> {
+        // developer trace: every call as it is made (NCX_TRACE=1), to see where a run stops
+        if std::env::var_os("NCX_TRACE").is_some() {
+            let mut a = args.to_string();
+            a.truncate(300);
+            eprintln!("[trace] {name} {a}");
+        }
         let r = self.request("tools/call", json!({"name": name, "arguments": args}), Duration::from_secs(1800))?;
         if let Some(e) = r.get("error") {
             return Err(ScError { command: name.into(), message: e.to_string() }.into());

@@ -95,6 +95,60 @@ revolved and planar surfaces, knit; extrudes starting at a face (`from`).
   patterns. SolidCraft joins disjoint pieces into one body where SolidWorks keeps two (P04, P31). SolidCraft's
   kernel refuses some shells (the Rear AC's Fan Cowl: "the offset is refused").
 
+## Export with feature history (0.1.4)
+
+- **What SolidCraft says about a design.** `timeline.inspect` gives each feature's definition (the fields
+  `timeline.edit` takes: expressions, picks as points, the sketch, the operation) and its inputs, each a parameter
+  (`d17`) whose value `parameters.list` has (the design's own parameter list leaves feature inputs out).
+  `sketch.inspect` lists a sketch's points and curves; relations and dimensions name them by index into those two
+  arrays (`p`, `q` points; `l`, `c`, `a`, `b` curves). A sketch is described only where the timeline has evaluated
+  it (roll to the end first). `joint.inspect` gives each mate's rule and both ends (placement path, faces by
+  SolidCraft's persistent names).
+- **Frames.** Definitions are in their component's frame, but `body_topology`, `inspect.classify_points` and
+  `measure` report world coordinates, and `inspect.curvature_comb` mixes the two (it converts the pick into one
+  component's frame, then searches every body in its own). The exporter therefore moves each part's placement to
+  identity in its private session (never saved): world is then the part's frame and every tool agrees. Mates are
+  read and removed first (a mated part resists the move), and an imported STEP assembly's rigid group is unlocked
+  (`component.unlock`). A design an NCX import turned upright (+90 degrees about X) has that turn undone, so the
+  file goes out in its own frame again.
+- **References** are built from `body_topology`: an edge's ends, middle and length, the faces it joins (in its
+  name, `A|B`, where a name may hold `|` inside parentheses), and a face's area, a point on it, a plane's normal or
+  a cylinder's axis. A circle is the one through an edge's ends and middle, accepted when a cylinder it bounds has
+  that radius, or its arc is within 5 % of the reported length: SolidCraft measures curved edges on their
+  tessellation (a 6 mm hole in a face that came from STEP came out 2.5 % short). Face samples: a grid over the
+  plane or cylinder, kept where `inspect.classify_points` puts it on that face, the most interior first.
+- **Moments.** SolidCraft's inertia is from a coarse tessellation: up to 4.8e-4 of the largest moment off (the
+  exchange tolerance is 5e-4), which would fail SolidWorks' check on ordinary parts. The exporter integrates the
+  body's "fine" STL mesh and scales by the exact volume over the mesh's (to the power 5/3): at most 8.4e-5 on the
+  Rear AC bodies ("finest": 3.4e-5 at five times the time). Only where an importer compares moments (the parts'
+  bodies, carried results' bodies).
+- **STEP.** SolidCraft writes a part with several bodies as one representation per body; the exporter merges them
+  into one (as SolidWorks writes it), where the core puts the notice body. The STEP is exported under the design's
+  name (SolidCraft names the product after the file).
+- **Written natively:** sketches, extrudes/cuts (contours from picked curve loops), revolves (origin axes or a
+  sketch line), fillets, chamfers, boxes and cylinders (a frame-placed sketch and an extrude), holes, rectangular
+  and circular patterns along origin axes, mirrors, shells, drafts, sweeps, ribs, splits, offset planes, combine,
+  delete, move/copy. Features whose sense the file cannot pin down the same way everywhere carry their result too.
+  Features SolidCraft warns about that change no body are written `noGeometry`. Not yet: sheet metal, weldment
+  members, lofts, surfaces, regions bounded by parts of curves (the Rear AC lid's first extrude), linear-diameter
+  dimensions, mates on edges or points and joints other than constraints.
+- **Core fixes found on the way:** removing an earlier notice component never finished when a record it reached
+  was shared (an NCX file opened as plain geometry and written again), and, once it did, took the whole
+  sub-assembly holding the notice with it. It now stops at the definitions and shapes that are not the notice's
+  own, and keeps whatever a record outside it still uses. The validator measured a 270-degree revolved ring 0.28 %
+  high with OpenCASCADE's Gauss rule; where the Gauss and adaptive rules disagree it now takes the one nearer a
+  fine triangulation.
+- **Corpus round trip** (`results/solidcraft/run_export.py`): each sample imported into SolidCraft, exported,
+  validated and imported back. Run export_10: 63 of 63 pass the validator, none with a part as plain geometry.
+- **SolidWorks 2018** (add-in 0.6.8) importing the exports: P02, P05, the L13 assembly (with its mates) and a native
+  SolidCraft test part (primitives, holes, patterns, mirror, shell, revolve, planes) rebuild with their history
+  and match. Found on the way: SolidWorks' importer made an `equalDistance` chamfer of zero size (no second
+  distance; the exporter writes equal chamfers as `angleDistance` at 45 degrees, as SolidWorks does, and the
+  importer is fixed for the next add-in release); a picked loop's holes must be listed as contours; sketches on
+  SolidCraft's custom planes are written on the face or origin plane they lie in. The user's Rear AC: 66 features
+  rebuilt, the sheet-metal and carried features as their shapes; the fan falls back (a carried shape changes its
+  body count), a few Half Shell mates do not resolve (its faces split differently in SolidWorks).
+
 ## Corpus
 
 `results/solidcraft/run_corpus.py`, runs in `results/solidcraft/runs/`. Run 3 (2026-11-24): all 62

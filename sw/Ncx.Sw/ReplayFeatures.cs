@@ -337,8 +337,10 @@ namespace Ncx.Sw
             int type = def.Str("chamferType") == "angleDistance" ? 1 : def.Str("chamferType") == "distanceDistance" ? 2 : 16;
             int n0 = FeatureCount();
             int options = def.Bool("propagate") ? 4 : 0;   // swFeatureChamferTangentPropagation
+            // an equal-distance chamfer has one distance: the second is the same (passed as 0, SolidWorks made none)
+            double d2 = type == 16 && def.Num("distance2") == 0 ? def.Num("distance") : def.Num("distance2");
             IFeature feat = FM.InsertFeatureChamfer(options, type, U.M(def.Num("distance")), U.Rad(def.Num("angle")),
-                                                    U.M(def.Num("distance2")), 0, 0, 0);
+                                                    U.M(d2), 0, 0, 0);
             doc.ClearSelection2(true);
             if (FeatureCount() == n0) return "chamfer was not created";
             feat = feat ?? LastFeature();

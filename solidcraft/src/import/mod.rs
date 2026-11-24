@@ -488,7 +488,8 @@ fn build_features(s: &mut Session, job: &Job, doc: &Value, report: &mut Report, 
             continue;
         }
         if f["status"] == "opaque" && f.get("noGeometry").and_then(Value::as_bool) == Some(true) {
-            report.add(&doc_name, &name, &kind, Status::Note, "adds no geometry (another program's reference data): left out");
+            let why = f["reason"].as_str().filter(|r| !r.is_empty()).unwrap_or("another program's reference data");
+            report.add(&doc_name, &name, &kind, Status::Note, format!("adds no geometry ({why}): left out"));
             continue;
         }
         // A feature that carries its result is checked against it: built natively first, and where that differs

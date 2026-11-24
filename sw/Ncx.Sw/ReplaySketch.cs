@@ -75,6 +75,7 @@ namespace Ncx.Sw
                     if (fp == null) return "sketch plane: a plane at the sketch's frame could not be made";
                     why = fp.Select2(false, 0) ? null : "could not select the plane at the sketch's frame";
                     if (nf.Str("status") == "mapped") nf["status"] = "approximate";
+                    if (nf.Str("note") == null) nf["note"] = "placed by its frame on a plane of its own (the file names no face or plane for it)";
                 }
                 else why = SelectRef(plane, false, 0);
                 if (why != null) return "sketch plane: " + why;

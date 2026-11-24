@@ -118,8 +118,18 @@ with a paid certificate).
   SolidCraft has none of that name; body and face colours.
 - **Not yet:** face and full-round fillets, thin revolves, flange offsets, 3D sketches, some weldment corner
   treatments; parts made from a layout come in as their shape.
-- **Export:** the design's exact shape and its parameters, written as a part without feature history (`plain`).
-  The feature history follows in a later version.
+- **Export:** the design with its feature history: parameters and the expressions that use them, sketches with
+  their relations and dimensions, extrudes and cuts, revolves, fillets, chamfers, boxes and cylinders (written as a
+  sketch and an extrude, which every CAD system has), holes, patterns, mirrors, shells, drafts, sweeps, ribs,
+  splits, offset planes and body operations (combine, delete, move and copy). Each component with bodies becomes a
+  part and each component holding others an assembly, with its mates (from SolidCraft's constraints: mate, flush,
+  concentric, distance, angle, parallel, perpendicular, tangent, rigid). A feature with no counterpart in NCX
+  (sheet metal, weldment members, surfaces, lofts) carries its finished shape, so the CAD system that imports the
+  file still rebuilds everything before and after it. A design made by importing an NCX file is written back in
+  that file's own frame. All 63 NCX sample files, imported into SolidCraft and exported again, pass the NCX
+  checker and import back with every part rebuilt; imported into SolidWorks, the test parts and assemblies tried
+  rebuild with their history (a large real assembly: most features rebuilt, its sheet metal as shapes, a few mates
+  not yet carried).
 
 Every run saves a report beside its output (`<name>.ncx-report.txt`). The window only mentions a problem when
 there is a serious one.

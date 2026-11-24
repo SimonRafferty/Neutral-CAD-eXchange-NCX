@@ -479,8 +479,54 @@ void old_notice_component(const StepText& st, long product, long root_pd, long r
         "PRODUCT_DEFINITION_FORMATION", "PRODUCT_DEFINITION", "PRODUCT_DEFINITION_SHAPE",
         "SHAPE_DEFINITION_REPRESENTATION", "NEXT_ASSEMBLY_USAGE_OCCURRENCE", "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION",
         "SHAPE_REPRESENTATION_RELATIONSHIP"};
+    // the notice's own definitions and shapes; any other definition or shape (the assembly that places it, the
+    // other parts) is outside it: a walk from the notice's usage once went up into its parent sub-assembly and took
+    // that, and every part in it, away with the notice (2026-11-24)
+    std::set<long> own_pdf, own_pd, own_pds, own_sr;
+    auto refs_of = [](std::string_view b) {
+        std::vector<long> r;
+        for (size_t i = 0; i < b.size(); ++i)
+            if (b[i] == '#') {
+                size_t j = i + 1;
+                while (j < b.size() && std::isdigit(static_cast<unsigned char>(b[j]))) ++j;
+                if (j > i + 1) r.push_back(std::stol(std::string(b.substr(i + 1, j - i - 1))));
+                i = j - 1;
+            }
+        return r;
+    };
+    auto refers = [&](const Entity& e, const std::set<long>& s) {
+        for (long r : refs_of(e.body))
+            if (s.count(r)) return true;
+        return false;
+    };
+    const std::set<long> prod{product};
+    for (const auto& e : st.entities())
+        if (e.type.rfind("PRODUCT_DEFINITION_FORMATION", 0) == 0 && refers(e, prod)) own_pdf.insert(e.id);
+    for (const auto& e : st.entities())
+        if (e.type == "PRODUCT_DEFINITION" && refers(e, own_pdf)) own_pd.insert(e.id);
+    for (const auto& e : st.entities())
+        if (e.type == "PRODUCT_DEFINITION_SHAPE" && refers(e, own_pd)) own_pds.insert(e.id);
+    for (const auto& e : st.entities())
+        if (e.type == "SHAPE_DEFINITION_REPRESENTATION" && refers(e, own_pds))
+            for (long r : refs_of(e.body))
+                if (!own_pds.count(r)) own_sr.insert(r);
+    // its B-rep: tied to its shape by a plain relationship
+    for (int pass = 0; pass < 2; ++pass)
+        for (const auto& e : st.entities())
+            if (e.type == "SHAPE_REPRESENTATION_RELATIONSHIP" && refers(e, own_sr))
+                for (long r : refs_of(e.body)) own_sr.insert(r);
+    auto foreign = [&](const Entity* e) {
+        if (e->type == "PRODUCT_DEFINITION") return !own_pd.count(e->id);
+        if (e->type.rfind("PRODUCT_DEFINITION_FORMATION", 0) == 0) return !own_pdf.count(e->id);
+        if (e->type == "PRODUCT") return e->id != product;
+        bool rep = e->type.find("SHAPE_REPRESENTATION") != std::string::npos && e->type.find("RELATIONSHIP") == std::string::npos &&
+                   e->type != "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION" && e->type != "SHAPE_DEFINITION_REPRESENTATION";
+        if (rep) return !own_sr.count(e->id) && !own_sr.empty();
+        return false;
+    };
     auto shared = [&](const Entity* e) {
         if (!e || e->id == root_pd || e->id == root_sr) return true;
+        if (foreign(e)) return true;
         std::string b(e->body);
         return (e->type.find("CONTEXT") != std::string::npos && e->type != "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION") ||
                (e->type.empty() && (b.find("CONTEXT") != std::string::npos || b.find("UNIT") != std::string::npos) &&
@@ -505,7 +551,9 @@ void old_notice_component(const StepText& st, long product, long root_pd, long r
                 }
         }
         for (const auto& e : st.entities()) {
-            if (out.count(e.id) || !upward.count(e.type)) continue;
+            // a shared record is never collected: queueing it again on every pass never ended (an NCX file opened as
+            // plain geometry and written again, its earlier notice component removed: 2026-11-24)
+            if (out.count(e.id) || !upward.count(e.type) || shared(&e)) continue;
             std::string_view b = e.body;
             for (size_t i = 0; i < b.size(); ++i)
                 if (b[i] == '#') {
@@ -519,6 +567,25 @@ void old_notice_component(const StepText& st, long product, long root_pd, long r
                 }
         }
         if (todo.empty()) break;
+    }
+    // keep whatever a record outside the component still uses: SolidCraft gives every representation one shared
+    // placement, and removing it with the old notice took the remaining parts' geometry along (2026-11-24)
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (const auto& e : st.entities()) {
+            if (out.count(e.id)) continue;
+            std::string_view b = e.body;
+            for (size_t i = 0; i < b.size(); ++i)
+                if (b[i] == '#') {
+                    size_t j = i + 1;
+                    while (j < b.size() && std::isdigit(static_cast<unsigned char>(b[j]))) ++j;
+                    if (j > i + 1) {
+                        long r = std::stol(std::string(b.substr(i + 1, j - i - 1)));
+                        if (out.erase(r)) changed = true;
+                    }
+                    i = j - 1;
+                }
+        }
     }
 }
 

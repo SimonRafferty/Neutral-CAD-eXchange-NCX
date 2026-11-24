@@ -1083,7 +1083,44 @@ def check_id_ref(rep, M, did, ref, where, feature_index):
 #   mis-integrates cylinders with many boundary edges: a stator with 18 slots notched into its outer and bore cylinders
 #   came out with its two equal transverse moments 1.5 % apart (G-STALE on a good file), whatever the tolerance or
 #   position; the Gauss rule gave SolidWorks' moments to 13 digits (2026-11-23).
+#   The Gauss rule in turn mis-integrates a plane bounded by long arcs: a 270-degree revolved ring (SolidCraft) had its
+#   two equal end faces 603.19 and 612.55 mm2 and its volume 0.28 % high, where the adaptive rule was exact
+#   (2026-11-24). So both rules run; where they disagree in volume or area, the one nearer an independent measurement
+#   of a fine triangulation wins.
 INTEGRATION_EPS = 1e-7
+
+
+def _mesh_volume_area(s):
+    """Volume and area of a solid from a fine triangulation (accurate to ~1e-4: enough to tell the two rules apart)."""
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+    BRepMesh_IncrementalMesh(s, 0.002, True, 0.05, True)
+    vol = area = 0.0
+    fx = TopExp_Explorer(s, TopAbs_FACE)
+    while fx.More():
+        f = TopoDS.Face_s(fx.Current())
+        loc = TopLoc_Location()
+        tri = BRep_Tool.Triangulation_s(f, loc)
+        if tri is not None:
+            tr = loc.Transformation()
+            rev = f.Orientation() == TopAbs_REVERSED
+            pts = [tri.Node(i).Transformed(tr) for i in range(1, tri.NbNodes() + 1)]
+            for i in range(1, tri.NbTriangles() + 1):
+                a, b, c = tri.Triangle(i).Get()
+                if rev:
+                    b, c = c, b
+                p, q, r = pts[a - 1], pts[b - 1], pts[c - 1]
+                ux, uy, uz = q.X() - p.X(), q.Y() - p.Y(), q.Z() - p.Z()
+                vx, vy, vz = r.X() - p.X(), r.Y() - p.Y(), r.Z() - p.Z()
+                cx, cy, cz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+                area += 0.5 * (cx * cx + cy * cy + cz * cz) ** 0.5
+                vol += (p.X() * cx + p.Y() * cy + p.Z() * cz) / 6.0
+        fx.Next()
+    return abs(vol), area
 
 
 def measure(shape):
@@ -1120,6 +1157,14 @@ def measure(shape):
         else:
             BRepGProp.VolumeProperties_s(s, g)
             BRepGProp.SurfaceProperties_s(s, ga)
+            gq, gqa = GProp_GProps(), GProp_GProps()
+            BRepGProp.VolumeProperties_s(s, gq, INTEGRATION_EPS)
+            BRepGProp.SurfaceProperties_s(s, gqa, INTEGRATION_EPS)
+            rel = lambda a, b: abs(a - b) / max(abs(a), abs(b), 1e-12)
+            if rel(g.Mass(), gq.Mass()) > 1e-6 or rel(ga.Mass(), gqa.Mass()) > 1e-6:
+                mv, ma = _mesh_volume_area(s)
+                if rel(gq.Mass(), mv) + rel(gqa.Mass(), ma) < rel(g.Mass(), mv) + rel(ga.Mass(), ma):
+                    g, ga = gq, gqa
         ix, iy, iz = g.PrincipalProperties().Moments()
         bb = Bnd_Box()
         BRepBndLib.AddOptimal_s(s, bb, False, False)
