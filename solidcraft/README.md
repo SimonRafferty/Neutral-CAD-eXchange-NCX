@@ -33,26 +33,26 @@ For other CAD systems, see [the main page](../README.md), including how to add o
 
 Drop a file on the window, or click to choose one:
 
-![The NCX SolidCraft window, waiting for a file](docs/window-start.png)
+<img src="docs/window-start.png" width="412" alt="The NCX SolidCraft window, waiting for a file">
 
 The import rebuilds the model feature by feature, and shows where it has got to. **Cancel** stops it and leaves
 no half-made design behind:
 
-![Importing: rebuilding a part, feature by feature](docs/window-importing.png)
+<img src="docs/window-importing.png" width="412" alt="Importing: rebuilding a part, feature by feature">
 
 When it is done it says so in one line, and offers to open the design in SolidCraft. Anything worth knowing
 in detail is in the report saved beside the design:
 
-![The import is done](docs/window-imported.png)
+<img src="docs/window-imported.png" width="412" alt="The import is done">
 
 The design in SolidCraft: a SolidWorks part (sample P02, made Y-up) rebuilt with its sketches, extrude, cut,
 fillets and chamfer, and stood upright for SolidCraft's Z-up world:
 
-![The imported part in SolidCraft](docs/imported-in-solidcraft.png)
+<img src="docs/imported-in-solidcraft.png" width="412" alt="The imported part in SolidCraft">
 
 Dropping a SolidCraft design on the window makes an NCX file beside it:
 
-![The export is done](docs/window-exported.png)
+<img src="docs/window-exported.png" width="412" alt="The export is done">
 
 ## Download
 
@@ -61,9 +61,14 @@ One program for each operating system SolidCraft runs on. Each release of the tr
 
 | system | download | state |
 |---|---|---|
-| Windows 10 and 11 (64-bit) | **[NCX-SolidCraft-0.1.0.msi](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.0/NCX-SolidCraft-0.1.0.msi)** ([release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/solidcraft-v0.1.0)) | 0.1.0, the first release |
-| Linux | | planned (the shared core already builds for it) |
-| macOS | | planned (the shared core already builds for it) |
+| Windows 10 and 11 (64-bit) | **[NCX-SolidCraft-0.1.1.msi](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.1/NCX-SolidCraft-0.1.1.msi)** | tested |
+| Linux (x86_64, glibc 2.35 or later) | **[NCX-SolidCraft-0.1.1-x86_64.AppImage](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.1/NCX-SolidCraft-0.1.1-x86_64.AppImage)** | **untested**: built and checked automatically, but not yet tried on a Linux computer |
+| macOS 11 or later (Apple silicon and Intel) | **[NCX-SolidCraft-0.1.1-macos.dmg](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.1/NCX-SolidCraft-0.1.1-macos.dmg)** | **untested**: built and checked automatically, but not yet tried on a Mac |
+
+All three are on the [release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/solidcraft-v0.1.1).
+The Linux and macOS versions are built by GitHub from the same source as the Windows one, and the NCX core's own
+tests pass on both, but nobody has run them on a real Linux computer or Mac yet. If you try one, please say how it
+went in a [GitHub issue](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/issues).
 
 A design made on one system opens in SolidCraft on the others, so a Windows user can import an NCX file and pass
 the design to someone on Linux or a Mac.
@@ -75,6 +80,26 @@ for all users in `C:\Program Files\NCX SolidCraft`, with a Start menu and a desk
 SolidCraft to "Open with" for STEP files and SolidCraft designs. Uninstall it from Windows' *Installed apps*.
 If Windows says "Windows protected your PC", click **More info**, then **Run anyway** (the installer is not signed
 with a paid certificate).
+
+## Install (Linux, untested)
+
+1. Install SolidCraft from its `.deb`, `.rpm` or `.tar.gz` package. NCX SolidCraft needs SolidCraft's
+   command-line program, `solidcraft-cli`; the AppImage, Flatpak and Snap versions of SolidCraft keep it inside
+   themselves, where NCX SolidCraft cannot reach it.
+2. Download the AppImage from the table above, make it executable (right-click > Properties > Allow executing
+   as program, or `chmod +x NCX-SolidCraft-0.1.1-x86_64.AppImage`) and double-click it.
+3. If it says SolidCraft was not found, click **Where is SolidCraft?** and choose `solidcraft-cli`.
+
+## Install (macOS, untested)
+
+1. Install SolidCraft, and also download SolidCraft's command-line program
+   (`solidcraft-cli-<version>-macos-universal.zip`, on the same SolidCraft release page) and double-click it to
+   unzip it. Leave the folder in Downloads, or copy `solidcraft-cli` to `/usr/local/bin`.
+2. Open the `.dmg` from the table above and drag **NCX SolidCraft** onto **Applications**.
+3. The first time, right-click NCX SolidCraft in Applications and choose **Open** (it is not signed with a paid
+   Apple certificate, so macOS asks once).
+4. Drop files on its window (dropping them on its Dock icon does nothing yet). If it says SolidCraft was not
+   found, click **Where is SolidCraft?** and choose `solidcraft-cli`.
 
 ## What it carries (this version)
 
@@ -102,6 +127,11 @@ powershell -ExecutionPolicy Bypass -File installer\build-msi.ps1   # installer\o
 
 The version is set in `Cargo.toml` only. The NCX core (`../core`) is compiled into the program by `build.rs`; the C
 runtime is linked statically (`.cargo/config.toml`), so the program needs nothing but Windows.
+
+**Linux and macOS** are built by the GitHub Actions workflow `.github/workflows/ncx-solidcraft.yml` (run by hand,
+optionally adding the builds to a release): it runs the NCX core's self-test, then `cargo build --release` and
+`packaging/linux/make-appimage.sh` on Ubuntu 22.04, and the Apple-silicon and Intel builds and
+`packaging/macos/make-dmg.sh` on macOS. The same scripts work on your own Linux computer or Mac.
 
 Command line (for testing):
 
