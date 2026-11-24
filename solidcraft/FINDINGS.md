@@ -57,6 +57,44 @@ What was learned building the NCX translator for SolidCraft (0.47.0, design form
   per-machine MSI (ICE38/43/57); two unversioned files need two components for automatic GUIDs. light.exe leaves
   an MSI behind even when validation fails: check its exit code.
 
+## Assemblies, mates, materials (0.1.2-0.1.3)
+
+- Every placed part document is its own component, built at the origin and checked alone (bodies already in the
+  design are left out of its checks: `measure` has no component filter). Parts that cannot be rebuilt are copied
+  out of a one-time import of the file (`component.paste_new` makes them independent; a part placed twice needs
+  `occurrence` + `path`), then the import is deleted. Placements: `occurrence.reparent` (first use) /
+  `occurrence.copy`, then `occurrence.move` with the payload's row-major 3x4; `occurrence.ground` for `fixed`.
+- SolidCraft feature names are unique across the whole design (a second part's "Sketch1" is refused): a clash
+  becomes "Sketch1 (Part)". Global parameters too: a clash becomes "W_Part".
+- A carried result's import makes a component; move exactly its `created_bodies` into the part (taking "every
+  new body" moved another part's body away once).
+- Mates: `assembly.constraint.create` (mate/flush/concentric/distance/angle/parallel/perpendicular/tangent) and
+  `joint.create` relations (point_on_plane, line_on_plane, ball) and rigid; references `{occurrence, path, face|
+  circle|edge|point: world point}` or `{occurrence, path, plane: "XY"}` (the occurrence's own origin plane) or a
+  construction plane's name. SolidCraft's facing conventions differ from SolidWorks' alignment words, so each mate
+  is made, checked (no occurrence moved, no conflict reported for it), else undone and the next variant tried.
+  Between two fixed parts only the conflict shows a wrong facing. A hinge is concentric + coincident.
+- Materials: `material.create` under the source's name (density g/cm3, colour) when SolidCraft has none of that
+  name; `material.assign` by body. Colours: `appearance.assign` (bodies, faces).
+- Inertia comes from the tessellation (curved bodies' moments ~1e-3 off): moments compared at 5e-3.
+
+## Features added in 0.1.3
+
+Shell, draft, linear/circular patterns (body patterns with skipped instances: the copies removed after), mirror,
+holes (one `solid.hole` per centre), construction axes, sweep and loft (with rails), combine, delete, move bodies,
+split, rib, sheet metal (rule from `sheetMetal`, base and contour flanges, edge flanges, convert, unfold/fold of
+every bend), weldment members (`frame.member`, SolidWorks profiles mapped to SolidCraft's kinds), extruded,
+revolved and planar surfaces, knit; extrudes starting at a face (`from`).
+- Choices the file does not state (a base flange's thickness side, a draft's pull, a partial revolve's sense, an
+  extrude from a face, a rotating move) are guessed and checked: against the next carried result's `replaces`
+  (the part just before it) when one follows, else by the part's final check, which rebuilds the part with each
+  guess (then pairs, then all) turned round. A feature with a carried result is checked against it; an edge flange
+  that differs is tried the other way, else the result is used.
+- Known gaps: face and full-round fillets, thin revolves, flange offsets along the face, 3D sketches, weldment
+  corner overrides beyond SolidCraft's corner kinds, crossing contours (P49), skipped instances of feature
+  patterns. SolidCraft joins disjoint pieces into one body where SolidWorks keeps two (P04, P31). SolidCraft's
+  kernel refuses some shells (the Rear AC's Fan Cowl: "the offset is refused").
+
 ## Corpus
 
 `results/solidcraft/run_corpus.py`, runs in `results/solidcraft/runs/`. Run 3 (2026-11-24): all 62

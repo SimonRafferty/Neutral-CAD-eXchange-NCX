@@ -48,7 +48,7 @@ fn pt(v: &Value) -> Option<[f64; 2]> {
 
 pub fn build(s: &mut Session, st: &mut PartState, f: &Value) -> Result<Outcome> {
     let def = &f["def"];
-    let name = f["name"].as_str().unwrap_or("Sketch").to_string();
+    let name = st.unique_name(f["name"].as_str().unwrap_or("Sketch"));
     let fid = f["id"].as_str().unwrap_or("").to_string();
     let frame = Frame::from_def(&def["frame"]).ok_or_else(|| anyhow!("the sketch has no frame"))?;
     s.exec(
@@ -394,8 +394,8 @@ fn add_dimensions(s: &mut Session, st: &mut PartState, def: &Value, fid: &str, o
                 None => note = Some(format!("dimension {label}: its equation {e} was not carried; its value was")),
             }
         } else if let Some(p) = d["param"].as_str() {
-            if st.params.iter().any(|x| x == p) {
-                expr = p.to_string();
+            if let Some(name) = st.params.get(p) {
+                expr = name.clone();
             }
         }
         let driving = d["driving"].as_bool().unwrap_or(true);

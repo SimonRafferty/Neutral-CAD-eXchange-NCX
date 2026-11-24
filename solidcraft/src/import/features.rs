@@ -37,21 +37,18 @@ pub fn build(s: &mut Session, st: &mut PartState, f: &Value) -> Result<Built> {
         }
         "extrude" | "cut" => extrude(s, st, f, kind == "cut"),
         "revolve" | "revolveCut" => revolve(s, st, f, kind == "revolveCut"),
-        "fillet" => fillet(s, f),
-        "chamfer" => chamfer(s, f),
+        "fillet" => fillet(s, st, f),
+        "chamfer" => chamfer(s, st, f),
         "plane" => plane(s, st, f),
-        "sheetMetal" | "flatPattern" | "weldment" => {
-            if kind == "sheetMetal" || kind == "weldment" {
-                // markers for the features that follow; they carry no geometry of their own
-                Ok(Built::Skipped(format!("{kind} settings: used by the features that follow")))
-            } else {
-                Ok(Built::Skipped("flat pattern: SolidCraft makes its own".into()))
-            }
-        }
+        "flatPattern" => Ok(Built::Skipped("flat pattern: SolidCraft makes its own".into())),
+        "weldment" => Ok(Built::Skipped("weldment settings: used by the members that follow".into())),
         "cosmeticThread" => Ok(Built::Skipped("cosmetic thread: annotation only, not carried".into())),
         other => {
             let _ = def;
-            bail!("{other} is not rebuilt by this version")
+            match super::features2::build(s, st, f)? {
+                Some(b) => Ok(b),
+                None => bail!("{other} is not rebuilt by this version"),
+            }
         }
     }
 }
@@ -99,7 +96,7 @@ fn total_volume(s: &mut Session) -> Result<f64> {
 
 fn extrude(s: &mut Session, st: &mut PartState, f: &Value, cut: bool) -> Result<Built> {
     let def = &f["def"];
-    let name = f["name"].as_str().unwrap_or("Extrude");
+    let name = &st.unique_name(f["name"].as_str().unwrap_or("Extrude"));
     let fid = f["id"].as_str().unwrap_or("");
     let sk = sketch_of(st, &def["profile"])?.clone();
     let mut notes: Vec<String> = Vec::new();
@@ -135,6 +132,14 @@ fn extrude(s: &mut Session, st: &mut PartState, f: &Value, cut: bool) -> Result<
     let reverse = def["reverse"].as_bool().unwrap_or(false) ^ end["reverse"].as_bool().unwrap_or(false);
     // extrude runs along the sketch normal, a cut against it; `reverse` flips either (spec)
     let along = if cut { reverse } else { !reverse };
+    // from a start face, which way it runs is not pinned down: guessed, then checked (mod.rs)
+    let from_face = def.get("start").map(|v| v["type"] == "surface" || v["type"] == "vertex").unwrap_or(false);
+    let along = if from_face {
+        st.uncertain.insert(fid.to_string());
+        along ^ st.flips.contains(fid)
+    } else {
+        along
+    };
     let mut direction = if along { "positive" } else { "negative" };
     match end["type"].as_str().unwrap_or("blind") {
         "blind" => p["distance"] = json!(length(st, fid, "end.depth", num(&end["depth"]), "mm")),
@@ -177,6 +182,11 @@ fn extrude(s: &mut Session, st: &mut PartState, f: &Value, cut: bool) -> Result<
         let d = num(&start["distance"]) * if start["reverse"].as_bool() == Some(true) { -1.0 } else { 1.0 };
         p["start_offset"] = json!(format!("{d} mm"));
     }
+    // starts at a face or vertex (From Object)
+    if let Some(start) = def.get("start").filter(|v| v["type"] == "surface" || v["type"] == "vertex") {
+        let at = pick(&start["target"]).ok_or_else(|| anyhow!("its start face has no position"))?;
+        p["from"] = json!(at);
+    }
     if let Some(thin) = def.get("thin").filter(|v| v.is_object()) {
         p["thin"] = json!(true);
         p["thickness"] = json!(format!("{} mm", num(&thin["thickness"])));
@@ -197,6 +207,10 @@ fn extrude(s: &mut Session, st: &mut PartState, f: &Value, cut: bool) -> Result<
     } else {
         "auto"
     });
+    if !cut && def["merge"].as_bool() != Some(false) {
+        // merged in the source: pieces that touch the body only along an edge stay one body, as there
+        p["touching"] = json!("one_body");
+    }
     if let Some(d) = def.get("draft").filter(|v| v.is_object()) {
         let a = num(&d["angle"]) * if d["outward"].as_bool() == Some(true) { 1.0 } else { -1.0 };
         p["taper"] = json!(format!("{a} deg"));
@@ -220,7 +234,7 @@ fn extrude(s: &mut Session, st: &mut PartState, f: &Value, cut: bool) -> Result<
 
 fn revolve(s: &mut Session, st: &mut PartState, f: &Value, cut: bool) -> Result<Built> {
     let def = &f["def"];
-    let name = f["name"].as_str().unwrap_or("Revolve");
+    let name = &st.unique_name(f["name"].as_str().unwrap_or("Revolve"));
     let fid = f["id"].as_str().unwrap_or("");
     let sk = sketch_of(st, &def["profile"])?.clone();
     let mut notes = Vec::new();
@@ -239,14 +253,28 @@ fn revolve(s: &mut Session, st: &mut PartState, f: &Value, cut: bool) -> Result<
         }
         Some("feature") => {
             let id = axis_ref["id"].as_str().unwrap_or("");
-            let n = st.names.get(id).ok_or_else(|| anyhow!("its axis was not built"))?;
-            json!(n)
+            // a construction axis by its name, else the axis feature's line
+            if let Some(n) = st.names.get(id) {
+                json!(n)
+            } else if let Some((a, b)) = st.axis_lines.get(id) {
+                json!({"origin": a, "dir": crate::geom::unit(crate::geom::sub(*b, *a))})
+            } else {
+                bail!("its axis was not built")
+            }
         }
         _ => bail!("its axis reference is not rebuilt by this version"),
     };
     let angle = num(&def["angle"]);
-    let mut p = json!({"sketch": sk.name, "axis": axis, "name": name,
-                       "operation": if cut { "cut" } else if def["merge"].as_bool() == Some(false) { "new" } else { "auto" }});
+    // revolve takes new, join, cut or intersect: join where the part already has a body
+    let has_body = !super::measure_fingerprints_with(s, false, &st.exclude)?.is_empty();
+    let op = if cut {
+        "cut"
+    } else if def["merge"].as_bool() == Some(false) || !has_body {
+        "new"
+    } else {
+        "join"
+    };
+    let mut p = json!({"sketch": sk.name, "axis": axis, "name": name, "operation": op});
     let reverse = def["reverse"].as_bool().unwrap_or(false);
     match def["mode"].as_str().unwrap_or("oneDirection") {
         "midPlane" => {
@@ -259,7 +287,14 @@ fn revolve(s: &mut Session, st: &mut PartState, f: &Value, cut: bool) -> Result<
         }
         _ => {
             // NCX: unreversed turns clockwise about the axis as recorded; checked by the part's shape
-            let a = if reverse { angle } else { -angle };
+            let fid = f["id"].as_str().unwrap_or("").to_string();
+            let mut a = if reverse { angle } else { -angle };
+            if (angle - 360.0).abs() >= 1e-9 {
+                st.uncertain.insert(fid.clone());
+                if st.flips.contains(&fid) {
+                    a = -a;
+                }
+            }
             p["angle"] = json!(if (angle - 360.0).abs() < 1e-9 { "360 deg".to_string() } else { format!("{a} deg") });
             if (angle - 360.0).abs() >= 1e-9 {
                 notes.push("turning sense checked by the part's shape".to_string());
@@ -285,9 +320,9 @@ fn edge_picks(def: &Value, key: &str) -> Result<Vec<geom::V3>> {
     Ok(v)
 }
 
-fn fillet(s: &mut Session, f: &Value) -> Result<Built> {
+fn fillet(s: &mut Session, st: &mut PartState, f: &Value) -> Result<Built> {
     let def = &f["def"];
-    let name = f["name"].as_str().unwrap_or("Fillet");
+    let name = &st.unique_name(f["name"].as_str().unwrap_or("Fillet"));
     match def["filletType"].as_str().unwrap_or("constant") {
         "constant" => {}
         other => bail!("{other} fillet is not rebuilt by this version"),
@@ -315,9 +350,9 @@ fn fillet(s: &mut Session, f: &Value) -> Result<Built> {
     Ok(Built::Done)
 }
 
-fn chamfer(s: &mut Session, f: &Value) -> Result<Built> {
+fn chamfer(s: &mut Session, st: &mut PartState, f: &Value) -> Result<Built> {
     let def = &f["def"];
-    let name = f["name"].as_str().unwrap_or("Chamfer");
+    let name = &st.unique_name(f["name"].as_str().unwrap_or("Chamfer"));
     let edges = edge_picks(def, "edges")?;
     let propagate = def["propagate"].as_bool().unwrap_or(true);
     let flipped: Vec<bool> = def["flipped"].as_array().map(|v| v.iter().map(|b| b.as_bool().unwrap_or(false)).collect()).unwrap_or_default();
@@ -348,7 +383,7 @@ fn chamfer(s: &mut Session, f: &Value) -> Result<Built> {
 /// out (sketches are placed by their own frames, so nothing else depends on them in this version).
 fn plane(s: &mut Session, st: &mut PartState, f: &Value) -> Result<Built> {
     let def = &f["def"];
-    let name = f["name"].as_str().unwrap_or("Plane");
+    let name = &st.unique_name(f["name"].as_str().unwrap_or("Plane"));
     let origin = v3(&def["origin"]).ok_or_else(|| anyhow!("no origin"))?;
     let n = geom::unit(v3(&def["normal"]).ok_or_else(|| anyhow!("no normal"))?);
     let base = [("XY", [0.0, 0.0, 1.0], 2usize), ("XZ", [0.0, 1.0, 0.0], 1), ("YZ", [1.0, 0.0, 0.0], 0)]
@@ -368,7 +403,7 @@ fn plane(s: &mut Session, st: &mut PartState, f: &Value) -> Result<Built> {
 pub fn apply_result(s: &mut Session, st: &mut PartState, f: &Value) -> Result<()> {
     let r = &f["result"];
     let replaces: Vec<Value> = r["replaces"].as_array().cloned().unwrap_or_default();
-    let have = super::measure_fingerprints(s)?;
+    let have = super::measure_fingerprints(s, st)?;
     let mut remove: Vec<String> = Vec::new();
     for fp in &replaces {
         let v = num(&fp["volume"]);
@@ -395,18 +430,13 @@ pub fn apply_result(s: &mut Session, st: &mut PartState, f: &Value) -> Result<()
         let path = super::scratch_dir().join(format!("result-{}.step", sanitize(f["name"].as_str().unwrap_or("feature"))));
         std::fs::write(&path, data)?;
         let ins = s.exec("file.insert_step", json!({"path": path.to_string_lossy(), "flatten": true, "names": "solid"}))?;
-        // the result's bodies belong to the part, not to a component of their own
+        // the result's bodies (exactly those the import made) belong to the part, not to a component of their own
         let comp = ins["component"].clone();
-        let m = s.tool("measure", json!({}))?;
-        let names: Vec<String> = m["bodies"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|b| !have.iter().any(|(n, _)| Some(n.as_str()) == b["name"].as_str()))
-            .filter_map(|b| b["name"].as_str().map(String::from))
-            .collect();
+        let names: Vec<String> =
+            ins["created_bodies"].as_array().into_iter().flatten().filter_map(|b| b.as_str().map(String::from)).collect();
         if !names.is_empty() && !comp.is_null() {
-            s.exec("component.move_bodies", json!({"bodies": names, "component": st.doc_name}))?;
+            let target = if st.component.is_null() { json!(st.doc_name) } else { st.component.clone() };
+            s.exec("component.move_bodies", json!({"bodies": names, "component": target}))?;
             // the import's own component stays (it holds the import the bodies came from): hidden
             let _ = s.exec("browser.visibility", json!({"visible": false, "items": [comp]}));
         }
@@ -434,8 +464,8 @@ pub fn translate_expression(e: &str, st: &PartState) -> Option<String> {
                 }
                 name.push(d);
             }
-            if st.params.iter().any(|p| p == &name) {
-                out.push_str(&name);
+            if let Some(p) = st.params.get(&name) {
+                out.push_str(p);
             } else if let Some(p) = st.dim_params.get(&name) {
                 out.push_str(p);
             } else {

@@ -161,9 +161,16 @@ pub fn validate(model: &Value) -> Result<Value> {
 /// Compares an expected fingerprint ({"bodies": [...]}) with a measured one.
 /// `profile` is "native" or "exchange" (spec section 6).
 pub fn fingerprint_compare(expected: &Value, actual: &Value, profile: &str) -> Result<Value> {
+    // SolidCraft measures inertia from the bodies' tessellation: curved bodies' moments come out a little
+    // (measured up to 1.4e-3) away from the exact ones, while volume, area and centroid are exact. Every other
+    // quantity keeps the profile's tolerance.
+    fingerprint_compare_opts(expected, actual, &serde_json::json!({ "profile": profile, "moment_rel": 5e-3 }))
+}
+
+pub fn fingerprint_compare_opts(expected: &Value, actual: &Value, options: &Value) -> Result<Value> {
     let e = cstring(&expected.to_string())?;
     let a = cstring(&actual.to_string())?;
-    let o = cstring(&serde_json::json!({ "profile": profile }).to_string())?;
+    let o = cstring(&options.to_string())?;
     let mut rep: *mut c_char = ptr::null_mut();
     let st = unsafe { ncx_fingerprint_compare_ex(e.as_ptr(), a.as_ptr(), o.as_ptr(), &mut rep) };
     let report = unsafe { take_json(rep) };

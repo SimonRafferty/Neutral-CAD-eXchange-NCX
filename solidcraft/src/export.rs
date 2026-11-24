@@ -87,7 +87,7 @@ fn export_from(s: &mut Session, job: &Job, sc_version: &str, report: &mut Report
         bail!("the design has no solid bodies to write");
     }
     // fingerprints with each body's principal moments (spec §6 requires them)
-    let measured = crate::import::measure_fingerprints_with(s, true)?;
+    let measured = crate::import::measure_fingerprints_with(s, true, &Default::default())?;
 
     set_progress(&job.progress, "Writing the geometry", &name, -1.0);
     let step_path = scratch_dir().join(format!("export-{}.step", std::process::id()));
