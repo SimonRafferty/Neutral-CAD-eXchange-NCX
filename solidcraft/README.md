@@ -61,11 +61,11 @@ One program for each operating system SolidCraft runs on. Each release of the tr
 
 | system | download | state |
 |---|---|---|
-| Windows 10 and 11 (64-bit) | **[NCX-SolidCraft-0.1.4.msi](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.4/NCX-SolidCraft-0.1.4.msi)** | tested |
-| Linux (x86_64, glibc 2.35 or later) | **[NCX-SolidCraft-0.1.4-x86_64.AppImage](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.4/NCX-SolidCraft-0.1.4-x86_64.AppImage)** | **untested**: built and checked automatically, but not yet tried on a Linux computer |
-| macOS 11 or later (Apple silicon and Intel) | **[NCX-SolidCraft-0.1.4-macos.dmg](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.4/NCX-SolidCraft-0.1.4-macos.dmg)** | **untested**: built and checked automatically, but not yet tried on a Mac |
+| Windows 10 and 11 (64-bit) | **[NCX-SolidCraft-0.1.5.msi](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.5/NCX-SolidCraft-0.1.5.msi)** | tested |
+| Linux (x86_64, glibc 2.35 or later) | **[NCX-SolidCraft-0.1.5-x86_64.AppImage](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.5/NCX-SolidCraft-0.1.5-x86_64.AppImage)** | **untested**: built and checked automatically, but not yet tried on a Linux computer |
+| macOS 11 or later (Apple silicon and Intel) | **[NCX-SolidCraft-0.1.5-macos.dmg](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.5/NCX-SolidCraft-0.1.5-macos.dmg)** | **untested**: built and checked automatically, but not yet tried on a Mac |
 
-All three are on the [release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/solidcraft-v0.1.4).
+All three are on the [release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/solidcraft-v0.1.5).
 The Linux and macOS versions are built by GitHub from the same source as the Windows one, and the NCX core's own
 tests pass on both, but nobody has run them on a real Linux computer or Mac yet. If you try one, please say how it
 went in a [GitHub issue](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/issues).
@@ -87,7 +87,7 @@ with a paid certificate).
    command-line program, `solidcraft-cli`; the AppImage, Flatpak and Snap versions of SolidCraft keep it inside
    themselves, where NCX SolidCraft cannot reach it.
 2. Download the AppImage from the table above, make it executable (right-click > Properties > Allow executing
-   as program, or `chmod +x NCX-SolidCraft-0.1.4-x86_64.AppImage`) and double-click it.
+   as program, or `chmod +x NCX-SolidCraft-0.1.5-x86_64.AppImage`) and double-click it.
 3. If it says SolidCraft was not found, click **Where is SolidCraft?** and choose `solidcraft-cli`.
 
 ## Install (macOS, untested)
