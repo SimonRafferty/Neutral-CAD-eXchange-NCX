@@ -1,0 +1,30 @@
+[package]
+name = "ncx-translator"
+version = "0.1.0"
+edition = "2021"
+description = "NCX Translator: converts NCX files to SolidCraft designs and back"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "ncx-translator"
+path = "src/main.rs"
+
+[dependencies]
+# The same UI toolkit SolidCraft uses (egui 0.37, rfd 0.17), with NCX's own look: see src/style.rs.
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "persistence"] }
+egui = "0.37"
+rfd = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+anyhow = "1"
+
+[build-dependencies]
+# Compiles the shared NCX core (../core, C++17) into the program: no separate DLL to ship.
+cc = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true

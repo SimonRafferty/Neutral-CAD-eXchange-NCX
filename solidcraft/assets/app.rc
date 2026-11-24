@@ -1,0 +1,30 @@
+// Windows resources for ncx-translator.exe: the icon Explorer shows, and the version information.
+// build.rs compiles this with the Windows SDK's rc.exe; NCX_VERSION_* come from Cargo.toml.
+#include <winver.h>
+
+1 ICON "icon.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION NCX_VERSION_COMMA
+ PRODUCTVERSION NCX_VERSION_COMMA
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "NCX project"
+      VALUE "FileDescription", "NCX Translator"
+      VALUE "FileVersion", NCX_VERSION_TEXT
+      VALUE "ProductName", "NCX Translator"
+      VALUE "ProductVersion", NCX_VERSION_TEXT
+      VALUE "LegalCopyright", "MIT License"
+      VALUE "OriginalFilename", "ncx-translator.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  NCX Translator: the Windows installer (WiX 3). Built by installer\build-msi.ps1, which passes:
+    Version  - from Cargo.toml
+    ExePath  - the release build of ncx-translator.exe
+    Assets   - solidcraft\assets
+    Licence  - the licence page as RTF (made from the repository's LICENSE)
+  One MSI, installed for all users in C:\Program Files\NCX Translator\App (the SolidWorks add-in uses its own
+  folders under C:\Program Files\NCX Translator, and removes only those). A newer MSI replaces an older one.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="NCX Translator" Language="1033" Version="$(var.Version)" Manufacturer="NCX project"
+           UpgradeCode="818CD351-42F5-4D93-BE25-C56ABAC62F27">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64"
+             Description="NCX Translator: NCX files to SolidCraft designs and back" />
+    <MajorUpgrade DowngradeErrorMessage="A newer NCX Translator is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="NcxIcon" SourceFile="$(var.Assets)\icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="NcxIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX" />
+    <!-- ARPNOMODIFY: WixUI_Minimal sets it already -->
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="NcxRoot" Name="NCX Translator">
+          <Directory Id="INSTALLFOLDER" Name="App" />
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+      <Directory Id="DesktopFolder" />
+    </Directory>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="Program" Guid="*" Win64="yes">
+        <File Id="NcxExe" Source="$(var.ExePath)" KeyPath="yes" />
+      </Component>
+      <Component Id="Licence" Guid="*" Win64="yes">
+        <File Id="LicenceTxt" Name="LICENSE.txt" Source="$(var.RepoRoot)\LICENSE" KeyPath="yes" />
+      </Component>
+      <Component Id="FontLicence" Guid="*" Win64="yes">
+        <File Id="FontLicenceTxt" Name="IBM-Plex-OFL.txt" Source="$(var.Assets)\fonts\OFL.txt" KeyPath="yes" />
+      </Component>
+      <!-- "Open with": NCX files (STEP) and SolidCraft designs list NCX Translator -->
+      <Component Id="OpenWith" Guid="*" Win64="yes">
+        <RegistryKey Root="HKLM" Key="Software\Classes\Applications\ncx-translator.exe">
+          <RegistryValue Name="FriendlyAppName" Type="string" Value="NCX Translator" KeyPath="yes" />
+          <RegistryValue Key="shell\open\command" Type="string" Value="&quot;[INSTALLFOLDER]ncx-translator.exe&quot; &quot;%1&quot;" />
+          <RegistryValue Key="SupportedTypes" Name=".step" Type="string" Value="" />
+          <RegistryValue Key="SupportedTypes" Name=".stp" Type="string" Value="" />
+          <RegistryValue Key="SupportedTypes" Name=".sc" Type="string" Value="" />
+        </RegistryKey>
+        <RegistryValue Root="HKLM" Key="Software\Classes\.step\OpenWithList\ncx-translator.exe" Type="string" Value="" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.stp\OpenWithList\ncx-translator.exe" Type="string" Value="" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.sc\OpenWithList\ncx-translator.exe" Type="string" Value="" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="*">
+        <Shortcut Id="StartMenuNcx" Name="NCX Translator" Description="NCX files to SolidCraft designs and back"
+                  Target="[INSTALLFOLDER]ncx-translator.exe" WorkingDirectory="INSTALLFOLDER" Icon="NcxIcon" />
+        <!-- a shortcut component's key path must be a per-user value (Windows Installer rule ICE38/ICE43) -->
+        <RegistryValue Root="HKCU" Key="Software\NCX Translator App" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+    <DirectoryRef Id="DesktopFolder">
+      <Component Id="DesktopShortcut" Guid="*">
+        <Shortcut Id="DesktopNcx" Name="NCX Translator" Description="NCX files to SolidCraft designs and back"
+                  Target="[INSTALLFOLDER]ncx-translator.exe" WorkingDirectory="INSTALLFOLDER" Icon="NcxIcon" />
+        <RegistryValue Root="HKCU" Key="Software\NCX Translator App" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Main" Title="NCX Translator" Level="1">
+      <ComponentRef Id="Program" />
+      <ComponentRef Id="Licence" />
+      <ComponentRef Id="FontLicence" />
+      <ComponentRef Id="OpenWith" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+
+    <!-- The simplest dialogs: the licence, Install, and "Launch NCX Translator" at the end. -->
+    <UIRef Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.Licence)" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Start NCX Translator" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[#NcxExe]" />
+    <CustomAction Id="LaunchNcx" BinaryKey="WixCA" DllEntry="WixShellExec" Impersonate="yes" />
+    <UI>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchNcx">
+        WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed
+      </Publish>
+    </UI>
+  </Product>
+</Wix>
