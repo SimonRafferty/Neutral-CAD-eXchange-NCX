@@ -1,6 +1,6 @@
 """Makes NCX SolidCraft's icon from the drawing in assets/icon-source.jpg (a stepped block between two
-chevrons, drawn for the project): the grey background is made transparent, the drawing is cropped and centred
-in a square, and scaled to each size.
+chevrons, drawn for the project): the grey background is made transparent and the picture scaled to each size
+(a square source keeps its own framing; another shape is cropped and centred in a square).
 
 Writes assets/icon.ico (16-256 px, PNG entries), assets/icon64.rgba (the window icon, raw RGBA 64x64) and
 docs/icon.png (the README's picture, 256 px).
@@ -36,7 +36,9 @@ def cut_out(img):
 
 
 def square(rgba, margin=0.04):
-    """Crop to the drawing and centre it in a transparent square."""
+    """A square source is used as framed. Otherwise crop to the drawing and centre it in a transparent square."""
+    if rgba.size[0] == rgba.size[1]:
+        return rgba
     alpha = rgba.getchannel("A").point(lambda v: 255 if v > 128 else 0)
     box = alpha.getbbox()
     art = rgba.crop(box)
