@@ -78,6 +78,8 @@ Details, building it yourself and what it carries: [`fusion/README.md`](fusion/R
 
 ## The SolidCraft translator
 
+<img src="solidcraft/docs/icon.png" width="80" alt="NCX SolidCraft icon">
+
 SolidCraft's plugins cannot run long enough or reach files to carry a whole model, so NCX for SolidCraft is a
 small program of its own, **NCX SolidCraft**: drop an NCX file on it and it makes a SolidCraft design beside it; drop
 a SolidCraft design on it and it makes an NCX file. It uses SolidCraft's own command-line program in the
