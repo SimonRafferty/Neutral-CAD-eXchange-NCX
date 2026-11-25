@@ -61,11 +61,11 @@ One program for each operating system SolidCraft runs on. Each release of the tr
 
 | system | download | state |
 |---|---|---|
-| Windows 10 and 11 (64-bit) | **[NCX-SolidCraft-0.1.5.msi](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.5/NCX-SolidCraft-0.1.5.msi)** | tested |
-| Linux (x86_64, glibc 2.35 or later) | **[NCX-SolidCraft-0.1.5-x86_64.AppImage](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.5/NCX-SolidCraft-0.1.5-x86_64.AppImage)** | **untested**: built and checked automatically, but not yet tried on a Linux computer |
-| macOS 11 or later (Apple silicon and Intel) | **[NCX-SolidCraft-0.1.5-macos.dmg](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.5/NCX-SolidCraft-0.1.5-macos.dmg)** | **untested**: built and checked automatically, but not yet tried on a Mac |
+| Windows 10 and 11 (64-bit) | **[NCX-SolidCraft-0.1.6.msi](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.6/NCX-SolidCraft-0.1.6.msi)** | tested |
+| Linux (x86_64, glibc 2.35 or later) | **[NCX-SolidCraft-0.1.6-x86_64.AppImage](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.6/NCX-SolidCraft-0.1.6-x86_64.AppImage)** | **untested**: built and checked automatically, but not yet tried on a Linux computer |
+| macOS 11 or later (Apple silicon and Intel) | **[NCX-SolidCraft-0.1.6-macos.dmg](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/download/solidcraft-v0.1.6/NCX-SolidCraft-0.1.6-macos.dmg)** | **untested**: built and checked automatically, but not yet tried on a Mac |
 
-All three are on the [release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/solidcraft-v0.1.5).
+All three are on the [release page](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/releases/tag/solidcraft-v0.1.6).
 The Linux and macOS versions are built by GitHub from the same source as the Windows one, and the NCX core's own
 tests pass on both, but nobody has run them on a real Linux computer or Mac yet. If you try one, please say how it
 went in a [GitHub issue](https://github.com/SimonRafferty/Neutral-CAD-eXchange-NCX/issues).
@@ -87,7 +87,7 @@ with a paid certificate).
    command-line program, `solidcraft-cli`; the AppImage, Flatpak and Snap versions of SolidCraft keep it inside
    themselves, where NCX SolidCraft cannot reach it.
 2. Download the AppImage from the table above, make it executable (right-click > Properties > Allow executing
-   as program, or `chmod +x NCX-SolidCraft-0.1.5-x86_64.AppImage`) and double-click it.
+   as program, or `chmod +x NCX-SolidCraft-0.1.6-x86_64.AppImage`) and double-click it.
 3. If it says SolidCraft was not found, click **Where is SolidCraft?** and choose `solidcraft-cli`.
 
 ## Install (macOS, untested)
@@ -113,19 +113,27 @@ with a paid certificate).
 - **Assemblies:** every part in its own component, sub-assemblies nested as in the source, every part placed
   where the file puts it, fixed parts grounded, and the mates made as SolidCraft constraints (mate, flush,
   concentric, distance, angle, parallel, perpendicular, tangent, lock, hinge), so the parts move as they did.
-  Gear, screw and rack mates place the parts without coupling them. Y-up models are stood upright.
-- **Materials and colours:** a part's material by name, recreated from the file (density and colour) where
-  SolidCraft has none of that name; body and face colours.
-- **Not yet:** face and full-round fillets, thin revolves, flange offsets, 3D sketches, some weldment corner
-  treatments; parts made from a layout come in as their shape.
+  Gear, screw and rack-and-pinion mates couple the motion as SolidCraft's gear, screw and rack-and-pinion links;
+  a width mate becomes a distance and a slot mate a pin-in-slot joint. Y-up models are stood upright.
+- **Features SolidCraft lacks:** where SolidCraft has the same feature it is used; where it has not, a feature
+  that makes the same shape. Parts made from a layout (Insert Part) rebuild with the layout's sketches and numbers
+  inside the part, so the layout still drives it; mirrored parts rebuild as their source, mirrored. Hems and
+  sketched bends become SolidCraft hems and folds, break corners chamfers or fillets, weldment end caps plates.
+- **Materials, colours and properties:** a part's material by name, recreated from the file (density and colour)
+  where SolidCraft has none of that name, or SolidCraft's nearest kind (6061 Alloy becomes Aluminum); body and face
+  colours; custom properties are kept with the design and written out again on export.
+- **Not yet (carried as their shape):** jogs, weldment trims, miter flanges, closed corners, gussets, domes,
+  wraps, variable fillets, flange offsets; not carried: 3D sketches and symmetric mates.
 - **Export:** the design with its feature history: parameters and the expressions that use them, sketches with
   their relations and dimensions, extrudes and cuts, revolves, fillets, chamfers, boxes and cylinders (written as a
   sketch and an extrude, which every CAD system has), holes, patterns, mirrors, shells, drafts, sweeps, ribs,
-  splits, offset planes and body operations (combine, delete, move and copy). Each component with bodies becomes a
-  part and each component holding others an assembly, with its mates (from SolidCraft's constraints: mate, flush,
-  concentric, distance, angle, parallel, perpendicular, tangent, rigid). A feature with no counterpart in NCX
-  (sheet metal, weldment members, surfaces, lofts) carries its finished shape, so the CAD system that imports the
-  file still rebuilds everything before and after it. A design made by importing an NCX file is written back in
+  splits, offset planes and axes, body operations (combine, delete, move, turn and copy), thin-walled extrudes,
+  sheet metal (base, contour and edge flanges, convert, unfold and fold) and weldment frame members. Each component
+  with bodies becomes a part and each component holding others an assembly, with its mates (from SolidCraft's
+  constraints: mate, flush, concentric, distance, angle, parallel, perpendicular, tangent, rigid) and its gear,
+  screw and rack-and-pinion links. Materials, colours and custom properties go with it. A feature with no
+  counterpart in NCX (surfaces, lofts) carries its finished shape, so the CAD system that imports the file still
+  rebuilds everything before and after it. A design made by importing an NCX file is written back in
   that file's own frame. All 63 NCX sample files, imported into SolidCraft and exported again, pass the NCX
   checker and import back with every part rebuilt; imported into SolidWorks, the test parts and assemblies tried
   rebuild with their history (a large real assembly: most features rebuilt, its sheet metal as shapes, a few mates
