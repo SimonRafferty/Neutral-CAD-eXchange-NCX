@@ -62,12 +62,12 @@ pub fn build(s: &mut Session, st: &mut PartState, f: &Value) -> Result<Option<Bu
 // helpers
 
 /// The bodies of the part now (other parts' left out), with their measurements.
-fn bodies(s: &mut Session, st: &PartState) -> Result<Vec<(String, Value)>> {
+pub(crate) fn bodies(s: &mut Session, st: &PartState) -> Result<Vec<(String, Value)>> {
     super::measure_fingerprints_with(s, false, &st.exclude)
 }
 
 /// The body a `{kind: body, by: geom|name}` reference names: by name, else by volume and centroid.
-fn body_of(s: &mut Session, st: &PartState, r: &Value) -> Result<String> {
+pub(crate) fn body_of(s: &mut Session, st: &PartState, r: &Value) -> Result<String> {
     let all = bodies(s, st)?;
     if let Some(n) = r["name"].as_str() {
         if all.iter().any(|(b, _)| b == n) {
@@ -652,7 +652,26 @@ fn flatten_flange(p: Value) -> Value {
     out
 }
 
+/// SolidCraft's position words for an edge flange (where the flange sits relative to the edge).
+pub(crate) const FLANGE_POSITIONS: [&str; 5] = ["inside", "material_outside", "outside", "middle", "tangent"];
+
+/// The position word for the file's (FORMAT-SPEC 4 `edgeFlange.position`).
+pub(crate) fn flange_position(def: &Value) -> &'static str {
+    match def["position"].as_str() {
+        Some("materialOutside") => "material_outside",
+        Some("bendOutside") => "outside",
+        Some("bendCenterline") => "middle",
+        Some("bendTangent") => "tangent",
+        _ => "inside",
+    }
+}
+
 pub(crate) fn edge_flange(s: &mut Session, st: &mut PartState, f: &Value, flip: bool) -> Result<Built> {
+    edge_flange_at(s, st, f, flip, None)
+}
+
+/// An edge flange with its position word given (None: the file's).
+pub(crate) fn edge_flange_at(s: &mut Session, st: &mut PartState, f: &Value, flip: bool, position: Option<&str>) -> Result<Built> {
     let def = &f["def"];
     let name = name_of(st, f, "Edge-Flange");
     let mut edges = Vec::new();
@@ -664,6 +683,22 @@ pub(crate) fn edge_flange(s: &mut Session, st: &mut PartState, f: &Value, flip: 
     for e in &all_edges {
         edges.push(pick(e).ok_or_else(|| anyhow!("its edge has no position"))?);
     }
+    // "material inside" at an angle other than 90 degrees: the source runs the flange's outer face, extended, through
+    // the edge, t*tan(angle - 90) further out than SolidCraft's "inside" (FORMAT-SPEC 4 edgeFlange.position), so the
+    // sheet's end face is first moved by that much (back, below 90 degrees) and the flange made "inside" at the new
+    // edge. Measured on the user's Rear AC Half Shell (45 degrees, t 1.5): same volume and bend axis as SolidWorks.
+    let angle = num(&def["angle"]);
+    let mut shifted = false;
+    if position.is_none() && def["position"] == "materialInside" && (angle - 90.0).abs() > 1e-6 && edges.len() == 1 {
+        if let Some((t, _)) = st.sheet_rule.clone().map(|r| (r.1, r.0)) {
+            let delta = t * (angle - 90.0).to_radians().tan();
+            if let Some((face_pt, n)) = end_face_at(s, st, edges[0])? {
+                s.exec("solid.offset_face", json!({"faces": [face_pt], "distance": format!("{delta} mm")}))?;
+                edges[0] = [edges[0][0] + n[0] * delta, edges[0][1] + n[1] * delta, edges[0][2] + n[2] * delta];
+                shifted = true;
+            }
+        }
+    }
     let len = &def["length"];
     let mut p = json!({"type": "edge", "edges": edges, "height": format!("{} mm", num(&len["distance"])),
                        "angle": format!("{} deg", num(&def["angle"])), "name": name});
@@ -672,13 +707,7 @@ pub(crate) fn edge_flange(s: &mut Session, st: &mut PartState, f: &Value, flip: 
         Some("bendTangent") => "tangent",
         _ => "outer",
     });
-    p["position"] = json!(match def["position"].as_str() {
-        Some("materialOutside") => "material_outside",
-        Some("bendOutside") => "outside",
-        Some("bendCenterline") => "middle",
-        Some("bendTangent") => "tangent",
-        _ => "inside",
-    });
+    p["position"] = json!(if shifted { "inside" } else { position.unwrap_or_else(|| flange_position(def)) });
     if def["useDefaultRadius"].as_bool() == Some(false) {
         p["radius"] = json!(format!("{} mm", num(&def["bendRadius"])));
     }
@@ -688,9 +717,69 @@ pub(crate) fn edge_flange(s: &mut Session, st: &mut PartState, f: &Value, flip: 
     if def["positionOffset"].is_object() && num(&def["positionOffset"]["distance"]) != 0.0 {
         bail!("a flange offset along its face is not rebuilt by this version");
     }
+    // the part's own rule, named (the active rule changes as later parts are built, and a rebuild would follow it)
+    if let Some((rule, _)) = &st.sheet_rule {
+        let mut with_rule = p.clone();
+        with_rule["rule"] = json!(rule);
+        if s.exec("sheet.flange", with_rule).is_ok() {
+            remember(st, f, &name);
+            return Ok(Built::Done);
+        }
+    }
     s.exec("sheet.flange", p)?;
     remember(st, f, &name);
     Ok(Built::Done)
+}
+
+/// The sheet's end face at an edge (the thinner of the two faces the edge joins): a point on it and its outward
+/// normal. None where there is no such face.
+fn end_face_at(s: &mut Session, st: &PartState, at: [f64; 3]) -> Result<Option<([f64; 3], [f64; 3])>> {
+    let m = s.tool("measure", json!({"names_only": true}))?;
+    let names: Vec<String> = m["bodies"].as_array().into_iter().flatten()
+        .filter_map(|b| b["name"].as_str().map(String::from)).filter(|n| !st.exclude.contains(n)).collect();
+    let mut best: Option<(f64, String, Value)> = None;
+    for n in &names {
+        let t = s.tool("body_topology", json!({"body": n}))?;
+        for e in t["edges"].as_array().into_iter().flatten() {
+            let (Some(a), Some(b)) = (v3(&e["start"]), v3(&e["end"])) else { continue };
+            let ab = geom::sub(b, a);
+            let l2 = geom::dot(ab, ab).max(1e-18);
+            let u = (geom::dot(geom::sub(at, a), ab) / l2).clamp(0.0, 1.0);
+            let d = geom::norm(geom::sub(at, geom::add(a, geom::scale(ab, u))));
+            if best.as_ref().map(|x| d < x.0).unwrap_or(true) {
+                best = Some((d, n.clone(), json!({"edge": e, "topo": t})));
+            }
+        }
+    }
+    let Some((d, body, x)) = best else { return Ok(None) };
+    if d > 0.01 {
+        return Ok(None);
+    }
+    let ename = x["edge"]["name"].as_str().unwrap_or("").to_string();
+    // the two face names, split at the top-level '|'
+    let mut faces = Vec::new();
+    let (mut depth, mut cur) = (0i32, String::new());
+    for c in ename.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            '|' if depth == 0 => {
+                faces.push(std::mem::take(&mut cur));
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    faces.push(cur);
+    let thin = x["topo"]["faces"].as_array().into_iter().flatten()
+        .filter(|f| faces.iter().any(|n| f["name"] == n.as_str()) && f["plane_normal"].is_array())
+        .min_by(|a, b| a["area"].as_f64().unwrap_or(0.0).partial_cmp(&b["area"].as_f64().unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal))
+        .cloned();
+    let Some(f) = thin else { return Ok(None) };
+    let Some(pt) = v3(&f["point"]) else { return Ok(None) };
+    let r = s.exec("inspect.classify_points", json!({"body": body, "points": [pt]}))?;
+    Ok(v3(&r["results"][0]["normal"]).map(|n| (pt, geom::unit(n))))
 }
 
 fn convert_sheet(s: &mut Session, st: &mut PartState, f: &Value) -> Result<Built> {

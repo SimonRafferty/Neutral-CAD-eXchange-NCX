@@ -62,6 +62,9 @@ namespace Ncx.Driver
                 return 3;
             }
             var rep = new Replayer(sw) { ContainerPath = Path.GetFullPath(inStep) };
+            // developer trace: each step as it starts (NCX_PROGRESS=1), to see where a run stops
+            if (System.Environment.GetEnvironmentVariable("NCX_PROGRESS") != null)
+                rep.Progress = m => { Console.Error.WriteLine("[step] " + m); Console.Error.Flush(); return true; };
             var saved = rep.ReplayModel(model, Path.GetFullPath(outDir));
             var res = new JObj { { "saved", saved }, { "report", rep.Report.ToJson() }, { "verification", rep.Verification } };
             File.WriteAllText(Path.Combine(outDir, "replay.json"), Json.Write(res));

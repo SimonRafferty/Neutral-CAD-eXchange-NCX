@@ -6,8 +6,10 @@
 //! the file's own geometry instead ("geometry wins"). The design is saved as a SolidCraft `.sc` file.
 
 mod assembly;
+mod derived;
 mod features;
 mod features2;
+mod features3;
 mod looks;
 mod mates;
 mod sketch;
@@ -178,7 +180,7 @@ fn import_into(s: &mut Session, job: &Job, payload: ncx::Payload, report: &mut R
     st.component = c["component"].clone();
     match rebuild_part(s, job, &root, report, &mut st, &mut Default::default()) {
         Ok(()) => {
-            apply_looks(s, &root, &c["component"], &mut looks::Made::default(), report)?;
+            apply_looks(s, &root, &c["component"], &mut looks::Made::default(), report, true)?;
             stand_upright(s, &doc_name, &occurrence, &up, report)?;
         }
         Err(e) if sc::is_cancelled(&e) => return Err(e),
@@ -528,15 +530,48 @@ fn build_features(s: &mut Session, job: &Job, doc: &Value, report: &mut Report, 
                 st.taken_names = taken0.clone();
                 let mut ok = false;
                 if kind == "edgeFlange" {
-                    let cp2 = s.exec("edit.checkpoint", json!({}))?["checkpoint"].clone();
-                    if features2::edge_flange(s, st, f, true).is_ok() && matches_result(s, st, f)? {
-                        outcome = Ok(features::Built::Approx("built with its flange the other way round from the source's words; matches its carried shape".into()));
-                        ok = true;
-                    } else {
+                    // SolidCraft's placement words do not mean the same as the source's at every angle (a 45-degree
+                    // "material inside" flange of the user's Rear AC Half Shell sat elsewhere): each word, both ways
+                    // round, until one gives the carried shape
+                    let own = features2::flange_position(&f["def"]);
+                    let mut variants: Vec<(&str, bool)> = vec![(own, true)];
+                    for pos in features2::FLANGE_POSITIONS {
+                        if pos != own {
+                            variants.push((pos, false));
+                            variants.push((pos, true));
+                        }
+                    }
+                    for (pos, flip) in variants {
+                        let cp2 = s.exec("edit.checkpoint", json!({}))?["checkpoint"].clone();
+                        if features2::edge_flange_at(s, st, f, flip, Some(pos)).is_ok() && matches_result(s, st, f)? {
+                            let how = if pos == own { "the other way round from the source's words".to_string() } else {
+                                format!("placed as SolidCraft's \"{pos}\"{} (the source's word places it elsewhere here)", if flip { ", turned round" } else { "" })
+                            };
+                            outcome = Ok(features::Built::Approx(format!("built {how}; matches its carried shape")));
+                            ok = true;
+                            break;
+                        }
                         s.exec("edit.restore_checkpoint", json!({"checkpoint": cp2}))?;
                         st.names = names0.clone();
                         st.taken_names = taken0.clone();
                     }
+                }
+                // SolidCraft's equivalents with other placement words (features3): each variant until one fits
+                for v in 1..features3::variant_count(&kind) {
+                    if ok {
+                        break;
+                    }
+                    let cp2 = s.exec("edit.checkpoint", json!({}))?["checkpoint"].clone();
+                    if let Ok(Some(b)) = features3::build(s, st, f, v) {
+                        if matches_result(s, st, f)? {
+                            outcome = Ok(b);
+                            ok = true;
+                            break;
+                        }
+                    }
+                    s.exec("edit.restore_checkpoint", json!({"checkpoint": cp2}))?;
+                    st.names = names0.clone();
+                    st.taken_names = taken0.clone();
                 }
                 if !ok {
                     outcome = Err(anyhow!("built, but it differs from the shape the file carries for it"));
@@ -622,6 +657,13 @@ fn matches_fingerprints(s: &mut Session, st: &PartState, want: &[Value]) -> Resu
     }
     let rep = ncx::fingerprint_compare(&json!({"bodies": want}), &json!({"bodies": picked}), "exchange")?;
     let result = rep.get("result").or_else(|| rep.get("status")).and_then(Value::as_str).unwrap_or("");
+    // developer trace: each carried body against the body it was compared with
+    if std::env::var("NCX_TRACE_MATCH").is_ok() {
+        for (w, h) in want.iter().zip(picked.iter()) {
+            eprintln!("[match] {result}: want vol {:.4} c {} faces {} | have vol {:.4} c {} faces {}", num(&w["volume"]), w["centroid"], w["faces"],
+                      num(&h["volume"]), h["centroid"], h["faces"]);
+        }
+    }
     Ok(result != "mismatch")
 }
 
@@ -766,10 +808,11 @@ fn short(v: &Value) -> String {
 /// features keep the file's coordinates inside that component. The component was made ungrounded (a
 /// grounded placement can't move) and is grounded afterwards.
 /// A part's material and colours, with its component active (failures are reported, not fatal).
-pub(crate) fn apply_looks(s: &mut Session, doc: &Value, component: &Value, made: &mut looks::Made, report: &mut Report) -> Result<()> {
+pub(crate) fn apply_looks(s: &mut Session, doc: &Value, component: &Value, made: &mut looks::Made, report: &mut Report, root: bool) -> Result<()> {
     s.exec("component.activate", json!({"component": component}))?;
     let r = looks::apply(s, doc, component, made, report);
     s.exec("component.activate", json!({"component": 0}))?;
+    looks::keep_properties(s, doc, root, report)?;
     match r {
         Err(e) if sc::is_cancelled(&e) => Err(e),
         Err(e) => {

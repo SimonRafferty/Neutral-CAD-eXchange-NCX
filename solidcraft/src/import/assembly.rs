@@ -61,12 +61,27 @@ pub fn import_documents(s: &mut Session, job: &Job, model: &Value, header: &Valu
             plain.push((id.clone(), String::new()));
             continue;
         }
-        if let Some(f) = doc["features"].as_array().into_iter().flatten().find(|f| f["type"] == "insertPart" || f["type"] == "mirrorPart") {
-            let why = format!("made from another document ({}): not rebuilt by this version", f["name"].as_str().unwrap_or("Insert Part"));
-            report.add(&name, &name, "part", Status::Fallback, &why);
-            plain.push((id.clone(), why));
-            continue;
-        }
+        // made from another document (a layout, a mirrored part): rewritten as an ordinary part (derived.rs)
+        let inlined;
+        let doc = match super::derived::inline(doc, &docs) {
+            None => doc,
+            Some(Ok(d)) => {
+                let how = if d["features"].as_array().into_iter().flatten().any(|f| f["type"] == "mirrorBody" && f["id"].as_str().map(|i| i.ends_with("|mirror")).unwrap_or(false)) {
+                    "a mirror image of another part: rebuilt as that part's features, its bodies mirrored"
+                } else {
+                    "made from a layout: the layout's sketches and parameters rebuilt in the part (SolidCraft has no derived parts)"
+                };
+                report.add(&name, &name, "part", Status::Note, how);
+                inlined = d;
+                &inlined
+            }
+            Some(Err(why)) => {
+                let why = format!("made from another document: {why}");
+                report.add(&name, &name, "part", Status::Fallback, &why);
+                plain.push((id.clone(), why));
+                continue;
+            }
+        };
         let exclude = body_names(s)?;
         let c = s.exec("component.create", json!({"name": name, "parent": 0, "activate": true, "grounded": false}))?;
         let mut st = PartState::new(&name, exclude);
@@ -77,7 +92,7 @@ pub fn import_documents(s: &mut Session, job: &Job, model: &Value, header: &Valu
         match r {
             Ok(()) => {
                 built_features.insert(id.clone(), st.names.clone());
-                apply_looks(s, doc, &c["component"], &mut made, report)?;
+                apply_looks(s, doc, &c["component"], &mut made, report, false)?;
                 comps.insert(id.clone(), Comp { id: c["component"].clone(), free_occurrence: Some(c["occurrence"].clone()) });
             }
             Err(e) if sc::is_cancelled(&e) => return Err(e),
@@ -100,7 +115,7 @@ pub fn import_documents(s: &mut Session, job: &Job, model: &Value, header: &Valu
         for (id, _) in &plain {
             if let Some(c) = comps.get(id) {
                 let cid = c.id.clone();
-                apply_looks(s, &docs[id], &cid, &mut made, report)?;
+                apply_looks(s, &docs[id], &cid, &mut made, report, false)?;
             }
         }
         let named: Vec<String> = plain.iter().map(|(id, _)| name_of(id)).collect();
@@ -152,6 +167,7 @@ pub fn import_documents(s: &mut Session, job: &Job, model: &Value, header: &Valu
         }
         comps.insert(id.clone(), Comp { id: asm_comp, free_occurrence: Some(c["occurrence"].clone()) });
         report.add(&name, &name, "assembly", Status::Rebuilt, format!("{placed} components placed as in the file"));
+        super::looks::keep_properties(s, doc, *id == root_id, report)?;
     }
 
     // 3. Mates, as SolidCraft constraints between the placed parts (made where the parts are).

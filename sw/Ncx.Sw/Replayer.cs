@@ -327,7 +327,7 @@ namespace Ncx.Sw
             SortOriginPlanes();
 
             ReplayParameters(d);
-            foreach (JObj nf in d.Arr("features"))
+            foreach (JObj nf in SplitLargeSketches(d, d.Arr("features")))
             {
                 string name = nf.Str("name");
                 Step(d.Str("name") + ": " + name);

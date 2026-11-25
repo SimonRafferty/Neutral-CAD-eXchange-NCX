@@ -40,6 +40,8 @@ pub struct Outcome {
     pub built: Built,
     pub missing: Vec<String>,
     pub less_defined: Option<String>,
+    /// geometry outside the sketch projected into it (linked), by reference: its id here
+    pub projected: HashMap<String, String>,
 }
 
 fn pt(v: &Value) -> Option<[f64; 2]> {
@@ -60,9 +62,10 @@ pub fn build(s: &mut Session, st: &mut PartState, f: &Value) -> Result<Outcome> 
             built: Built { name: name.clone(), frame, ents: HashMap::new() },
             missing: Vec::new(),
             less_defined: None,
+            projected: HashMap::new(),
         };
         draw_entities(s, def, &mut out)?;
-        add_constraints(s, def, &mut out)?;
+        add_constraints(s, st, def, &mut out)?;
         add_dimensions(s, st, def, &fid, &mut out)?;
         let solve = s.exec("sketch.solve", json!({}))?;
         let dof = solve["dof"].as_i64().unwrap_or(-1);
@@ -293,11 +296,42 @@ fn ref_of(out: &Outcome, v: &Value) -> Option<String> {
     }
 }
 
-fn add_constraints(s: &mut Session, def: &Value, out: &mut Outcome) -> Result<()> {
+/// A reference, also to geometry outside the sketch: another sketch's entity (a layout's point or line, FORMAT-SPEC 4
+/// "sketch entity of another document" once the layout is rebuilt here) or a model edge or vertex, projected into
+/// this sketch as linked construction geometry, so a relation or dimension to it follows its source.
+fn ref_or_project(s: &mut Session, st: &PartState, out: &mut Outcome, v: &Value) -> Option<String> {
+    if let Some(r) = ref_of(out, v) {
+        return Some(r);
+    }
+    let key = v.to_string();
+    if let Some(r) = out.projected.get(&key) {
+        return Some(r.clone());
+    }
+    let (proj, is_point): (Value, bool) = match v["kind"].as_str() {
+        Some("sketchEntity") => {
+            let other = st.sketches.get(v["feature"].as_str()?)?;
+            let e = other.ents.get(v["id"].as_str()?)?;
+            if e.kind == "point" || e.sc.contains('.') {
+                (json!({"sketch": other.name, "point": e.sc}), true)
+            } else {
+                (json!({"sketch": other.name, "curve": e.sc}), false)
+            }
+        }
+        Some("edge") => (json!({"edge": super::features::pick(v)?}), false),
+        Some("vertex") => (json!({"vertex": super::features::pick(v)?}), true),
+        _ => return None,
+    };
+    let r = s.exec("sketch.project", json!({"refs": [proj], "projection_link": true, "construction": true})).ok()?;
+    let id = if is_point { first(&r["created"]["points"]) } else { first(&r["created"]["curves"]) }?;
+    out.projected.insert(key, id.clone());
+    Some(id)
+}
+
+fn add_constraints(s: &mut Session, st: &PartState, def: &Value, out: &mut Outcome) -> Result<()> {
     for c in def["constraints"].as_array().into_iter().flatten() {
         let ty = c["type"].as_str().unwrap_or("");
         let ents = c["entities"].as_array().cloned().unwrap_or_default();
-        let refs: Vec<Option<String>> = ents.iter().map(|e| ref_of(out, e)).collect();
+        let refs: Vec<Option<String>> = ents.iter().map(|e| ref_or_project(s, st, out, e)).collect();
         if refs.iter().any(Option::is_none) {
             let what = ents.iter().filter_map(|e| e["kind"].as_str()).collect::<Vec<_>>().join(", ");
             out.missing.push(format!("{ty} relation to {} not carried", if what.is_empty() { "an entity not drawn" } else { &what }));
@@ -307,6 +341,7 @@ fn add_constraints(s: &mut Session, def: &Value, out: &mut Outcome) -> Result<()
         let call: Option<(&str, Value)> = match (ty, r.len()) {
             ("coincident", 2) => Some(("sketch.constraint.coincident", json!({"a": r[0], "b": r[1]}))),
             ("horizontal" | "vertical", 1) => Some(("sketch.constraint.horizontal_vertical", json!({"line": r[0], "mode": ty}))),
+            ("horizontalPoints" | "verticalPoints", 2) => Some(("sketch.constraint.horizontal_vertical", json!({"points": [r[0], r[1]], "mode": ty.trim_end_matches("Points")}))),
             ("horizontal" | "vertical", 2) => Some(("sketch.constraint.horizontal_vertical", json!({"points": [r[0], r[1]], "mode": ty}))),
             ("parallel", 2) => Some(("sketch.constraint.parallel", json!({"a": r[0], "b": r[1]}))),
             ("perpendicular", 2) => Some(("sketch.constraint.perpendicular", json!({"a": r[0], "b": r[1]}))),
@@ -318,6 +353,9 @@ fn add_constraints(s: &mut Session, def: &Value, out: &mut Outcome) -> Result<()
             ("midpoint", 2) => Some(("sketch.constraint.midpoint", json!({"a": r[0], "b": r[1]}))),
             ("symmetric", 3) => Some(("sketch.constraint.symmetry", json!({"a": r[0], "b": r[1], "line": r[2]}))),
             ("fix", 1) => Some(("sketch.constraint.fix", json!({"entity": r[0], "fixed": true}))),
+            // Convert Entities: the own segment kept on its (projected) source: collinear for a line, on the same
+            // circle for an arc or circle (SolidCraft's coincident of two lines or two circles)
+            ("converted", 2) => Some(("sketch.constraint.coincident", json!({"a": r[1], "b": r[0]}))),
             _ => None,
         };
         match call {
@@ -362,7 +400,7 @@ fn add_dimensions(s: &mut Session, st: &mut PartState, def: &Value, fid: &str, o
                     }
                 })
             } else {
-                ref_of(out, e)
+                ref_or_project(s, st, out, e)
             };
             refs.push(r);
         }

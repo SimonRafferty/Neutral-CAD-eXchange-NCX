@@ -13,6 +13,7 @@
 
 mod expr;
 mod features;
+mod looks;
 mod mates;
 mod refs;
 mod sketch;
@@ -192,7 +193,8 @@ fn export_from(s: &mut Session, job: &Job, sc_version: &str, report: &mut Report
     // the mates (joints), read before anything moves; then removed in this session so that each part can be put
     // in its own frame (the design is never saved)
     let joint_info = s.exec("joint.inspect", json!({})).unwrap_or(Value::Null);
-    let (joints, skipped) = mates::read(&joint_info);
+    let links = s.exec("joint.list", json!({})).map(|l| l["links"].clone()).unwrap_or(Value::Null);
+    let (joints, skipped) = mates::read(&joint_info, &links);
     for (n, why) in skipped {
         report.add(&design_name, &n, "mate", Status::Note, why);
     }
@@ -209,6 +211,7 @@ fn export_from(s: &mut Session, job: &Job, sc_version: &str, report: &mut Report
             }
         }
     }
+    let meta = s.exec("document.metadata", json!({})).unwrap_or(Value::Null);
     let wanted = mates::faces_wanted(&joints);
     let mut mate_faces: HashMap<(i64, String), (Value, Option<crate::geom::V3>)> = HashMap::new();
     let all = s.exec("component.properties", json!({"component": 0, "descendants": true}))?;
@@ -295,7 +298,10 @@ fn export_from(s: &mut Session, job: &Job, sc_version: &str, report: &mut Report
         if !assembly {
             set_progress(&job.progress, "Writing the feature history", &name, n as f32 / total as f32);
             let want: Vec<String> = wanted.get(c).map(|w| w.iter().cloned().collect()).unwrap_or_default();
-            let (doc, faces) = write_part(s, &comps, *c, root, &doc_id, &name, &source_file, &items, &params, &values, &parameters, &want, report)?;
+            let (mut doc, faces) = write_part(s, &comps, *c, root, &doc_id, &name, &source_file, &items, &params, &values, &parameters, &want, report)?;
+            if let Err(e) = looks::add_to_part(s, *c, &mut doc, &meta, *c == root) {
+                report.add(&name, &name, "material", Status::Note, format!("material and colours not written ({e})"));
+            }
             for (f, d) in faces {
                 mate_faces.insert((*c, f), d);
             }
@@ -319,9 +325,11 @@ fn export_from(s: &mut Session, job: &Job, sc_version: &str, report: &mut Report
                                    "configuration": "Default", "transform": ncx_transform(tr), "fixed": grounded}));
             let _ = occ;
         }
-        documents.push(json!({"id": doc_id, "kind": "assembly", "name": name, "sourceFile": source_file,
+        let mut adoc = json!({"id": doc_id, "kind": "assembly", "name": name, "sourceFile": source_file,
                               "configurations": [{"id": "cfg:Default", "name": "Default", "values": {}}],
-                              "activeConfiguration": "cfg:Default", "components": components, "mates": mates_here, "features": []}));
+                              "activeConfiguration": "cfg:Default", "components": components, "mates": mates_here, "features": []});
+        looks::add_properties(&mut adoc, &meta, *c == root);
+        documents.push(adoc);
     }
 
     let model = json!({
@@ -370,10 +378,10 @@ fn write_part(
     }
     let mut w = refs::Walk::new(s, c);
     let mut part = features::Part::new(&mut w, name, params.clone(), values.clone());
-    for (ic, it) in items {
-        if *ic == c {
-            part.write(it, report)?;
-        }
+    let mine: Vec<&features::Item> = items.iter().filter(|(ic, _)| *ic == c).map(|(_, it)| it).collect();
+    for (i, it) in mine.iter().enumerate() {
+        part.next = mine.get(i + 1).map(|n| (n.k, n.type_name.clone(), n.info.clone()));
+        part.write(it, report)?;
     }
     part.w.at(None)?;
     let fps = part.fingerprints_with(true)?;

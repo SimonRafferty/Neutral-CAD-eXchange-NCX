@@ -45,7 +45,10 @@ pub fn build(s: &mut Session, st: &mut PartState, f: &Value) -> Result<Built> {
         "cosmeticThread" => Ok(Built::Skipped("cosmetic thread: annotation only, not carried".into())),
         other => {
             let _ = def;
-            match super::features2::build(s, st, f)? {
+            if let Some(b) = super::features2::build(s, st, f)? {
+                return Ok(b);
+            }
+            match super::features3::build(s, st, f, 0)? {
                 Some(b) => Ok(b),
                 None => bail!("{other} is not rebuilt by this version"),
             }
@@ -239,7 +242,35 @@ fn extrude(s: &mut Session, st: &mut PartState, f: &Value, cut: bool) -> Result<
     }
 
     let before = if cut { Some(total_volume(s)?) } else { None };
-    s.exec("solid.extrude", p.clone())?;
+    if let Err(e) = s.exec("solid.extrude", p.clone()) {
+        // regions the source split with an edge of the face (a hole a face edge runs through: two half-discs) are one
+        // region in SolidCraft's sketch, which refuses two picks in it: picks are added one at a time and a pick that
+        // lands in a region already picked is left out (the halves together are that one region)
+        if !e.to_string().contains("pick the same profile") {
+            return Err(e);
+        }
+        let picks: Vec<Value> = p["profiles"].as_array().cloned().unwrap_or_default();
+        let mut kept: Vec<Value> = Vec::new();
+        for pk in picks {
+            let mut q = p.clone();
+            let mut trial = kept.clone();
+            trial.push(pk.clone());
+            q["profiles"] = json!(trial);
+            q["exact_regions"] = json!(false);
+            let cp = s.exec("edit.checkpoint", json!({}))?["checkpoint"].clone();
+            let r = s.exec("solid.extrude", q);
+            s.exec("edit.restore_checkpoint", json!({"checkpoint": cp}))?;
+            match r {
+                Ok(_) => kept.push(pk),
+                Err(e2) if e2.to_string().contains("pick the same profile") => {}
+                Err(e2) => return Err(e2),
+            }
+        }
+        p["profiles"] = json!(kept);
+        p["exact_regions"] = json!(false);
+        s.exec("solid.extrude", p.clone())?;
+        notes.push("regions the source split with a face edge picked once (one region here)".into());
+    }
     if let Some(v0) = before {
         // a cut that leaves the volume as it was has gone the wrong way: try the other way
         let v1 = total_volume(s)?;
@@ -521,6 +552,29 @@ pub fn apply_result(s: &mut Session, st: &mut PartState, f: &Value) -> Result<()
             s.exec("component.move_bodies", json!({"bodies": names, "component": target}))?;
             // the import's own component stays (it holds the import the bodies came from): hidden
             let _ = s.exec("browser.visibility", json!({"visible": false, "items": [comp]}));
+        }
+        // in a sheet-metal part the imported body is plain geometry: recognised as sheet metal again, so the part
+        // still unfolds and later flanges, cuts and folds build on it (a body of one even thickness; others are left)
+        // (the part's own rule named: without one SolidCraft takes whichever rule is active when the design is rebuilt,
+        // and a later part's 2 mm rule thickened the user's 1.5 mm Half Shell on reopening)
+        // Kept only where it leaves the shape as it was: SolidCraft redoes the corners of flanges that meet its own way,
+        // which changed P34's body (and the closed corner's carried shape after it no longer fitted)
+        if let Some((rule, _)) = st.sheet_rule.clone() {
+            for n in &names {
+                let vol = |s: &mut Session| -> Option<(f64, f64)> {
+                    let m = s.exec("inspect.measure", json!({"bodies": [n]})).ok()?;
+                    let b = &m["bodies"][0];
+                    Some((b["volume_mm3"].as_f64()?, b["area_mm2"].as_f64()?))
+                };
+                let Some(before) = vol(s) else { continue };
+                let Ok(cp) = s.exec("edit.checkpoint", json!({})) else { continue };
+                if s.exec("sheet.recognize", json!({"body": n, "rule": rule})).is_ok() {
+                    let same = vol(s).map(|a| (a.0 - before.0).abs() <= 1e-6 * before.0.max(1.0) && (a.1 - before.1).abs() <= 1e-6 * before.1.max(1.0));
+                    if same != Some(true) {
+                        s.exec("edit.restore_checkpoint", json!({"checkpoint": cp["checkpoint"]}))?;
+                    }
+                }
+            }
         }
         let _ = std::fs::remove_file(&path);
     }

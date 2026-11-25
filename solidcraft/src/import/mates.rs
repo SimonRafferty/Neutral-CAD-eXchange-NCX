@@ -18,6 +18,7 @@ use anyhow::{anyhow, bail, Result};
 use serde_json::{json, Value};
 
 use super::features::pick;
+use super::num;
 use crate::report::{Report, Status};
 use crate::sc::{self, Session};
 
@@ -191,10 +192,23 @@ pub fn make_all(
     for asm in assemblies {
         let doc = &docs[asm];
         let asm_name = doc["name"].as_str().unwrap_or("assembly").to_string();
-        for m in doc["mates"].as_array().into_iter().flatten() {
+        // mates that couple motion go last: they link the joints the other mates make
+        let mut ordered: Vec<&Value> = doc["mates"].as_array().into_iter().flatten().filter(|m| !is_coupling(m)).collect();
+        ordered.extend(doc["mates"].as_array().into_iter().flatten().filter(|m| is_coupling(m)));
+        for m in ordered {
             let name = m["name"].as_str().unwrap_or("Mate").to_string();
             let kind = m["type"].as_str().unwrap_or("").to_string();
-            let r = if kind == "hinge" { hinge(s, m, asm, docs, placed) } else { one(s, m, asm, docs, placed) };
+            let r = if kind == "hinge" {
+                hinge(s, m, asm, docs, placed)
+            } else if is_coupling(m) {
+                coupling(s, m, asm, docs, placed)
+            } else if kind == "width" {
+                width(s, m, asm, docs, placed)
+            } else if kind == "slot" {
+                slot(s, m, asm, docs, placed)
+            } else {
+                one(s, m, asm, docs, placed)
+            };
             match r {
                 Ok(note) => {
                     made += 1;
@@ -210,6 +224,150 @@ pub fn make_all(
         }
     }
     Ok((made, left))
+}
+
+/// The distance between two parallel face descriptors' planes (in their own part's frame).
+fn plane_gap(a: &Value, b: &Value) -> Option<f64> {
+    let pa = crate::geom::v3(&a["ref"]["geom"]["params"]["point"])?;
+    let pb = crate::geom::v3(&b["ref"]["geom"]["params"]["point"])?;
+    let n = crate::geom::unit(crate::geom::v3(&a["ref"]["geom"]["params"]["normal"])?);
+    Some(crate::geom::dot(crate::geom::sub(pb, pa), n).abs())
+}
+
+/// A width mate, centred (SolidCraft has none): the tab held at the gap a centred tab leaves, as a distance from
+/// one outer face to the tab face beside it. Same placement and the same freedom left; the tab no longer re-centres
+/// when the widths change.
+fn width(s: &mut Session, m: &Value, asm: &str, docs: &HashMap<String, Value>, placed: &Placed) -> Result<String> {
+    let refs = m["refs"].as_array().cloned().unwrap_or_default();
+    let outer: Vec<&Value> = refs.iter().filter(|r| r["role"] == "width").collect();
+    let tab: Vec<&Value> = refs.iter().filter(|r| r["role"] == "tab").collect();
+    if outer.len() != 2 || tab.len() != 2 {
+        bail!("a width mate with {} outer and {} tab faces", outer.len(), tab.len());
+    }
+    let c = m["params"]["constraint"].as_str().unwrap_or("centered");
+    let (wo, wt) = (plane_gap(outer[0], outer[1]).ok_or_else(|| anyhow!("its outer faces are not planes"))?,
+                    plane_gap(tab[0], tab[1]).ok_or_else(|| anyhow!("its tab faces are not planes"))?);
+    let gap = match c {
+        "centered" => (wo - wt) / 2.0,
+        "distance" => num(&m["params"]["distance"]),
+        "percent" => (wo - wt) * num(&m["params"]["percent"]) / 100.0,
+        _ => bail!("a free width mate holds nothing a constraint can say"),
+    };
+    let mut last = None;
+    for t in &tab {
+        let mut d = m.clone();
+        d["type"] = json!("distance");
+        d["refs"] = json!([outer[0], t]);
+        d["params"] = json!({"distance": gap});
+        match one(s, &d, asm, docs, placed) {
+            Ok(_) => return Ok(format!("as a {gap} mm distance from an outer face to the tab (SolidCraft has no width mate; the tab does not re-centre if the widths change)")),
+            Err(e) if sc::is_cancelled(&e) => return Err(e),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow!("not made")))
+}
+
+/// A slot mate: the riding part's round face tangent to the slot's face (it slides along the slot and turns in it,
+/// as in the source); a centred slot wider than the pin keeps its distance instead.
+fn slot(s: &mut Session, m: &Value, asm: &str, docs: &HashMap<String, Value>, placed: &Placed) -> Result<String> {
+    // SolidCraft's pin-in-slot joint, at the mate's frame (FORMAT-SPEC mate `frame`: origin on the pin's axis, x along
+    // the slot, z along the pin), both parts' joint origins there, so nothing moves
+    if let (Some(fo), Some(fx), Some(fz)) = (crate::geom::v3(&m["frame"]["origin"]), crate::geom::v3(&m["frame"]["x"]), crate::geom::v3(&m["frame"]["z"])) {
+        let refs = m["refs"].as_array().cloned().unwrap_or_default();
+        if refs.len() >= 2 {
+            let a = side(&refs[0], asm, docs, placed)?;
+            let b = side(&refs[1], asm, docs, placed)?;
+            let world = *placed.world.get(asm).unwrap_or(&identity());
+            let o = apply(&world, fo);
+            let dir = |d: [f64; 3]| crate::geom::unit(crate::geom::sub(apply(&world, crate::geom::add(fo, d)), o));
+            let at = |side: &Side| {
+                let mut j = json!({"occurrence": side.occurrence, "point": o, "z": dir(fz), "x": dir(fx)});
+                if let Some(p) = side.origin.get("path") {
+                    j["path"] = p.clone();
+                }
+                j
+            };
+            let name = m["name"].as_str().unwrap_or("Slot");
+            let before = placements(s)?;
+            if let Ok(res) = s.exec("joint.create", json!({"type": "pin_slot", "a": at(&a), "b": at(&b), "flip": true, "name": name})) {
+                let after = placements(s)?;
+                let conflict = res["conflicts"].as_array().map(|c| !c.is_empty()).unwrap_or(false);
+                if !moved(&before, &after) && !conflict {
+                    return Ok("as SolidCraft's pin-in-slot joint at the mate's frame".into());
+                }
+                if let Some(j) = res.get("joint").filter(|j| !j.is_null()) {
+                    let _ = s.exec("joint.delete", json!({"joint": j}));
+                }
+            }
+        }
+    }
+    let mut t = m.clone();
+    t["type"] = json!("tangent");
+    match one(s, &t, asm, docs, placed) {
+        Ok(_) => Ok("as the pin tangent to the slot's face (SolidCraft has no slot mate)".into()),
+        Err(e) if sc::is_cancelled(&e) => Err(e),
+        Err(_) => {
+            let mut c = m.clone();
+            c["type"] = json!("coincident");
+            one(s, &c, asm, docs, placed).map(|_| "as the pin on the slot's face (SolidCraft has no slot mate)".into())
+        }
+    }
+}
+
+fn is_coupling(m: &Value) -> bool {
+    matches!(m["type"].as_str(), Some("gear" | "screw" | "rackPinion"))
+}
+
+/// A gear, screw or rack-and-pinion mate as SolidCraft's motion link between the joints the parts move on (made
+/// by the other mates: a turning joint for a gear or pinion, a sliding one for a rack, a cylindrical one for a
+/// screw).
+fn coupling(s: &mut Session, m: &Value, asm: &str, docs: &HashMap<String, Value>, placed: &Placed) -> Result<String> {
+    let kind = m["type"].as_str().unwrap_or("");
+    let refs = m["refs"].as_array().cloned().unwrap_or_default();
+    if refs.len() < 2 {
+        bail!("it has {} references where a {kind} mate has 2", refs.len());
+    }
+    let a = side(&refs[0], asm, docs, placed)?;
+    let b = side(&refs[1], asm, docs, placed)?;
+    let jl = s.exec("joint.list", json!({}))?;
+    let joints: Vec<Value> = jl["joints"].as_array().cloned().unwrap_or_default();
+    let on = |occ: &Value, types: &[&str]| -> Option<Value> {
+        joints.iter().find(|j| (j["a"] == *occ || j["b"] == *occ) && types.contains(&j["type"].as_str().unwrap_or("")) && j["suppressed"] != true)
+            .map(|j| j["id"].clone())
+    };
+    let p = &m["params"];
+    let reverse = p["reverse"].as_bool().unwrap_or(false);
+    let name = m["name"].as_str().unwrap_or(kind);
+    match kind {
+        "gear" => {
+            let ja = on(&a.occurrence, &["revolute", "cylindrical"]).ok_or_else(|| anyhow!("the first gear turns on no joint here"))?;
+            let jb = on(&b.occurrence, &["revolute", "cylindrical"]).ok_or_else(|| anyhow!("the second gear turns on no joint here"))?;
+            let ratio: Vec<f64> = p["ratio"].as_array().into_iter().flatten().filter_map(Value::as_f64).collect();
+            let (ra, rb) = if ratio.len() == 2 && ratio[0] > 0.0 && ratio[1] > 0.0 { (ratio[0], ratio[1]) } else { (1.0, 1.0) };
+            s.exec("joint.gear", json!({"a": ja, "b": jb, "ra": ra, "rb": rb, "internal": reverse, "name": name}))?;
+            Ok(format!("a SolidCraft gear link, ratio {ra}:{rb}"))
+        }
+        "screw" => {
+            // the cylindrical joint between the two parts: its turn drives its travel
+            let j = joints.iter().find(|j| {
+                ((j["a"] == a.occurrence && j["b"] == b.occurrence) || (j["a"] == b.occurrence && j["b"] == a.occurrence)) && j["type"] == "cylindrical"
+            }).map(|j| j["id"].clone()).ok_or_else(|| anyhow!("the two parts share no cylindrical joint here"))?;
+            let pitch = num(&p["pitch"]);
+            let pitch = if p["pitchAsTurnsPerMm"].as_bool() == Some(true) && pitch > 0.0 { 1.0 / pitch } else { pitch };
+            s.exec("joint.screw", json!({"joint": j, "pitch": format!("{pitch} mm"), "reverse": reverse, "name": name}))?;
+            Ok(format!("a SolidCraft screw link, {pitch} mm per turn"))
+        }
+        _ => {
+            // rack first, pinion second (either order in the file: the pinion is the side on a round face)
+            let (rack, pinion) = if a.geo == "circle" && b.geo != "circle" { (b, a) } else { (a, b) };
+            let jp = on(&pinion.occurrence, &["revolute", "cylindrical"]).ok_or_else(|| anyhow!("the pinion turns on no joint here"))?;
+            let jr = on(&rack.occurrence, &["slider", "cylindrical", "planar"]).ok_or_else(|| anyhow!("the rack slides on no joint here"))?;
+            let radius = num(&p["pitchDiameter"]) / 2.0;
+            s.exec("joint.rack_pinion", json!({"a": jp, "b": jr, "radius": format!("{radius} mm"), "reverse": reverse, "name": name}))?;
+            Ok(format!("a SolidCraft rack-and-pinion link, pitch radius {radius} mm"))
+        }
+    }
 }
 
 /// A hinge (round faces + a face pair, in that order): a concentric constraint on the round faces and a

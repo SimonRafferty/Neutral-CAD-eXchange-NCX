@@ -16,6 +16,7 @@ use crate::geom::{dot, v3, V3};
 use super::Comp;
 
 /// One end of a joint.
+#[derive(Clone)]
 pub struct End {
     pub comp: i64,
     /// occurrence names from the top of the design down to the part
@@ -35,10 +36,14 @@ pub struct Joint {
     pub suppressed: bool,
     /// the joint's frame (side a) in the model's frame
     pub frame: Option<Value>,
+    /// SolidCraft's joint id (motion links name joints by it)
+    pub id: i64,
+    /// a motion link's NCX params (gear, screw, rackPinion)
+    pub params: Value,
 }
 
 /// The joints `joint.inspect` lists, as far as NCX can carry them; the others with the reason.
-pub fn read(joints: &Value) -> (Vec<Joint>, Vec<(String, String)>) {
+pub fn read(joints: &Value, links: &Value) -> (Vec<Joint>, Vec<(String, String)>) {
     let mut out = Vec::new();
     let mut skipped = Vec::new();
     for j in joints["joints"].as_array().into_iter().flatten() {
@@ -78,8 +83,45 @@ pub fn read(joints: &Value) -> (Vec<Joint>, Vec<(String, String)>) {
             angle: j["angle"].as_f64().unwrap_or(0.0),
             suppressed: j["suppressed"].as_bool() == Some(true),
             frame: j["a"].get("frame").filter(|f| f.is_object()).cloned(),
+            id: j["id"].as_i64().unwrap_or(-1),
+            params: Value::Null,
         });
     }
+    // motion links (gear, screw, rack and pinion) between the joints: NCX mates that couple motion, on the round
+    // or flat faces those joints were made on (the moving part's end of each)
+    let mut coupled = Vec::new();
+    for (i, l) in links.as_array().into_iter().flatten().enumerate() {
+        let c = &l["coupling"];
+        let ty = c["type"].as_str().unwrap_or("");
+        let (Some(ja), Some(jb)) = (out.iter().find(|j| Some(j.id) == l["a"].as_i64()), out.iter().find(|j| Some(j.id) == l["b"].as_i64())) else {
+            skipped.push((format!("{ty} link {}", i + 1), "its joints are not carried".to_string()));
+            continue;
+        };
+        // the end of a joint that is not on the other joint's parts: the part that turns or slides
+        let moving = |x: &Joint, other: &Joint| -> End {
+            let shared = |e: &End| e.comp == other.a.comp || e.comp == other.b.comp;
+            if shared(&x.b) && !shared(&x.a) { x.a.clone() } else { x.b.clone() }
+        };
+        let mm = |v: &Value| v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().trim_end_matches("mm").trim().parse::<f64>().ok())).unwrap_or(0.0);
+        let reverse = c["reverse"].as_bool().unwrap_or(false);
+        let (kind, a, b, params) = match ty {
+            "gear" => ("gear", moving(ja, jb), moving(jb, ja),
+                       json!({"ratio": [mm(&c["ra"]), mm(&c["rb"])], "reverse": c["internal"].as_bool().unwrap_or(false) ^ reverse})),
+            "screw" if ja.id == jb.id => ("screw", ja.a.clone(), ja.b.clone(), json!({"pitch": mm(&c["pitch"]), "reverse": reverse})),
+            "rack_pinion" => {
+                let r = mm(&c["radius"]);
+                // NCX: the rack first, then the pinion
+                ("rackPinion", moving(jb, ja), moving(ja, jb), json!({"pitchDiameter": 2.0 * r, "travelPerTurn": 2.0 * std::f64::consts::PI * r, "byTravel": false, "reverse": reverse}))
+            }
+            other => {
+                skipped.push((format!("{other} link {}", i + 1), "this motion link has no NCX mate".to_string()));
+                continue;
+            }
+        };
+        coupled.push(Joint { name: format!("{}{}", match kind { "gear" => "Gear", "screw" => "Screw", _ => "RackPinion" }, i + 1), kind: kind.into(),
+                             a, b, offset: 0.0, angle: 0.0, suppressed: false, frame: None, id: -1, params });
+    }
+    out.extend(coupled);
     (out, skipped)
 }
 
@@ -159,6 +201,7 @@ pub fn for_assembly(
             "perpendicular" => ("perpendicular", Value::Null),
             "tangent" => ("tangent", Value::Null),
             "rigid" => ("lock", Value::Null),
+            "gear" | "screw" | "rackPinion" => (j.kind.as_str(), j.params.clone()),
             other => {
                 notes.push((j.name.clone(), format!("a {other} constraint has no NCX mate in this version (the parts are placed, not joined)")));
                 continue;
@@ -177,6 +220,12 @@ pub fn for_assembly(
                 _ => "aligned",
             },
         };
+        let (mut ra, mut rb) = (ra, rb);
+        if kind == "rackPinion" {
+            // FORMAT-SPEC: the rack's reference and the pinion's, by role
+            ra.0["role"] = json!("rack");
+            rb.0["role"] = json!("pinion");
+        }
         let mut m = json!({"id": format!("m:{}", j.name), "name": j.name, "type": kind, "refs": [ra.0, rb.0],
                            "alignment": alignment, "status": "mapped"});
         if !params.is_null() {

@@ -159,6 +159,168 @@ impl<'a> Walk<'a> {
         Ok(None)
     }
 
+    /// The part's straight edges between two planar faces: a point on each (its middle), its direction and the two
+    /// faces' normals.
+    pub fn line_edges(&mut self, only_body: Option<&str>) -> Result<Vec<(V3, V3, V3, V3)>> {
+        let mut out = Vec::new();
+        for b in self.body_names()? {
+            if only_body.map(|o| o != b).unwrap_or(false) {
+                continue;
+            }
+            let t = self.topology(&b)?;
+            for e in t["edges"].as_array().into_iter().flatten() {
+                let EdgeGeo::Line { a, b: e2 } = edge_geo(e, &t) else { continue };
+                let names = split_names(e["name"].as_str().unwrap_or(""));
+                let normals: Vec<V3> = names.iter().filter_map(|n| {
+                    t["faces"].as_array().into_iter().flatten().find(|f| f["name"] == n.as_str()).and_then(|f| v3(&f["plane_normal"]))
+                }).filter(|n| norm(*n) > 0.5).map(unit).collect();
+                if normals.len() == 2 {
+                    out.push((scale(add(a, e2), 0.5), unit(sub(e2, a)), normals[0], normals[1]));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every cylindrical face of the part's bodies: a point on its axis, the axis and the radius.
+    pub fn cylinders(&mut self) -> Result<Vec<(V3, V3, f64)>> {
+        self.cylinders_of(None)
+    }
+
+    /// The cylindrical faces a feature made (SolidCraft names them `F<id>:...`), or every one.
+    pub fn cylinders_of(&mut self, feature: Option<i64>) -> Result<Vec<(V3, V3, f64)>> {
+        let tag = feature.map(|f| format!("F{f}:"));
+        let mut out = Vec::new();
+        for b in self.body_names()? {
+            let t = self.topology(&b)?;
+            for f in t["faces"].as_array().into_iter().flatten() {
+                if let Some(tag) = &tag {
+                    if !f["name"].as_str().unwrap_or("").starts_with(tag.as_str()) {
+                        continue;
+                    }
+                }
+                if let Some(c) = f.get("cylinder").filter(|c| c.is_object()) {
+                    if let (Some(o), Some(a), Some(r)) = (v3(&c["origin"]), v3(&c["axis"]), c["radius"].as_f64()) {
+                        out.push((o, unit(a), r));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The largest planar face the feature made whose normal is square to `x` (a flange's web): its normal.
+    pub fn feature_web_normal(&mut self, feature: i64, x: V3) -> Result<Option<V3>> {
+        let tag = format!("F{feature}:");
+        let mut best: Option<(f64, V3)> = None;
+        for b in self.body_names()? {
+            let t = self.topology(&b)?;
+            for f in t["faces"].as_array().into_iter().flatten() {
+                if !f["name"].as_str().unwrap_or("").starts_with(&tag) {
+                    continue;
+                }
+                let (Some(n), Some(a)) = (v3(&f["plane_normal"]).filter(|n| norm(*n) > 0.5), f["area"].as_f64()) else { continue };
+                if dot(unit(n), x).abs() < 1e-6 && best.map(|b| a > b.0).unwrap_or(true) {
+                    best = Some((a, unit(n)));
+                }
+            }
+        }
+        Ok(best.map(|b| b.1))
+    }
+
+    /// The outward normal of a flange's free end: the feature's planar face square to both the edge and the web.
+    pub fn feature_end_normal(&mut self, feature: i64, x: V3, web: V3) -> Result<Option<V3>> {
+        let tag = format!("F{feature}:");
+        let along = unit(cross(web, x));
+        for b in self.body_names()? {
+            let t = self.topology(&b)?;
+            let hit = t["faces"].as_array().into_iter().flatten().find(|f| {
+                f["name"].as_str().unwrap_or("").starts_with(&tag)
+                    && v3(&f["plane_normal"]).filter(|n| norm(*n) > 0.5).map(|n| dot(unit(n), along).abs() > 1.0 - 1e-6).unwrap_or(false)
+            }).cloned();
+            if let Some(f) = hit {
+                let Some(p) = v3(&f["point"]) else { continue };
+                let r = self.s.exec("inspect.classify_points", json!({"body": b, "points": [p]}))?;
+                if let Some(n) = v3(&r["results"][0]["normal"]) {
+                    return Ok(Some(unit(n)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// The planar faces an edge joins (near a pick point): each face's outward normal and area.
+    pub fn edge_faces(&mut self, pick: V3) -> Result<Vec<(V3, f64)>> {
+        let mut best: Option<(f64, String, Value)> = None;
+        for b in self.body_names()? {
+            let t = self.topology(&b)?;
+            for e in t["edges"].as_array().into_iter().flatten() {
+                let d = edge_geo(e, &t).distance(pick);
+                if best.as_ref().map(|x| d < x.0).unwrap_or(true) {
+                    best = Some((d, b.clone(), e.clone()));
+                }
+            }
+        }
+        let Some((_, body, e)) = best else { return Ok(Vec::new()) };
+        let t = self.topology(&body)?;
+        let mut out = Vec::new();
+        for n in split_names(e["name"].as_str().unwrap_or("")) {
+            let Some(f) = t["faces"].as_array().into_iter().flatten().find(|f| f["name"] == n.as_str()).cloned() else { continue };
+            if v3(&f["plane_normal"]).filter(|v| norm(*v) > 0.5).is_none() {
+                continue;
+            }
+            let Some(p) = v3(&f["point"]) else { continue };
+            let r = self.s.exec("inspect.classify_points", json!({"body": body, "points": [p]}))?;
+            if let Some(nn) = v3(&r["results"][0]["normal"]) {
+                out.push((unit(nn), f["area"].as_f64().unwrap_or(0.0)));
+            }
+        }
+        Ok(out)
+    }
+
+    /// The planar faces of a body: name, normal, a point on it and its area.
+    pub fn planes(&mut self, body: &str) -> Result<Vec<(String, V3, V3, f64)>> {
+        let t = self.topology(body)?;
+        Ok(t["faces"].as_array().into_iter().flatten().filter_map(|f| {
+            let n = v3(&f["plane_normal"]).filter(|n| norm(*n) > 0.5)?;
+            if f.get("cylinder").map(|c| c.is_object()).unwrap_or(false) {
+                return None;
+            }
+            Some((f["name"].as_str().unwrap_or("").to_string(), unit(n), v3(&f["point"])?, f["area"].as_f64().unwrap_or(0.0)))
+        }).collect())
+    }
+
+    /// Points on a body's cylindrical faces of radius `r` (a sheet's inner bend faces).
+    pub fn bend_faces(&mut self, body: &str, r: f64) -> Result<Vec<V3>> {
+        let t = self.topology(body)?;
+        Ok(t["faces"].as_array().into_iter().flatten().filter_map(|f| {
+            let c = f.get("cylinder").filter(|c| c.is_object())?;
+            if (c["radius"].as_f64()? - r).abs() > 1e-6 * r.max(1.0) {
+                return None;
+            }
+            v3(&f["point"])
+        }).collect())
+    }
+
+    /// The ends of every edge of a face the feature made (SolidCraft names a feature's faces `F<id>:...`).
+    pub fn feature_vertices(&mut self, feature: i64) -> Result<Vec<V3>> {
+        let tag = format!("F{feature}:");
+        let mut out = Vec::new();
+        for b in self.body_names()? {
+            let t = self.topology(&b)?;
+            for e in t["edges"].as_array().into_iter().flatten() {
+                if split_names(e["name"].as_str().unwrap_or("")).iter().any(|n| n.starts_with(&tag)) {
+                    for k in ["start", "end"] {
+                        if let Some(p) = v3(&e[k]) {
+                            out.push(p);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// A body reference (`{volume, centroid, bbox}`) by name.
     pub fn body_ref(&mut self, name: &str) -> Result<Value> {
         let b = self.bodies()?.into_iter().find(|b| b["name"] == name).ok_or_else(|| anyhow!("no body {name}"))?;
@@ -172,13 +334,23 @@ impl<'a> Walk<'a> {
     fn face_desc(&mut self, body: &str, f: &Value, t: &Value) -> Result<Value> {
         let name = f["name"].as_str().unwrap_or("");
         let point = v3(&f["point"]).unwrap_or([0.0; 3]);
-        let area = f["area"].as_f64().unwrap_or(0.0);
+        // the face's exact area: the topology lists a cylinder as its two halves (`...#2`), each with an area measured
+        // on its tessellation (a 5.5 mm hole through 2 mm: 16.84 for a half where the face is 34.56 whole), which no
+        // face of another system's rebuild has; `measure` on the face gives the whole face exactly
+        let area = self.s.tool("measure", json!({"items": [{"type": "face", "body": body, "index": f["index"], "point": point}]}))
+            .ok()
+            .and_then(|m| m["items"][0]["area_mm2"].as_f64())
+            .unwrap_or_else(|| f["area"].as_f64().unwrap_or(0.0));
         // the face's boundary, as points along each of its edges
         let mut boundary: Vec<Vec<V3>> = Vec::new();
         let mut bbox = BBox::default();
+        // SolidCraft lists a closed cylinder as its two halves (`<face>` and `<face>#2`): one face to every other system,
+        // so the descriptor covers both (its box too: another system's whole cylinder fails a half's box)
+        let base = face_base(name).to_string();
         for e in t["edges"].as_array().into_iter().flatten() {
             let en = e["name"].as_str().unwrap_or("");
-            if !split_names(en).iter().any(|n| n == name) {
+            let names = split_names(en);
+            if !names.iter().any(|n| face_base(n) == base) || names.iter().all(|n| face_base(n) == base) {
                 continue;
             }
             let g = edge_geo(e, t);
@@ -201,7 +373,7 @@ impl<'a> Walk<'a> {
         for chunk in cands.chunks(255) {
             let r = self.s.exec("inspect.classify_points", json!({"body": body, "points": chunk}))?;
             for (p, hit) in chunk.iter().zip(r["results"].as_array().into_iter().flatten()) {
-                if hit["class"] == "on" && hit["face"] == name {
+                if hit["class"] == "on" && hit["face"].as_str().map(|f| face_base(f) == base).unwrap_or(false) {
                     on.push(*p);
                 }
             }
@@ -247,6 +419,15 @@ impl<'a> Walk<'a> {
             g["weak"] = json!(true);
         }
         Ok(g)
+    }
+}
+
+/// A face's name without the trailing `#n` SolidCraft gives the second half of a closed cylinder (a `#[...]` inside a
+/// name tells different faces apart and is kept).
+fn face_base(name: &str) -> &str {
+    match name.rfind('#') {
+        Some(i) if i + 1 < name.len() && name[i + 1..].chars().all(|c| c.is_ascii_digit()) => &name[..i],
+        _ => name,
     }
 }
 

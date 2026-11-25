@@ -94,10 +94,13 @@ namespace Ncx.AddIn
         }
 
         // ---------------------------------------------------------------------------- commands
+        // SOLIDWORKS asks this on every menu refresh. It must not touch the active document: each such call wrapped
+        // the document in a new COM wrapper that was never released, and the .NET finalizer then released them
+        // from its own thread while documents were being made and closed (SOLIDWORKS 2018 died in clr.dll during
+        // long imports and exports). OnExport checks the document itself.
         public int OnEnableExport()
         {
-            var d = sw?.ActiveDoc as IModelDoc2;
-            return d != null && (d.GetType() == 1 || d.GetType() == 2) ? 1 : 0;
+            return 1;
         }
 
         public void OnAbout()
@@ -110,7 +113,11 @@ namespace Ncx.AddIn
         {
             UpdateCheck.Offer(Owner, Title);   // a newer release? one Yes/No box, once per session
             var d = sw.ActiveDoc as IModelDoc2;
-            if (d == null) return;
+            if (d == null || (d.GetType() != 1 && d.GetType() != 2))
+            {
+                MessageBox.Show(Owner, "Open the part or assembly to export first.", Title);
+                return;
+            }
             if (string.IsNullOrEmpty(d.GetPathName()))
             {
                 MessageBox.Show(Owner, "Save the document first: the export refers to it by file.", Title);

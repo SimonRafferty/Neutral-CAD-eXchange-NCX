@@ -44,6 +44,18 @@ pub struct Part<'w, 'a> {
     ids: HashMap<i64, String>,
     sketches: HashMap<i64, Value>,
     names: HashSet<String>,
+    /// SolidCraft's sheet-metal rules (`sheet.rules`), read once; the rule the part's `sheetMetal` was written for
+    rules: Option<Value>,
+    sheet_rule_name: Option<String>,
+    sheet_written: bool,
+    /// the next feature of this part (timeline index, type, timeline.inspect), set by the caller before each write
+    pub next: Option<(usize, String, Value)>,
+    /// a face move written together with the angled edge flange after it: its index and definition
+    face_move: Option<(usize, Value)>,
+    /// the last unfold written: its NCX id and bends (a refold after it is that unfold reversed)
+    last_unfold: Option<(String, Vec<Value>)>,
+    /// the weldment feature NCX wants before the first structural member has been written
+    weldment_written: bool,
     pub opaque: usize,
     pub mapped: usize,
 }
@@ -60,6 +72,13 @@ impl<'w, 'a> Part<'w, 'a> {
             ids: HashMap::new(),
             sketches: HashMap::new(),
             names: HashSet::new(),
+            rules: None,
+            sheet_rule_name: None,
+            sheet_written: false,
+            next: None,
+            face_move: None,
+            last_unfold: None,
+            weldment_written: false,
             opaque: 0,
             mapped: 0,
         }
@@ -76,6 +95,20 @@ impl<'w, 'a> Part<'w, 'a> {
         }
         self.names.insert(it.name.clone());
         let kind = it.info["type"].as_str().unwrap_or("").to_string();
+        // a face moved back right before an angled edge flange placed "inside" is how SolidCraft makes the source's
+        // "material inside" at that angle (the NCX import does it so): written with the flange, as that one flange
+        if it.type_name.starts_with("OffsetFace") {
+            if let Some((nk, nt, ni)) = &self.next {
+                let nd = &ni["definition"];
+                let pos = nd["position"].as_str().unwrap_or("inside");
+                let angle_input = ni["inputs"].as_array().into_iter().flatten().find(|i| i["label"] == "Angle")
+                    .and_then(|i| i["param"].as_str()).and_then(|p| self.values.get(p).copied()).unwrap_or(90.0);
+                if *nk == it.k + 1 && nt == "EdgeFlangeFeature" && pos == "inside" && (angle_input - 90.0).abs() > 1e-6 {
+                    self.face_move = Some((it.k, it.info["definition"].clone()));
+                    return Ok(());
+                }
+            }
+        }
         // a feature SolidCraft warns about that leaves the bodies as they were (a cut that misses) adds nothing:
         // written so (noGeometry), an importer skips it rather than making it cut somewhere
         if it.warning.is_some() && kind != "sketch" && kind != "construction_plane" && self.unchanged(it)? {
@@ -83,7 +116,16 @@ impl<'w, 'a> Part<'w, 'a> {
             report.add(&self.doc, &it.name, &kind, Status::Note, "it changes no body in SolidCraft: written as adding nothing");
             return Ok(());
         }
-        let r = match kind.as_str() {
+        let r = match it.type_name.as_str() {
+            "BaseFlangeFeature" => self.sheet_base(it),
+            "ContourFlangeFeature" => self.sheet_contour(it),
+            "ConvertToSheetMetalFeature" => self.sheet_convert(it),
+            "EdgeFlangeFeature" => self.sheet_edge_flange(it),
+            "UnfoldFeature" => self.sheet_unfold(it, false),
+            "RefoldFeature" => self.sheet_unfold(it, true),
+            _ => Err(anyhow!("-")),
+        };
+        let r = if r.as_ref().err().map(|e| e.to_string() == "-").unwrap_or(false) { match kind.as_str() {
             "sketch" => self.sketch(it),
             "extrude" => self.extrude(it),
             "revolve" => self.revolve(it),
@@ -96,6 +138,8 @@ impl<'w, 'a> Part<'w, 'a> {
             "mirror" => self.mirror(it),
             "shell" => self.shell(it),
             "construction_plane" => self.plane(it),
+            "construction_axis" => self.axis(it),
+            "frame_member" => self.frame_member(it),
             "draft" => self.draft(it),
             "sweep" => self.sweep(it),
             "combine" => self.combine(it),
@@ -104,7 +148,7 @@ impl<'w, 'a> Part<'w, 'a> {
             "rib" => self.rib(it),
             "split_body" | "split" => self.split(it),
             _ => Err(anyhow!("SolidCraft's {} has no NCX counterpart in this version", it.type_name)),
-        };
+        } } else { r };
         match r {
             Ok(Some(note)) => {
                 self.mapped += 1;
@@ -202,9 +246,15 @@ impl<'w, 'a> Part<'w, 'a> {
 
     /// The carried result of the feature at `k`: the part's bodies before it (`replaces`) and after it (STEP).
     fn result(&mut self, k: usize) -> Result<Value> {
-        self.w.at(Some(k))?;
+        self.result_span(k, k + 1)
+    }
+
+    /// The carried result of the features from `k0` to just before `k1` (one NCX feature SolidCraft makes in two).
+    fn result_span(&mut self, k0: usize, k1: usize) -> Result<Value> {
+        let k = k0;
+        self.w.at(Some(k0))?;
         let before: Vec<Value> = self.fingerprints()?.into_iter().map(|(_, fp, _)| fp).collect();
-        self.w.at(Some(k + 1))?;
+        self.w.at(Some(k1))?;
         let after = self.fingerprints_with(true)?;
         let names: Vec<&String> = after.iter().map(|(n, _, _)| n).collect();
         let data = if names.is_empty() {
@@ -388,6 +438,96 @@ impl<'w, 'a> Part<'w, 'a> {
         }
     }
 
+    /// A frame member: NCX `structuralMember` (FORMAT-SPEC 4) on the path sketch's lines, its profile by the ISO
+    /// names SolidWorks' library uses (`iso` / `square tube` / `20 x 20 x 2`); a weldment feature before the first.
+    fn frame_member(&mut self, it: &Item) -> Result<Option<String>> {
+        let d0 = self.def(it).clone();
+        let d = if d0["path_sketch"].is_null() && d0["def"].is_object() { d0["def"].clone() } else { d0 };
+        let path_sk = d["path_sketch"].as_i64().ok_or_else(|| anyhow!("its path is not a sketch (a 3D path or point pairs)"))?;
+        let skref = self.feature_ref(path_sk)?;
+        let skid = skref["id"].as_str().unwrap_or("").to_string();
+        let lines: Vec<String> = d["lines"].as_array().into_iter().flatten().filter_map(|l| l.as_str().map(String::from)).collect();
+        if lines.is_empty() {
+            bail!("no member lines");
+        }
+        let pr = &d["profile"]["profile"];
+        let num = |v: &Value| -> f64 { v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().trim_end_matches("mm").trim().parse().ok())).unwrap_or(0.0) };
+        let fmt = |v: f64| if (v - v.round()).abs() < 1e-9 { format!("{}", v.round() as i64) } else { format!("{v}") };
+        let (ty, size) = match pr["kind"].as_str().unwrap_or("") {
+            "rect_tube" => {
+                let (w, h, t) = (num(&pr["width"]), num(&pr["height"]), num(&pr["wall"]));
+                (if (w - h).abs() < 1e-9 { "square tube" } else { "rectangular tube" }, format!("{} x {} x {}", fmt(w), fmt(h), fmt(t)))
+            }
+            "round_tube" => ("pipe", format!("{} x {}", fmt(num(&pr["diameter"])), fmt(num(&pr["wall"])))),
+            "angle" => ("angle iron", format!("{} x {} x {}", fmt(num(&pr["width"])), fmt(num(&pr["height"])), fmt(num(&pr["thickness"])))),
+            "bar" => ("rectangular bar", format!("{} x {}", fmt(num(&pr["width"])), fmt(num(&pr["height"])))),
+            "round_bar" => ("round bar", fmt(num(&pr["diameter"]))),
+            other => bail!("a {other} profile is not written natively"),
+        };
+        let corner = match d["corner"].as_str().unwrap_or("none") {
+            "mitre" | "miter" => "miter",
+            "butt" if d["flip"].as_bool() == Some(true) => "butt2",
+            "butt" => "butt1",
+            _ => "none",
+        };
+        let angle = self.input(it, "Rotation").map(|x| x.0).unwrap_or(0.0);
+        if !self.weldment_written {
+            self.features.push(json!({"id": "f:weldment", "type": "weldment", "name": "Weldment", "status": "mapped",
+                                      "native": {"app": "SolidCraft", "type": "frame (written for its members)"}}));
+            self.weldment_written = true;
+        }
+        let fid = self.fid(it);
+        let segments: Vec<Value> = lines.iter().map(|l| json!({"kind": "sketchEntity", "by": "id", "feature": skid, "id": super::sketch::id_of(l)})).collect();
+        let gap = d["gap"].as_str().map(|g| num(&json!(g))).unwrap_or(0.0);
+        let def = json!({"profile": {"standard": "iso", "type": ty, "size": size},
+                         "groups": [{"segments": segments, "angle": angle, "cornerTreatment": corner, "gapWithinGroup": gap, "gapForOtherGroups": 0,
+                                     "mergeArcSegmentBodies": false, "miterMergeCondition": false}],
+                         "connectedSegments": if d["coped"].as_bool() == Some(true) { "copedCut" } else { "simpleCut" }, "allowProtrusion": true});
+        let note = "profile by its ISO name; checked by the carried result";
+        self.push(it, &fid, "structuralMember", &it.name, def, Some(note));
+        self.attach_result(it)?;
+        self.ids.insert(it.id, fid);
+        Ok(Some(note.into()))
+    }
+
+    /// A construction axis through a round face: NCX `axis` (cylindricalFace), its line along the face's extent.
+    fn axis(&mut self, it: &Item) -> Result<Option<String>> {
+        let d0 = self.def(it).clone();
+        let d = if d0["def"].is_object() { d0["def"].clone() } else { d0 };
+        if d["type"] != "through_face" {
+            bail!("an axis made by {} is not written natively", d["type"].as_str().unwrap_or("?"));
+        }
+        let at = v3(&d["face"]["at"]).ok_or_else(|| anyhow!("its face has no position"))?;
+        let fid = self.fid(it);
+        self.w.at(Some(it.k))?;
+        let face = self.w.face(at, None)?;
+        let g = &face["geom"];
+        if g["type"] != "cylinder" && g["type"] != "cone" {
+            bail!("an axis through a {} face is not written natively", g["type"].as_str().unwrap_or("?"));
+        }
+        let (Some(o), Some(ax)) = (v3(&g["params"]["origin"]), v3(&g["params"]["axis"])) else { bail!("its face has no axis") };
+        let ax = unit(ax);
+        // the line spans the face: its box corners measured along the axis
+        let bb: Vec<f64> = g["bbox"].as_array().into_iter().flatten().filter_map(Value::as_f64).collect();
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        if bb.len() == 6 {
+            for i in 0..8 {
+                let p = [bb[if i & 1 == 0 { 0 } else { 3 }], bb[if i & 2 == 0 { 1 } else { 4 }], bb[if i & 4 == 0 { 2 } else { 5 }]];
+                let t = dot(sub(p, o), ax);
+                lo = lo.min(t);
+                hi = hi.max(t);
+            }
+        }
+        if !lo.is_finite() {
+            lo = 0.0;
+            hi = 1.0;
+        }
+        let line = json!({"start": crate::geom::add(o, crate::geom::scale(ax, lo)), "end": crate::geom::add(o, crate::geom::scale(ax, hi))});
+        self.push(it, &fid, "axis", &it.name, json!({"axisType": "cylindricalFace", "references": [face], "line": line}), None);
+        self.ids.insert(it.id, fid);
+        Ok(None)
+    }
+
     fn extrude(&mut self, it: &Item) -> Result<Option<String>> {
         let d = self.def(it).clone();
         let fid = self.fid(it);
@@ -424,6 +564,11 @@ impl<'w, 'a> Part<'w, 'a> {
         if let Some((d2, _)) = self.input(it, "Distance 2").filter(|x| x.0 > 0.0) {
             def["end2"] = json!({"type": "blind", "depth": d2});
         }
+        // through all both ways: an extrude's two directions (throughAllBoth is a hole's word only, spec 4)
+        if def["end"]["type"] == "throughAllBoth" {
+            def["end"] = json!({"type": "throughAll"});
+            def["end2"] = json!({"type": "throughAll"});
+        }
         if let Some((so, _)) = self.input(it, "Start offset").filter(|x| x.0 != 0.0) {
             def["start"] = json!({"type": "offset", "distance": so.abs(), "reverse": so < 0.0});
         }
@@ -433,7 +578,21 @@ impl<'w, 'a> Part<'w, 'a> {
             notes.push("taper: its direction is checked by the carried result".into());
             carry = true;
         }
-        if d.get("thin").map(|v| v.as_bool() == Some(true) || v.is_object()).unwrap_or(false) {
+        // a thin wall (NCX `thin`): SolidCraft's side words; which side SolidWorks calls "one direction" is checked
+        // by the carried result
+        if let Some(th) = d.get("thin").filter(|v| v.is_object()) {
+            let (t, _) = self.input(it, "Thickness").ok_or_else(|| anyhow!("its wall has no thickness"))?;
+            let ty = match th["side"].as_str().unwrap_or("outside") {
+                "inside" => "oppositeDirection",
+                "center" => "midPlane",
+                "two_sides" => "twoDirection",
+                _ => "oneDirection",
+            };
+            let t2 = self.input(it, "Thickness 2").map(|x| x.0).unwrap_or(0.0);
+            def["thin"] = json!({"type": ty, "thickness": t, "thickness2": t2, "capEnds": false, "capThickness": 0});
+            notes.push("thin wall: its side is checked by the carried result".into());
+            carry = true;
+        } else if d.get("thin").map(|v| v.as_bool() == Some(true)).unwrap_or(false) {
             bail!("a thin-walled extrude is not written natively yet");
         }
         if !cut {
@@ -990,7 +1149,24 @@ impl<'w, 'a> Part<'w, 'a> {
     fn move_bodies(&mut self, it: &Item) -> Result<Option<String>> {
         let d = self.def(it).clone();
         let fid = self.fid(it);
-        if d.get("axis").map(|a| !a.is_null()).unwrap_or(false) || d.get("angle").map(|a| !a.is_null()).unwrap_or(false) {
+        // a turn about an axis along X, Y or Z (NCX rotate: angles about the axes through `origin`, degrees); the
+        // carried result checks the sense
+        if let Some(ax) = v3(&d["rotate_axis"]).or_else(|| v3(&d["axis"])) {
+            let ax = unit(ax);
+            let Some(i) = (0..3).find(|&i| (ax[i].abs() - 1.0).abs() < 1e-9) else { bail!("a turn about an axis that is not X, Y or Z is not written natively") };
+            let (a, _) = self.input(it, "Angle").ok_or_else(|| anyhow!("its angle is not a number"))?;
+            let mut angles = [0.0; 3];
+            angles[i] = a * ax[i].signum();
+            let origin = v3(&d["origin"]).unwrap_or([0.0; 3]);
+            let bodies = self.body_refs(it, d["bodies"].as_array().map(|v| v.as_slice()).unwrap_or(&[]))?;
+            let copy = d["copy"].as_bool() == Some(true);
+            self.push(it, &fid, "moveBody", &it.name, json!({"bodies": bodies, "copy": copy, "copies": 1, "rotate": {"origin": origin, "angles": angles}}),
+                      Some("turning sense checked by the carried result"));
+            self.attach_result(it)?;
+            self.ids.insert(it.id, fid);
+            return Ok(Some("turning sense checked by the carried result".into()));
+        }
+        if d.get("angle").map(|a| !a.is_null()).unwrap_or(false) {
             bail!("a turning move is not written natively");
         }
         let tr = [
@@ -1111,6 +1287,332 @@ fn stl_moments(d: &[u8]) -> Option<(f64, V3)> {
         }
     }
     Some((v.abs(), principal(inertia)))
+}
+
+impl<'w, 'a> Part<'w, 'a> {
+    /// The sheet-metal rule a feature uses (by name, else the part's last), written once as the part's `sheetMetal`
+    /// defaults before its first sheet-metal feature. Returns thickness, bend radius and K-factor.
+    fn sheet_defaults(&mut self, it: &Item, rule: Option<&str>) -> Result<(f64, f64, f64)> {
+        if self.rules.is_none() {
+            self.rules = Some(self.w.s.exec("sheet.rules", json!({}))?);
+        }
+        let rules = self.rules.clone().unwrap_or(Value::Null);
+        let want = rule.map(String::from).or_else(|| self.sheet_rule_name.clone());
+        let r = rules["rules"].as_array().into_iter().flatten()
+            .find(|r| want.as_deref().map(|w| r["rule"]["name"] == w).unwrap_or(false))
+            .or_else(|| rules["rules"].as_array().and_then(|a| a.iter().find(|r| r["rule"]["name"] == rules["active"])))
+            .cloned()
+            .ok_or_else(|| anyhow!("its sheet-metal rule was not found"))?;
+        let v = &r["values"];
+        let (t, rad, k) = (v["thickness"].as_f64().unwrap_or(0.0), v["bend_radius"].as_f64().unwrap_or(0.0), v["k_factor"].as_f64().unwrap_or(0.5));
+        if t <= 0.0 {
+            bail!("its sheet-metal rule has no thickness");
+        }
+        let name = r["rule"]["name"].as_str().unwrap_or("").to_string();
+        if self.sheet_rule_name.as_deref() != Some(name.as_str()) || !self.sheet_written {
+            let relief = v["relief_width"].as_f64().map(|w| w / t).unwrap_or(0.5);
+            let id = format!("{}:sheet", self.fid(it));
+            let fname = self.fresh_name("Sheet-Metal");
+            self.features.push(json!({"id": id, "type": "sheetMetal", "name": fname,
+                "native": {"app": "SolidCraft", "type": "SheetMetalRule"}, "status": "mapped",
+                "def": {"thickness": t, "bendRadius": rad, "bendAllowanceType": "kFactor", "kFactor": k, "bendAllowance": 0,
+                        "autoRelief": true, "reliefType": "rectangular", "reliefRatio": relief}}));
+            self.sheet_rule_name = Some(name);
+            self.sheet_written = true;
+        }
+        Ok((t, rad, k))
+    }
+
+    /// Unfold (every bend) or refold: the fixed face is the planar face that stays where it was (same plane and
+    /// area before and after); an unfold's bends are its inner bend faces, a refold names the unfold it reverses
+    /// (FORMAT-SPEC 4 `unfold` / `fold`).
+    fn sheet_unfold(&mut self, it: &Item, fold: bool) -> Result<Option<String>> {
+        let d = self.def(it).clone();
+        let fid = self.fid(it);
+        let (_, r, _) = self.sheet_defaults(it, None)?;
+        self.w.at(Some(it.k))?;
+        let body = match d["body"].as_str() {
+            Some(b) => b.to_string(),
+            None => self.w.body_names()?.into_iter().next().ok_or_else(|| anyhow!("no body"))?,
+        };
+        let before = self.w.planes(&body)?;
+        let bend_pts = if fold { Vec::new() } else { self.w.bend_faces(&body, r)? };
+        self.w.at(Some(it.k + 1))?;
+        let after = self.w.planes(&body).unwrap_or_default();
+        let still = before.iter().filter(|(_, n, p, a)| {
+            after.iter().any(|(_, n2, p2, a2)| norm(cross(*n, *n2)) < 1e-6 && dot(sub(*p2, *p), *n).abs() < 1e-6 && (a - a2).abs() <= 1e-6 * a.max(1.0))
+        }).max_by(|x, y| x.3.partial_cmp(&y.3).unwrap_or(std::cmp::Ordering::Equal)).cloned();
+        let (_, _, fixed_pt, _) = still.ok_or_else(|| anyhow!("its fixed face was not found (no face stays where it was)"))?;
+        self.w.at(Some(it.k))?;
+        let fixed = self.w.face(fixed_pt, Some(&body))?;
+        let mut def = json!({"fixedFace": fixed});
+        let note;
+        if fold {
+            let (uid, bends) = self.last_unfold.clone().ok_or_else(|| anyhow!("the unfold it reverses was not written natively"))?;
+            def["unfold"] = json!({"kind": "feature", "by": "id", "id": uid});
+            def["bends"] = json!(bends);
+            note = "reverses the unfold it names; checked by the carried result";
+        } else {
+            if bend_pts.is_empty() {
+                bail!("no bends to unfold");
+            }
+            let mut bends = Vec::new();
+            for (i, p) in bend_pts.iter().enumerate() {
+                bends.push(json!({"name": format!("Bend{}", i + 1), "face": self.w.face(*p, Some(&body))?}));
+            }
+            self.last_unfold = Some((fid.clone(), bends.clone()));
+            def["bends"] = json!(bends);
+            note = "every bend; checked by the carried result";
+        }
+        self.push(it, &fid, if fold { "fold" } else { "unfold" }, &it.name, def, Some(note));
+        self.attach_result(it)?;
+        self.ids.insert(it.id, fid);
+        Ok(Some(note.into()))
+    }
+
+    fn sheet_base(&mut self, it: &Item) -> Result<Option<String>> {
+        let d = self.def(it).clone();
+        let fid = self.fid(it);
+        let sk_id = d["sketch"].as_i64().ok_or_else(|| anyhow!("no sketch"))?;
+        let profile = self.feature_ref(sk_id)?;
+        let (t, r, k) = self.sheet_defaults(it, d["rule"].as_str())?;
+        let mut def = json!({"profile": profile, "thickness": t, "reverseThickness": d["flip"].as_bool() == Some(true),
+                             "bendRadius": r, "reverse": false, "kFactor": k});
+        if let Some(c) = self.contours(sk_id, &d["profiles"])? {
+            def["contours"] = c;
+        }
+        let note = "which side the thickness goes is checked by the carried result";
+        self.push(it, &fid, "baseFlange", &it.name, def, Some(note));
+        self.attach_result(it)?;
+        self.ids.insert(it.id, fid);
+        Ok(Some(note.into()))
+    }
+
+    fn sheet_contour(&mut self, it: &Item) -> Result<Option<String>> {
+        let d = self.def(it).clone();
+        let fid = self.fid(it);
+        let sk_id = d["sketch"].as_i64().ok_or_else(|| anyhow!("no sketch"))?;
+        // NCX's profile is the whole sketch: the chain must be every curve the sketch draws
+        let drawn = self.sketches.get(&sk_id).map(|s| {
+            s["curves"].as_array().into_iter().flatten().filter(|c| c["construction"].as_bool() != Some(true)).count()
+        });
+        if drawn != Some(d["curves"].as_array().map(|c| c.len()).unwrap_or(0)) {
+            bail!("its chain is part of a sketch");
+        }
+        let profile = self.feature_ref(sk_id)?;
+        let (t, r, k) = self.sheet_defaults(it, d["rule"].as_str())?;
+        let (depth, ex) = self.input(it, "Distance").ok_or_else(|| anyhow!("no distance"))?;
+        let def = json!({"profile": profile, "thickness": t, "reverseThickness": d["flip"].as_bool() == Some(true), "bendRadius": r,
+                         "kFactor": k, "reverse": d["reverse"].as_bool() == Some(true), "end": {"type": "blind", "depth": depth}});
+        let note = "which side the thickness goes is checked by the carried result";
+        self.push(it, &fid, "baseFlange", &it.name, def, Some(note));
+        self.feature_equation(&fid, &it.name, "D1", "end.depth", &ex);
+        self.attach_result(it)?;
+        self.ids.insert(it.id, fid);
+        Ok(Some(note.into()))
+    }
+
+    fn sheet_convert(&mut self, it: &Item) -> Result<Option<String>> {
+        let d = self.def(it).clone();
+        let fid = self.fid(it);
+        let (t, r, _) = self.sheet_defaults(it, d["rule"].as_str())?;
+        let body = d["body"].as_str().map(String::from);
+        let face_pick = v3(&d["face"]).ok_or_else(|| anyhow!("its fixed face is not a point"))?;
+        self.w.at(Some(it.k))?;
+        let fixed = self.w.face(face_pick, body.as_deref())?;
+        let outside = d["direction"] == "outside";
+        // the bend edges: the solid's straight edges that became bends (SolidCraft finds them itself; NCX lists them)
+        let before = self.w.line_edges(body.as_deref())?;
+        self.w.at(Some(it.k + 1))?;
+        let bends = self.w.cylinders()?;
+        let mut picks = Vec::new();
+        for (p, dir, n1, n2) in before {
+            let phi = dot(n1, n2).abs().clamp(-1.0, 1.0).acos();
+            let half = (phi / 2.0).cos().max(1e-6);
+            let hit = bends.iter().any(|(o, a, rad)| {
+                if norm(cross(*a, dir)) > 1e-6 {
+                    return false;
+                }
+                let q = sub(p, *o);
+                let dd = norm(sub(q, crate::geom::scale(*a, dot(q, *a))));
+                // the solid's faces are the sheet's outer faces (or inner ones, converted outward): the edge is the
+                // bend's virtual sharp, (r + t) / cos(phi / 2) from its axis (r / cos(phi / 2) outward)
+                let want = if outside { r } else { r + t } / half;
+                (rad - if outside { r } else { r + t }).abs() < 1e-6 && (dd - want).abs() < 1e-4 * want.max(1.0)
+            });
+            if hit {
+                picks.push(p);
+            }
+        }
+        self.w.at(Some(it.k))?;
+        let mut bend_edges = Vec::new();
+        for p in picks {
+            bend_edges.push(self.w.edge(p, body.as_deref())?);
+        }
+        let def = json!({"fixedFace": fixed, "bendEdges": bend_edges, "thickness": t, "bendRadius": r, "reverse": outside, "keepBody": false});
+        let note = "its bend edges found from the bends it made; checked by the carried result";
+        self.push(it, &fid, "convertToSheetMetal", &it.name, def, Some(note));
+        self.attach_result(it)?;
+        self.ids.insert(it.id, fid);
+        Ok(Some(note.into()))
+    }
+
+    /// An edge flange with the profile sketch SolidWorks needs: a rectangle on the flange's plane, its base on the
+    /// edge, as wide as the flange and as high as its web, measured on the flange SolidCraft built (its faces are
+    /// named after the feature).
+    fn sheet_edge_flange(&mut self, it: &Item) -> Result<Option<String>> {
+        let d = self.def(it).clone();
+        let fid = self.fid(it);
+        let pts: Vec<V3> = d["edges"].as_array().into_iter().flatten().filter_map(|e| v3(e).or_else(|| v3(&e["point"]))).collect();
+        if pts.is_empty() {
+            bail!("no edges");
+        }
+        if d["edges"].as_array().into_iter().flatten().any(|e| e.get("height").is_some() || e.get("angle").is_some() || e.get("segments").is_some()) {
+            bail!("an edge flange with its own height, angle or width per edge is not written natively yet");
+        }
+        let (t, r, _) = self.sheet_defaults(it, None)?;
+        let (ang, _) = self.input(it, "Angle").unwrap_or((90.0, String::new()));
+        let (h, ex) = self.input(it, "Height").ok_or_else(|| anyhow!("no height"))?;
+        // with the face move before it (see write): the flange on the edge as it was before the move (one edge only)
+        let moved = self.face_move.take().filter(|m| m.0 + 1 == it.k && pts.len() == 1);
+        let k0 = moved.as_ref().map(|m| m.0).unwrap_or(it.k);
+        let mut picks = pts.clone();
+        if let Some((_, md)) = &moved {
+            let delta = md["distance"].as_str().and_then(|x| x.trim().trim_end_matches("mm").trim().parse::<f64>().ok())
+                .or_else(|| md["distance"].as_f64()).unwrap_or(0.0);
+            if let Some(fp) = md["faces"].as_array().and_then(|f| f.first()).and_then(v3) {
+                self.w.at(Some(k0))?;
+                let mut found = None;
+                for b in self.w.body_names()? {
+                    let r = self.w.s.exec("inspect.classify_points", json!({"body": b, "points": [fp]}))?;
+                    if r["results"][0]["class"] == "on" {
+                        found = v3(&r["results"][0]["normal"]);
+                        break;
+                    }
+                }
+                let n = found.ok_or_else(|| anyhow!("the moved face was not found"))?;
+                picks[0] = sub(picks[0], crate::geom::scale(unit(n), delta));
+            }
+        }
+        // the flange's own bends (a flange on another flange's end has that one's bend right beside it)
+        self.w.at(Some(it.k + 1))?;
+        let mut bend_axes = self.w.cylinders_of(Some(it.id))?;
+        if bend_axes.is_empty() {
+            bend_axes = self.w.cylinders()?;
+        }
+        // the profile's height as SolidWorks draws it for that length: from the outer virtual sharp L - t tan(a/2)
+        // (its own files: 25 mm at 90 degrees -> 23.5, 1.5 mm at 45 degrees -> 0.879, t 1.5), from the inner one L,
+        // from the bend's tangent L + r
+        let a_half = (ang.to_radians() / 2.0).tan();
+        let hi = match d["height_from"].as_str().unwrap_or("outer") {
+            "inner" => h,
+            "tangent" => h + r,
+            _ => h - t * a_half,
+        };
+        if hi <= 0.0 {
+            bail!("its profile would have no height");
+        }
+        let mut edges_j = Vec::new();
+        let mut profiles_j = Vec::new();
+        for (i, pick) in picks.iter().enumerate() {
+            self.w.at(Some(k0))?;
+            let mut edge = self.w.edge(*pick, d["body"].as_str())?;
+            let gp = &edge["geom"]["params"];
+            let (Some(mut a0), Some(x)) = (v3(&gp["point"]), v3(&gp["direction"])) else { bail!("an edge flange on a curved edge is not written natively") };
+            let x = unit(x);
+            // the flange's rise, from what defines it: the sheet's end face points off the edge (u), the bend lies on
+            // the side of the face the flange rises from (n), and the web leaves at the flange's angle:
+            // y = cos(a) u + sin(a) n (the faces SolidCraft names after a flange are no guide to its web)
+            let faces = self.w.edge_faces(*pick)?;
+            let square: Vec<(V3, f64)> = faces.iter().copied().filter(|(n, _)| dot(*n, x).abs() < 1e-6).collect();
+            // the sheet's end face is the one a thickness wide (area over the edge's length); by area alone a flange
+            // shorter than the thickness (the Half Shell's 45-degree flange, 0.88 mm) would swap the two
+            let elen = edge["geom"]["length"].as_f64().unwrap_or(1.0).max(1e-9);
+            let by_width = |f: &(V3, f64)| (f.1 / elen - t).abs();
+            let small = square.iter().copied().min_by(|a, b| by_width(a).partial_cmp(&by_width(b)).unwrap_or(std::cmp::Ordering::Equal));
+            let big = small.and_then(|s| square.iter().copied().find(|f| f.0 != s.0));
+            let (Some((n_big, _)), Some((u, _))) = (big, small) else { bail!("the faces at the flange's edge were not found") };
+            let axis = bend_axes.iter().filter(|(_, a, _)| norm(cross(*a, x)) < 1e-6)
+                .map(|(o, _, rad)| {
+                    let q = sub(*o, a0);
+                    let off = sub(q, crate::geom::scale(x, dot(q, x)));
+                    (norm(off), off, *rad)
+                })
+                .filter(|(dd, _, rad)| *dd < (r + 3.0 * t + *rad) * 2.0)
+                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let Some((_, off, _)) = axis else { bail!("the flange's bend was not found") };
+            let n_rise = if dot(off, n_big) >= 0.0 { n_big } else { crate::geom::scale(n_big, -1.0) };
+            let a_rad = ang.to_radians();
+            let y = unit(crate::geom::add(crate::geom::scale(u, a_rad.cos()), crate::geom::scale(n_rise, a_rad.sin())));
+            // SolidWorks builds the flange on the edge of the face it rises from: that edge, or its twin a thickness away
+            if dot(n_big, n_rise) < 0.0 {
+                let twin = sub(*pick, crate::geom::scale(n_big, t));
+                let e2 = self.w.edge(twin, d["body"].as_str())?;
+                if let (Some(p2), Some(x2)) = (v3(&e2["geom"]["params"]["point"]), v3(&e2["geom"]["params"]["direction"])) {
+                    if norm(cross(unit(x2), x)) < 1e-6 {
+                        edge = e2;
+                        a0 = p2;
+                    }
+                }
+            }
+            let x = v3(&edge["geom"]["params"]["direction"]).map(unit).unwrap_or(x);
+            // the profile spans the edge (SolidCraft's flange runs the edge's whole length)
+            let (s0, s1) = (0.0, edge["geom"]["length"].as_f64().unwrap_or(elen));
+            let z = unit(cross(x, y));
+            let skid = if picks.len() == 1 { format!("{fid}:profile") } else { format!("{fid}:profile{}", i + 1) };
+            let skname = self.fresh_name(&if picks.len() == 1 { format!("{} profile", it.name) } else { format!("{} profile {}", it.name, i + 1) });
+            let ents = json!([
+                {"id": "p1", "type": "point", "p": [s0, 0.0]}, {"id": "p2", "type": "point", "p": [s1, 0.0]},
+                {"id": "p3", "type": "point", "p": [s1, hi]}, {"id": "p4", "type": "point", "p": [s0, hi]},
+                {"id": "s1", "type": "line", "start": [s0, 0.0], "end": [s1, 0.0], "startPoint": "p1", "endPoint": "p2"},
+                {"id": "s2", "type": "line", "start": [s1, 0.0], "end": [s1, hi], "startPoint": "p2", "endPoint": "p3"},
+                {"id": "s3", "type": "line", "start": [s1, hi], "end": [s0, hi], "startPoint": "p3", "endPoint": "p4"},
+                {"id": "s4", "type": "line", "start": [s0, hi], "end": [s0, 0.0], "startPoint": "p4", "endPoint": "p1"}]);
+            let cons = json!([{"type": "horizontal", "entities": ["s1"]}, {"type": "vertical", "entities": ["s2"]},
+                              {"type": "horizontal", "entities": ["s3"]}, {"type": "vertical", "entities": ["s4"]}]);
+            let dims = json!([{"id": "d1", "name": "D1", "fullName": format!("D1@{skname}"), "kind": "distance", "entities": ["p1", "p4"],
+                               "value": hi, "driving": true, "textPosition": [(s0 + s1) / 2.0, hi / 2.0]}]);
+            self.features.push(json!({"id": skid, "type": "sketch", "name": skname, "status": "mapped",
+                "native": {"app": "SolidCraft", "type": "flange profile (written for the flange)"},
+                "def": {"plane": {"kind": "generated", "by": it.name}, "frame": {"origin": a0, "x": x, "z": z},
+                        "entities": ents, "constraints": cons, "dimensions": dims, "constrained": "under", "hidden": true}}));
+            edges_j.push(edge);
+            profiles_j.push(json!({"kind": "feature", "by": "id", "id": skid}));
+        }
+        // SolidCraft's words: inside = the outer virtual sharp on the edge (FORMAT-SPEC bendSharp; materialInside at 90)
+        let pos = match d["position"].as_str().unwrap_or("inside") {
+            _ if moved.is_some() => "materialInside",
+            "material_outside" => "materialOutside",
+            "outside" | "bend_outside" => "bendOutside",
+            "middle" => "bendCenterline",
+            "tangent" => "bendTangent",
+            _ if (ang - 90.0).abs() < 1e-6 => "materialInside",
+            _ => "bendSharp",
+        };
+        let datum = match d["height_from"].as_str().unwrap_or("outer") {
+            "inner" => "innerVirtualSharp",
+            "tangent" => "bendTangent",
+            _ => "outerVirtualSharp",
+        };
+        let br = self.input(it, "Radius").map(|x| x.0).unwrap_or(r);
+        let mut def = json!({"edge": edges_j[0], "profile": profiles_j[0], "angle": ang,
+            "useDefaultRadius": (br - r).abs() < 1e-9, "bendRadius": br, "position": pos, "useDefaultRelief": true,
+            "reliefType": "rectangular", "useReliefRatio": true, "reliefRatio": 0.5, "reliefWidth": t * 0.5, "reliefDepth": t * 0.5,
+            "length": {"type": "blind", "distance": h, "datum": datum, "reverse": false}});
+        if edges_j.len() > 1 {
+            def["edges"] = json!(edges_j);
+            def["profiles"] = json!(profiles_j);
+        }
+        let note = "checked by the carried result (systems place a flange by different words)";
+        self.push(it, &fid, "edgeFlange", &it.name, def, Some(note));
+        self.feature_equation(&fid, &it.name, "D1", "length.distance", &ex);
+        let res = self.result_span(k0, it.k + 1)?;
+        if let Some(f) = self.features.last_mut() {
+            f["result"] = res;
+        }
+        self.ids.insert(it.id, fid);
+        Ok(Some(note.into()))
+    }
 }
 
 /// Whether a loop of curve ids runs along whole curves: a closed curve (circle, ellipse) alone, or open curves

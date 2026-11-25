@@ -26,7 +26,9 @@ namespace Ncx.Sw
                 first.Name = activeName;
                 existing = new HashSet<string> { activeName };
             }
-            foreach (var c in cfgs.Where(c => !existing.Contains(c.Str("name"))))
+            // a weldment's own derived configurations ("Default<As Machined>") stand for their parent's name: a file
+            // from a system without them names only "Default"
+            foreach (var c in cfgs.Where(c => !existing.Contains(c.Str("name")) && !existing.Any(n => n.StartsWith(c.Str("name") + "<", StringComparison.Ordinal))))
                 if (doc.AddConfiguration3(c.Str("name"), "", "", 0) == null)
                     Report.Add(docId, "configuration " + c.Str("name"), "failed", "could not be created");
             doc.ShowConfiguration2(activeName);

@@ -158,6 +158,79 @@ revolved and planar surfaces, knit; extrudes starting at a face (`from`).
   diameters. Replayed in SolidWorks 2018 (development driver): the fan rebuilds with its history, mass, faces and
   structure matching.
 
+## Sheet metal both ways (after 0.1.5)
+
+- **Import.** The user's Rear AC sheet-metal parts now come in as real SolidCraft sheet metal with their whole
+  history (Lid 6 bends, Half Shell 5, Stirrup 2; volumes as the file's). What was missing:
+  - SolidWorks' "material inside" edge flange at an angle other than 90 degrees runs its outer face through the
+    edge t*tan(angle - 90) further than SolidCraft's "inside" (FORMAT-SPEC 4). Made as `solid.offset_face` of the
+    sheet's end face by that much, then `sheet.flange` "inside" at the new edge: the 45-degree Half Shell flange
+    then matched SolidWorks to 0.1 mm3 and its bend axis exactly.
+  - A flange that differs from its carried shape now tries every SolidCraft position word both ways round.
+  - After a carried shape in a sheet-metal part, the imported body is recognised as sheet metal again
+    (`sheet.recognize` with the part's own rule named: without `rule` it takes whichever rule is active when the design
+    is rebuilt, and a later part's 2 mm rule thickened the 1.5 mm Half Shell on reopening). Kept only when it leaves
+    volume and area as they were (on P34 it redid the corner and the closed corner's shape no longer fitted).
+  - Regions the source split with a face edge (a hole a face edge runs through: two half-discs) are one region in
+    SolidCraft, which refuses two picks in it: picks landing in a region already picked are left out.
+- **Export.** SolidCraft sheet metal is written natively: the rule (`sheetMetal`), base flanges, contour flanges
+  (`baseFlange` with depth), Convert to Sheet Metal (bend edges found as the solid's edges whose bend SolidCraft made:
+  the edge is the bend's virtual sharp, (r + t) / cos(phi/2) from its axis) and edge flanges on one or several edges.
+  An edge flange gets the profile sketch SolidWorks needs, on the edge of the face the flange rises from: the rise is
+  y = cos(a) u + sin(a) n (u: out of the sheet's end face, the face a thickness wide; n: the face on the side of the
+  flange's own bend), the profile height L - t tan(a/2) from the outer virtual sharp (SolidWorks' own files: 23.5 for
+  25 mm at 90 degrees, 0.879 for 1.5 mm at 45). A face move made by the import together with an angled "inside" flange
+  is written back as one "material inside" flange. Every sheet-metal feature carries its result.
+  SolidWorks 2026 (development driver) rebuilds all of Rear AC's sheet metal natively from the SolidCraft export
+  (79 features rebuilt; parts match; 5 mates on sheet-metal faces do not resolve yet). SolidWorks 2018 crashed on
+  that file, first at the Half Shell's large face sketch, then (2026-11-25) at three other places in three runs, each
+  time inside clr.dll (.NET internal error 80131506). Not the sketch: with the NCX add-in kept out of 2018 the whole
+  file imported; with the add-in's menu-enable callback fixed it imported too, whole sketches and split alike (same
+  verdicts). The callback (sw/Ncx.AddIn/AddIn.cs OnEnableExport, called on every menu refresh) wrapped the active
+  document in a new COM wrapper each time and never released it; the finalizer thread released them while documents
+  were being made and closed. It now returns 1 and OnExport checks the document. A sketch splitter (separate outlines
+  into several sketches, the cut repeated per sketch) stays in the SW importer as a developer option
+  (NCX_SPLIT_SKETCHES=1); no version is known to need it. Not yet: jogs, closed corners, miter flanges (carried).
+- **Unfold / refold** are written natively (FORMAT-SPEC 4 `unfold` / `fold`): the fixed face is the planar face that
+  stays where it was (same plane and area before and after), an unfold's bends are its inner bend faces (radius r),
+  a refold names the unfold it reverses (SolidWorks then takes that unfold's bends again). P41 rebuilds entirely in
+  SolidWorks 2026, the slot cut on the flat sheet included.
+- **Mates on sheet-metal faces.** Two things kept a mate's face from resolving in SolidWorks:
+  - `body_topology` lists a closed cylinder as two halves (`<face>`, `<face>#2`) with areas measured on the
+    tessellation (16.84 for a half where the hole is 34.56 whole): the area is now `measure`d on the face, exactly;
+  - and the descriptor (boundary, samples, box) covers both halves: SolidWorks' hole is one whole cylinder, whose own
+    points fell outside a half's box and failed the matcher's backward check.
+  Rear AC from SolidCraft in SolidWorks 2026: 83 features rebuilt, every mate face resolves; one mate (Half Shell to
+  Lid, defined as in SolidWorks' own file) is refused by SolidWorks ("error 0"), the parts still placed.
+
+## Round 6 (2026-11-25): equivalents where the destination lacks the feature
+
+User: "Fix the things that are possible - where they exist in the destination. Where something does not exist, first
+fall back to the functionally equivalent rule, then plain shapes."
+- **Derived parts into SolidCraft** (`src/import/derived.rs`): an Insert Part is rewritten before building as the
+  layout's transferred sketches and planes, with the layout's parameters and equations, inside the part (SolidCraft
+  has no derived parts; the spec's suggestion). A mirrored part is the source's features, its bodies mirrored, the
+  originals removed. References outside a sketch (another sketch's entity, a model edge or vertex) are projected as
+  linked construction geometry, so relations and dimensions to layout points stay; Convert Entities becomes a
+  coincident to the projection. L01, L06, L11 now native (were plain).
+- **SolidCraft import equivalents** (`src/import/features3.rs`, variants tried against the carried result): hem ->
+  sheet.hem; sketched bend -> sheet.fold (the matching position word found by trying); break corner -> chamfer or
+  fillet on the corner edges; end cap -> a square plate (SolidCraft's end cap follows the tube's corner rounds,
+  SolidWorks' without corner treatment does not: 948.8 vs 972 mm3). Tried and still carried: weldment trim (cut by
+  the boundary tubes keeps material inside the hollow; SolidWorks trims on the face plane), jog (SolidWorks' jog
+  with fixed projected length adds 7.4 mm of sheet; two folds keep the flat length).
+- **Mates**: gear, screw and rack-and-pinion as SolidCraft motion links (joint.gear / joint.screw /
+  joint.rack_pinion on the joints the other mates made; ratio, pitch, pitch radius) both ways; width (centred) as a
+  distance at the centred gap; slot as SolidCraft's pin-in-slot joint at the mate's frame. Symmetric: no equivalent.
+- **Materials**: an undefined material name maps to SolidCraft's material of that kind (6061 Alloy -> Aluminum).
+  Export writes each part's material (most of its volume), body colours, and custom properties (SolidCraft's design
+  properties for the root; an import keeps each document's properties in the design metadata under
+  `io.github.simonrafferty.ncx.properties` and the export writes them back).
+- **Export**: construction axes (through a round face) as NCX `axis` cylindricalFace; frame members as NCX
+  `structuralMember` with ISO profile names and a weldment feature before them; thin extrudes (`thin`, side checked by
+  the result); turning moves about X/Y/Z (`rotate.angles`); through-all both ways as two `throughAll` ends (the
+  validator rejected `throughAllBoth` on an extrude: a hole's word only).
+
 ## Corpus
 
 `results/solidcraft/run_corpus.py`, runs in `results/solidcraft/runs/`. Run 3 (2026-11-24): all 62
